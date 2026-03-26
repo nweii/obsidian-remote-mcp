@@ -5,6 +5,28 @@ A self-hosted [MCP](https://modelcontextprotocol.io) server for headless Obsidia
 This is meant for server environments: home servers, NAS boxes, VPSes, containers, and other setups where your vault lives on disk and you want to expose it through a remote MCP endpoint for apps like Claude.ai.
 `obsidian-remote-mcp` is filesystem-backed instead: it works directly from the vault on disk.
 
+## What it includes
+
+The server currently exposes these tools:
+
+| Tool | Description |
+|------|-------------|
+| `vault_context` | Read the vault guidance note configured by `VAULT_CONTEXT_PATH`, or fall back to `AGENTS.md` / `CLAUDE.md` |
+| `vault_read` | Read a note by relative path |
+| `vault_frontmatter` | Read all YAML frontmatter from a note |
+| `vault_frontmatter_property` | Read one frontmatter property from a note |
+| `vault_outline` | Read only the headings from a note |
+| `vault_read_section` | Read a single heading section from a note |
+| `vault_links` | Read outgoing wikilinks and optional backlinks |
+| `vault_create` | Create a new note |
+| `vault_update` | Replace a note's full contents |
+| `vault_set_frontmatter_property` | Set one frontmatter property without rewriting the note body |
+| `vault_edit` | Append, prepend, or replace exact text within a note |
+| `vault_trash` | Move a note to `.trash` |
+| `vault_find` | Resolve a note title to one or more paths |
+| `vault_search_content` | Regex search across note content |
+| `vault_daily_note` | Read or create a daily note using a configurable path template |
+
 ## Quick start
 
 **Runtime.** The server is TypeScript on [Bun](https://bun.sh). There is no separate build step for normal use: Bun runs `src/server.ts` directly. Install dependencies with `bun install` (Express, the MCP SDK, and a few libraries—see `package.json`).
@@ -54,28 +76,6 @@ services:
 ```
 
 On my Synology NAS, I use my [`ghcr.io/nweii/debian-node-bun:latest`](https://github.com/nweii/debian-node-bun) image as a base.
-
-## What it includes
-
-The server currently exposes these tools:
-
-| Tool | Description |
-|------|-------------|
-| `vault_context` | Read the vault guidance note configured by `VAULT_CONTEXT_PATH`, or fall back to `AGENTS.md` / `CLAUDE.md` |
-| `vault_read` | Read a note by relative path |
-| `vault_frontmatter` | Read all YAML frontmatter from a note |
-| `vault_frontmatter_property` | Read one frontmatter property from a note |
-| `vault_outline` | Read only the headings from a note |
-| `vault_read_section` | Read a single heading section from a note |
-| `vault_links` | Read outgoing wikilinks and optional backlinks |
-| `vault_create` | Create a new note |
-| `vault_update` | Replace a note's full contents |
-| `vault_set_frontmatter_property` | Set one frontmatter property without rewriting the note body |
-| `vault_edit` | Append, prepend, or replace exact text within a note |
-| `vault_trash` | Move a note to `.trash` |
-| `vault_find` | Resolve a note title to one or more paths |
-| `vault_search_content` | Regex search across note content |
-| `vault_daily_note` | Read or create a daily note using a configurable path template |
 
 ## How auth works
 
