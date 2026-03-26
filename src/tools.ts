@@ -1,7 +1,23 @@
-// ABOUTME: Registers all vault tools on an McpServer - context, read, outline, read_section, links, create, update, edit, trash, find, search, daily note.
+// ABOUTME: Registers all vault tools on an McpServer - context, read (full/outline/section), frontmatter, links, writes, search (title/content), daily note.
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import * as vault from "./vault.js";
+
+const vaultSearchSchema = z.discriminatedUnion("by", [
+  z.object({
+    by: z.literal("title"),
+    title: z.string().describe("Note title or partial title to search for (filename without .md)"),
+    exact: z.boolean().optional().default(false).describe("If true, full filename match (default false = partial)"),
+    limit: z.number().optional().default(50).describe("Max matches (default 50, 0 = no limit)"),
+  }),
+  z.object({
+    by: z.literal("content"),
+    query: z.string().describe("Regex pattern to search for"),
+    folder: z.string().optional().describe('Scope to a subfolder (e.g. "02-Notes"). Strongly recommended.'),
+    limit: z.number().optional().default(20).describe("Max matching files (default 20, 0 = no limit)"),
+    case_sensitive: z.boolean().optional().default(false).describe("Case-sensitive regex (default false)"),
+  }),
+]);
 
 export function registerTools(server: McpServer) {
   server.registerTool(
@@ -33,12 +49,37 @@ export function registerTools(server: McpServer) {
     "vault_read",
     {
       title: "Read vault note",
-      description: "Read full note content by path. Use vault_find first if you only have a title.",
+      description:
+        'Read note content by path. mode "full" (default) loads the whole file; "outline" returns # headings only; "section" reads under one heading (use outline first to list headings). If you only have a title, use vault_search with by "title" first.',
       inputSchema: z.object({
         path: z.string().describe('Relative path to the note (e.g. "Projects/plan.md")'),
+        mode: z
+          .enum(["full", "outline", "section"])
+          .optional()
+          .default("full")
+          .describe('full — entire note; outline — headings; section — one heading\'s body (requires heading)'),
+        heading: z
+          .string()
+          .optional()
+          .describe("Required when mode is section: heading text without # prefix, case-insensitive"),
       }),
     },
-    async ({ path }) => {
+    async ({ path, mode, heading }) => {
+      if (mode === "section") {
+        if (heading === undefined || heading.trim() === "") {
+          return {
+            content: [{ type: "text", text: "Error: heading is required when mode is section" }],
+            isError: true,
+          };
+        }
+        const content = await vault.readNoteSection(path, heading);
+        return { content: [{ type: "text", text: content }] };
+      }
+      if (mode === "outline") {
+        const headings = await vault.getNoteOutline(path);
+        if (headings.length === 0) return { content: [{ type: "text", text: "(no headings)" }] };
+        return { content: [{ type: "text", text: headings.join("\n") }] };
+      }
       const content = await vault.readNote(path);
       return { content: [{ type: "text", text: content }] };
     },
@@ -48,68 +89,33 @@ export function registerTools(server: McpServer) {
     "vault_frontmatter",
     {
       title: "Read note frontmatter",
-      description: "Read all YAML frontmatter properties from a note without loading the full body.",
+      description:
+        "Read YAML frontmatter from a note without loading the full body. Omit property for all keys; set property to read one key.",
       inputSchema: z.object({
         path: z.string().describe("Relative path to the note"),
+        property: z.string().optional().describe("If set, return only this frontmatter key"),
       }),
     },
-    async ({ path }) => {
+    async ({ path, property }) => {
+      if (property !== undefined && property.length > 0) {
+        const value = await vault.getFrontmatterProperty(path, property);
+        if (value === undefined) {
+          return { content: [{ type: "text", text: `Property "${property}" not found.` }] };
+        }
+        return {
+          content: [
+            {
+              type: "text",
+              text: typeof value === "string" ? value : JSON.stringify(value, null, 2),
+            },
+          ],
+        };
+      }
       const frontmatter = await vault.getFrontmatter(path);
       if (frontmatter === null) {
         return { content: [{ type: "text", text: "(no frontmatter)" }] };
       }
       return { content: [{ type: "text", text: JSON.stringify(frontmatter, null, 2) }] };
-    },
-  );
-
-  server.registerTool(
-    "vault_frontmatter_property",
-    {
-      title: "Read note frontmatter property",
-      description: "Read one frontmatter property from a note by name.",
-      inputSchema: z.object({
-        path: z.string().describe("Relative path to the note"),
-        name: z.string().describe("Frontmatter property name"),
-      }),
-    },
-    async ({ path, name }) => {
-      const value = await vault.getFrontmatterProperty(path, name);
-      if (value === undefined) {
-        return { content: [{ type: "text", text: `Property "${name}" not found.` }] };
-      }
-      return { content: [{ type: "text", text: typeof value === "string" ? value : JSON.stringify(value, null, 2) }] };
-    },
-  );
-
-  server.registerTool(
-    "vault_outline",
-    {
-      title: "Get note outline",
-      description: "Get the heading structure of a note (all # lines). Use before vault_read_section to see what sections exist without loading full content.",
-      inputSchema: z.object({
-        path: z.string().describe("Relative path to the note"),
-      }),
-    },
-    async ({ path }) => {
-      const headings = await vault.getNoteOutline(path);
-      if (headings.length === 0) return { content: [{ type: "text", text: "(no headings)" }] };
-      return { content: [{ type: "text", text: headings.join("\n") }] };
-    },
-  );
-
-  server.registerTool(
-    "vault_read_section",
-    {
-      title: "Read vault note section",
-      description: "Read a single heading section from a note instead of the full content. Use vault_outline first to see available headings.",
-      inputSchema: z.object({
-        path: z.string().describe("Relative path to the note"),
-        heading: z.string().describe("Heading text to find (case-insensitive, without # prefix)"),
-      }),
-    },
-    async ({ path, heading }) => {
-      const content = await vault.readNoteSection(path, heading);
-      return { content: [{ type: "text", text: content }] };
     },
   );
 
@@ -247,47 +253,46 @@ export function registerTools(server: McpServer) {
   );
 
   server.registerTool(
-    "vault_find",
+    "vault_search",
     {
-      title: "Find note by title",
-      description: "Find notes by title (matches filenames without .md, case-insensitive). Use this to resolve a title to a path before reading or editing. Try this before vault_search_content.",
-      inputSchema: z.object({
-        title: z.string().describe("Note title or partial title to search for"),
-        exact: z.boolean().optional().default(false).describe("If true, requires a full filename match (default false = partial match)"),
-        limit: z.number().optional().default(50).describe("Max matching notes to return (default 50, 0 = no limit)"),
-      }),
+      title: "Search vault",
+      description:
+        'by "title" — resolve a title to paths (try before content search). by "content" — regex across note bodies; use folder to scope large vaults.',
+      inputSchema: vaultSearchSchema,
     },
-    async ({ title, exact, limit }) => {
-      const results = await vault.findByTitle(title, exact, limit);
-      if (results.length === 0) {
-        return { content: [{ type: "text", text: `No notes found matching "${title}".` }] };
+    async (args) => {
+      if (args.by === "title") {
+        const { title, exact, limit } = args;
+        const results = await vault.findByTitle(title, exact, limit);
+        if (results.length === 0) {
+          return { content: [{ type: "text", text: `No notes found matching "${title}".` }] };
+        }
+        const hitLimit = limit > 0 && results.length === limit;
+        const text = results.map((r) => r.path).join("\n");
+        return {
+          content: [
+            {
+              type: "text",
+              text: hitLimit ? `${text}\n\n(limit of ${limit} reached — increase limit or use a more specific title)` : text,
+            },
+          ],
+        };
       }
-      const hitLimit = limit > 0 && results.length === limit;
-      const text = results.map((r) => r.path).join("\n");
-      return { content: [{ type: "text", text: hitLimit ? `${text}\n\n(limit of ${limit} reached — increase limit or use a more specific title)` : text }] };
-    },
-  );
-
-  server.registerTool(
-    "vault_search_content",
-    {
-      title: "Search vault content",
-      description: "Regex search across note content. Use folder to scope — the vault is large. Try vault_find first if searching by title.",
-      inputSchema: z.object({
-        query: z.string().describe("Regex pattern to search for"),
-        folder: z.string().optional().describe('Scope to a subfolder (e.g. "02-Notes"). Strongly recommended.'),
-        limit: z.number().optional().default(20).describe("Max matching files to return (default 20, 0 = no limit). Walk stops early."),
-        case_sensitive: z.boolean().optional().default(false).describe("Case-sensitive match (default false)"),
-      }),
-    },
-    async ({ query, folder, limit, case_sensitive }) => {
+      const { query, folder, limit, case_sensitive } = args;
       const results = await vault.searchContent(query, { folder, limit, caseSensitive: case_sensitive });
       if (results.length === 0) {
         return { content: [{ type: "text", text: "No matches found." }] };
       }
       const hitLimit = results.length === limit;
       const text = results.map((r) => `${r.path}:\n${r.matches.map((m) => `  ${m}`).join("\n")}`).join("\n\n");
-      return { content: [{ type: "text", text: hitLimit ? `${text}\n\n(limit of ${limit} reached — use folder to narrow the search)` : text }] };
+      return {
+        content: [
+          {
+            type: "text",
+            text: hitLimit ? `${text}\n\n(limit of ${limit} reached — use folder to narrow the search)` : text,
+          },
+        ],
+      };
     },
   );
 

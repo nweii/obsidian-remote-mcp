@@ -12,19 +12,15 @@ The server currently exposes these tools:
 | Tool | Description |
 |------|-------------|
 | `vault_context` | Read the vault guidance note configured by `VAULT_CONTEXT_PATH`, or fall back to `AGENTS.md` / `CLAUDE.md` |
-| `vault_read` | Read a note by relative path |
-| `vault_frontmatter` | Read all YAML frontmatter from a note |
-| `vault_frontmatter_property` | Read one frontmatter property from a note |
-| `vault_outline` | Read only the headings from a note |
-| `vault_read_section` | Read a single heading section from a note |
+| `vault_read` | Read a note: full file, heading outline only (`mode`), or one section under a heading (`mode` + `heading`) |
+| `vault_frontmatter` | Read YAML frontmatter from a note; optional `property` for a single key |
 | `vault_links` | Read outgoing wikilinks and optional backlinks |
 | `vault_create` | Create a new note |
 | `vault_update` | Replace a note's full contents |
 | `vault_set_frontmatter_property` | Set one frontmatter property without rewriting the note body |
 | `vault_edit` | Append, prepend, or replace exact text within a note |
 | `vault_trash` | Move a note to `.trash` |
-| `vault_find` | Resolve a note title to one or more paths |
-| `vault_search_content` | Regex search across note content |
+| `vault_search` | Search by note title (`by: "title"`) or regex across content (`by: "content"`) |
 | `vault_daily_note` | Read or create a daily note using a configurable path template |
 
 ## Quick start
@@ -253,7 +249,7 @@ On a Claude Pro plan, the connector setup is:
 - All vault paths are validated against the resolved vault root to prevent directory traversal.
 - `.mcpignore` in the vault root can block paths from all MCP access.
 - `VAULT_READ_ONLY=true` blocks all write operations.
-- `vault_find` defaults to `limit=50`; `vault_search_content` and backlink lookups default to `limit=20`. These are capped by default for performance, but the limits are adjustable and `0` means no limit.
+- `vault_search` with `by: "title"` defaults to `limit=50`; with `by: "content"` and backlink lookups default to `limit=20`. These are capped by default for performance, but the limits are adjustable and `0` means no limit.
 - `vault_frontmatter` and `vault_set_frontmatter_property` let agents work with frontmatter properties without reading or rewriting the whole note body.
 
 ## Tests
