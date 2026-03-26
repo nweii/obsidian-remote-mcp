@@ -9,7 +9,7 @@ This is meant for server environments: home servers, NAS boxes, VPSes, container
 
 **Runtime.** The server is TypeScript on [Bun](https://bun.sh). There is no separate build step for normal use: Bun runs `src/server.ts` directly. Install dependencies with `bun install` (Express, the MCP SDK, and a few libraries—see `package.json`).
 
-**Vault on disk.** Point the server at a folder that is your vault root. Easiest for a first run: set `VAULT_PATH` to an absolute path. Alternatively, leave it unset and use Obsidian’s `obsidian.json` discovery (see [Vault discovery](#vault-discovery)).
+**Vault on disk.** Point the server at a folder that is your vault root. Easiest for a first run: set `VAULT_PATH` to an absolute path. Alternatively, leave it unset and use Obsidian’s `obsidian.json` discovery (see [Vault path](#vault-path)).
 
 ```bash
 git clone https://github.com/nweii/obsidian-remote-mcp.git
@@ -20,9 +20,40 @@ export MCP_CLIENT_ID=dev
 bun run src/server.ts
 ```
 
+`bun start` runs the same entrypoint (`package.json` maps it to `bun run src/server.ts`).
+
 The process listens on port `3456` by default (`PORT` overrides). The MCP endpoint is `POST /mcp` on that port; OAuth metadata is served under `/.well-known/oauth-authorization-server`.
 
 **Using a remote MCP client (e.g. Claude).** OAuth and connector URLs expect HTTPS and a public origin you control. Set `MCP_BASE_URL` to that site URL without the `/mcp` path, terminate TLS in front of the app, and follow [Exposing it remotely](#exposing-it-remotely). For the full variable reference, see [Configuration](#configuration).
+
+## Running with Docker
+
+Use [Quick start](#quick-start) for Bun on a laptop or VM. Compose is for long-running container deploys.
+
+Minimal Docker Compose example:
+
+```yaml
+services:
+  obsidian-remote-mcp:
+    image: oven/bun:1
+    working_dir: /app
+    restart: unless-stopped
+    environment:
+      MCP_CLIENT_ID: ${MCP_CLIENT_ID}
+      MCP_CLIENT_SECRET: ${MCP_CLIENT_SECRET}
+      MCP_BASE_URL: https://mcp.example.com
+      VAULT_PATH: /vault
+      CORS_ALLOWED_ORIGINS: https://claude.ai
+      PORT: 3456
+    volumes:
+      - ./:/app
+      - /path/to/your/vault:/vault
+    command: ["bun", "run", "src/server.ts"]
+    ports:
+      - "3456:3456"
+```
+
+On my Synology NAS, I use my [`ghcr.io/nweii/debian-node-bun:latest`](https://github.com/nweii/debian-node-bun) image as a base.
 
 ## What it includes
 
@@ -58,9 +89,11 @@ This matches clients like Claude, which may expose client ID / secret fields in 
 
 By default the server allows Claude's OAuth callback URI. If you need to support other clients or callback targets, set `MCP_ALLOWED_REDIRECT_URIS` to a comma-separated allowlist.
 
+For the environment variable reference, see [Configuration](#configuration). For HTTPS, reverse proxies, and Claude connector setup, see [Exposing it remotely](#exposing-it-remotely).
+
 ## Configuration
 
-### Environment variables
+Set options via environment variables. [Vault path](#vault-path), [Vault context note](#vault-context-note), [Daily note paths](#daily-note-paths), and [CORS and bearer tokens](#cors-and-bearer-tokens) expand on the entries below.
 
 ```env
 MCP_CLIENT_ID=your-client-id
@@ -78,7 +111,7 @@ VAULT_READ_ONLY=true                   # optional
 PORT=3456
 ```
 
-### Vault discovery
+## Vault path
 
 The server resolves the vault root in this order:
 
@@ -99,7 +132,7 @@ If you are running on a headless server or in a container without Obsidian insta
 mkdir -p ~/.config/obsidian
 ```
 
-1. Create `~/.config/obsidian/obsidian.json`:
+2. Create `~/.config/obsidian/obsidian.json`:
 
 ```json
 {
@@ -130,7 +163,7 @@ In that case, set `OBSIDIAN_VAULT_ID=work` or whichever entry you want the serve
 
 Use absolute paths. Do not rely on `~` expansion inside `obsidian.json`.
 
-### Vault guidance note
+## Vault context note
 
 `vault_context` is meant to help agents learn your vault structure before they start writing. By default it looks for `AGENTS.md` or `CLAUDE.md`.
 
@@ -138,7 +171,7 @@ If your vault uses a different bootstrap file, set `VAULT_CONTEXT_PATH` to the r
 
 If you do not want to maintain one, the server still works without it.
 
-### Daily note path template
+## Daily note paths
 
 `vault_daily_note` uses `DAILY_NOTE_PATH_TEMPLATE`, which defaults to:
 
@@ -170,7 +203,7 @@ DAILY_NOTE_PATH_TEMPLATE=Journal/{YYYY}-{MM}-{DD}-{dddd}.md
 DAILY_NOTE_PATH_TEMPLATE=Journal/{YYYY}/{MMM}/{D}-{ddd}.md
 ```
 
-### CORS
+## CORS and bearer tokens
 
 `CORS_ALLOWED_ORIGINS` is optional. By default the server responds with `Access-Control-Allow-Origin: *` so browser-based MCP clients can connect without extra setup.
 
@@ -183,51 +216,11 @@ CORS_ALLOWED_ORIGINS=https://claude.ai,http://localhost:3000
 
 When this is set, matching origins are reflected back in `Access-Control-Allow-Origin`. Disallowed browser preflight requests are rejected.
 
-### Token persistence
-
-Bearer tokens persist to `./tokens.json` by default so clients stay authorized across restarts.
-
-If you want to store them elsewhere, set:
+Bearer tokens persist to `./tokens.json` by default so clients stay authorized across restarts. To store them elsewhere:
 
 ```env
 TOKEN_STORE_PATH=/data/tokens.json
 ```
-
-## Running locally
-
-### Bun
-
-```bash
-bun install
-MCP_CLIENT_ID=dev bun run src/server.ts
-```
-
-### Docker
-
-Minimal Docker Compose example:
-
-```yaml
-services:
-  obsidian-remote-mcp:
-    image: oven/bun:1
-    working_dir: /app
-    restart: unless-stopped
-    environment:
-      MCP_CLIENT_ID: ${MCP_CLIENT_ID}
-      MCP_CLIENT_SECRET: ${MCP_CLIENT_SECRET}
-      MCP_BASE_URL: https://mcp.example.com
-      VAULT_PATH: /vault
-      CORS_ALLOWED_ORIGINS: https://claude.ai
-      PORT: 3456
-    volumes:
-      - ./:/app
-      - /path/to/your/vault:/vault
-    command: ["bun", "run", "src/server.ts"]
-    ports:
-      - "3456:3456"
-```
-
-On my Synology NAS, I use my [`ghcr.io/nweii/debian-node-bun:latest`](https://github.com/nweii/debian-node-bun) image as a base.
 
 ## Exposing it remotely
 
@@ -251,13 +244,17 @@ On a Claude Pro plan, the connector setup is:
 
 ## Notes
 
+### MCP and HTTP
+
 - `GET /mcp` returns `405`, not `404`, so streamable HTTP clients know the server only accepts MCP over `POST`.
+
+### Vault access and tool defaults
+
 - All vault paths are validated against the resolved vault root to prevent directory traversal.
 - `.mcpignore` in the vault root can block paths from all MCP access.
 - `VAULT_READ_ONLY=true` blocks all write operations.
 - `vault_find` defaults to `limit=50`; `vault_search_content` and backlink lookups default to `limit=20`. These are capped by default for performance, but the limits are adjustable and `0` means no limit.
 - `vault_frontmatter` and `vault_set_frontmatter_property` let agents work with frontmatter properties without reading or rewriting the whole note body.
-- Tokens persist to `TOKEN_STORE_PATH` (default `./tokens.json`) so clients stay authorized across restarts.
 
 ## Tests
 
