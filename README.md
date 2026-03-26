@@ -151,12 +151,6 @@ DAILY_NOTE_PATH_TEMPLATE=Journal/{YYYY}-{MM}-{DD}-{dddd}.md
 DAILY_NOTE_PATH_TEMPLATE=Journal/{YYYY}/{MMM}/{D}-{ddd}.md
 ```
 
-If you want to keep the previous behavior used by this repo's original setup, set:
-
-```env
-DAILY_NOTE_PATH_TEMPLATE=01-Days/{YYYY}-{MM}-{DD}-{ddd}.md
-```
-
 ### CORS
 
 `CORS_ALLOWED_ORIGINS` is optional. By default the server responds with `Access-Control-Allow-Origin: *` so browser-based MCP clients can connect without extra setup.
@@ -214,11 +208,7 @@ services:
       - "3456:3456"
 ```
 
-### Using the `debian-node-bun` base image
-
-If you want a Debian-based image with Bun and common CLI tools already installed, I use [`ghcr.io/nweii/debian-node-bun:latest`](https://github.com/nweii/debian-node-bun).
-
-This is optional, but it can be convenient when you want a more general-purpose Debian userspace than the minimal Bun image.
+On my Synology NAS, I use my [`ghcr.io/nweii/debian-node-bun:latest`](https://github.com/nweii/debian-node-bun) image as a base.
 
 ## Exposing it remotely
 
@@ -233,12 +223,12 @@ A common setup is:
 
 If you use Cloudflare Zero Trust, be careful where you place it. A practical setup is to put the identity gate only in front of `/authorize`, so adding the connector still requires a real login but `/.well-known/*`, `/oauth/token`, and `/mcp` remain reachable for the OAuth and MCP request flow.
 
-For Claude on a Pro plan, the usual connector setup is:
+On a Claude Pro plan, the connector setup is:
 
 1. Add a remote connector pointing at your MCP URL, for example `https://mcp.example.com/mcp`.
-1. Under advanced settings, provide an OAuth client ID. Any stable identifier is fine as long as it matches `MCP_CLIENT_ID` on the server.
-1. Optionally provide an OAuth client secret. Any generated secret, token, or password is fine, but if you set one in Claude it must match `MCP_CLIENT_SECRET` on the server.
-1. Set `MCP_BASE_URL` to the same origin as the connector URL, without `/mcp`.
+2. Under advanced settings, provide an OAuth client ID. Any stable identifier is fine as long as it matches `MCP_CLIENT_ID` on the server.
+3. Optionally provide an OAuth client secret. Any generated secret, token, or password is fine, but if you set one in Claude it must match `MCP_CLIENT_SECRET` on the server.
+4. Set `MCP_BASE_URL` to the same origin as the connector URL, without `/mcp`.
 
 ## Notes
 
