@@ -5,6 +5,25 @@ A self-hosted [MCP](https://modelcontextprotocol.io) server for headless Obsidia
 This is meant for server environments: home servers, NAS boxes, VPSes, containers, and other setups where your vault lives on disk and you want to expose it through a remote MCP endpoint for apps like Claude.ai.
 `obsidian-remote-mcp` is filesystem-backed instead: it works directly from the vault on disk.
 
+## Quick start
+
+**Runtime.** The server is TypeScript on [Bun](https://bun.sh). There is no separate build step for normal use: Bun runs `src/server.ts` directly. Install dependencies with `bun install` (Express, the MCP SDK, and a few libraries—see `package.json`).
+
+**Vault on disk.** Point the server at a folder that is your vault root. Easiest for a first run: set `VAULT_PATH` to an absolute path. Alternatively, leave it unset and use Obsidian’s `obsidian.json` discovery (see [Vault discovery](#vault-discovery)).
+
+```bash
+git clone https://github.com/nweii/obsidian-remote-mcp.git
+cd obsidian-remote-mcp
+bun install
+export VAULT_PATH=/absolute/path/to/your/vault
+export MCP_CLIENT_ID=dev
+bun run src/server.ts
+```
+
+The process listens on port `3456` by default (`PORT` overrides). The MCP endpoint is `POST /mcp` on that port; OAuth metadata is served under `/.well-known/oauth-authorization-server`.
+
+**Using a remote MCP client (e.g. Claude).** OAuth and connector URLs expect HTTPS and a public origin you control. Set `MCP_BASE_URL` to that site URL without the `/mcp` path, terminate TLS in front of the app, and follow [Exposing it remotely](#exposing-it-remotely). For the full variable reference, see [Configuration](#configuration).
+
 ## What it includes
 
 The server currently exposes these tools:
@@ -216,10 +235,10 @@ The server must be reachable over HTTPS for remote MCP clients.
 
 A common setup is:
 
-1. run the container on your server
-2. put a reverse proxy in front of it
-3. expose it on a public HTTPS origin such as `https://mcp.example.com`
-4. set `MCP_BASE_URL` to that same origin, without `/mcp`
+1. Run the server on a host you control—for example with Bun directly, in a Docker container, or under a process manager
+2. Put a reverse proxy in front of it
+3. Expose it on a public HTTPS origin such as `https://mcp.example.com`
+4. Set `MCP_BASE_URL` to that same origin, without `/mcp`
 
 If you use Cloudflare Zero Trust, be careful where you place it. A practical setup is to put the identity gate only in front of `/authorize`, so adding the connector still requires a real login but `/.well-known/*`, `/oauth/token`, and `/mcp` remain reachable for the OAuth and MCP request flow.
 
