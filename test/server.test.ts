@@ -520,6 +520,43 @@ describe('MCP /mcp', () => {
     }
   });
 
+  test('POST /mcp rejects wrong MCP_STATIC_BEARER_TOKEN', async () => {
+    const prev = process.env.MCP_STATIC_BEARER_TOKEN;
+    process.env.MCP_STATIC_BEARER_TOKEN = 'static-bearer-test-secret';
+    try {
+      const app = createApp();
+      const { base, close } = await listen(app);
+      try {
+        const res = await fetch(`${base}/mcp`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Accept: 'application/json, text/event-stream',
+            Authorization: 'Bearer definitely-wrong-secret',
+          },
+          body: JSON.stringify({
+            jsonrpc: '2.0',
+            id: 1,
+            method: 'initialize',
+            params: {
+              protocolVersion: '2025-11-25',
+              capabilities: {},
+              clientInfo: { name: 'test', version: '1.0.0' },
+            },
+          }),
+        });
+        expect(res.status).toBe(401);
+        const body = (await res.json()) as { error?: string };
+        expect(body.error).toBe('invalid_token');
+      } finally {
+        await close();
+      }
+    } finally {
+      if (prev === undefined) delete process.env.MCP_STATIC_BEARER_TOKEN;
+      else process.env.MCP_STATIC_BEARER_TOKEN = prev;
+    }
+  });
+
   test('POST without Authorization returns 401', async () => {
     const app = createApp();
     const { base, close } = await listen(app);
