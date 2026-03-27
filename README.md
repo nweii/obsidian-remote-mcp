@@ -7,13 +7,9 @@ This is meant for server environments: home servers, NAS boxes, VPSes, container
 
 ## Security and scope
 
-Remote MCP is powerful access to your vault. Use HTTPS, place the service and any extra gates deliberately (e.g. Cloudflare Zero Trust on `/authorize`; see [Exposing it remotely](#exposing-it-remotely)), and tweak controls to your risk tolerance.
+Remote MCP is powerful access to your vault: use HTTPS, think about where the service listens, and add extra gates if you need them (for example Cloudflare Zero Trust only on `/authorize` so the OAuth and MCP endpoints stay reachable).
 
-**Built-in controls**
-
-- **[Authentication](#authentication)** — OAuth 2.1 + PKCE, optional `MCP_CLIENT_SECRET` on token exchange, persisted tokens, optional `MCP_STATIC_BEARER_TOKEN` for `/mcp`
-- **[CORS](#cors)** — browser origin allowlisting
-- **[Vault access and tool defaults](#vault-access-and-tool-defaults)** — path sandboxing, `.mcpignore`, `VAULT_READ_ONLY` mode
+The server supports OAuth 2.1 + PKCE with optional `MCP_CLIENT_SECRET` on token exchange, persisted OAuth tokens, an optional fixed `MCP_STATIC_BEARER_TOKEN` for `/mcp`, browser CORS allowlisting, vault path sandboxing, `.mcpignore`, and `VAULT_READ_ONLY` mode.
 
 ## What it includes
 
@@ -40,7 +36,7 @@ The server currently exposes these tools:
 
 **Runtime.** The server is TypeScript on [Bun](https://bun.sh). There is no separate build step for normal use: Bun runs `src/server.ts` directly. Install dependencies with `bun install` (Express, the MCP SDK, and a few libraries—see `package.json`).
 
-**Vault on disk.** Point the server at a folder that is your vault root. Easiest for a first run: set `VAULT_PATH` to an absolute path. Alternatively, leave it unset and use Obsidian’s `obsidian.json` discovery (see [Vault path](#vault-path)).
+**Vault on disk.** Point the server at your vault root with `VAULT_PATH`, or leave it unset and use Obsidian’s `obsidian.json` discovery (details under **Vault path** below).
 
 ```bash
 git clone https://github.com/nweii/obsidian-remote-mcp.git
@@ -53,13 +49,15 @@ bun run src/server.ts
 
 `bun start` runs the same entrypoint (`package.json` maps it to `bun run src/server.ts`).
 
-The process listens on port `3456` by default (`PORT` overrides). The MCP endpoint is `POST /mcp` on that port; OAuth metadata is served under `/.well-known/oauth-authorization-server`.
+The process listens on port `3456` by default. The MCP endpoint is `POST /mcp` on that port; OAuth metadata is served under `/.well-known/oauth-authorization-server`.
 
-**Using a remote MCP client (e.g. Claude).** OAuth and connector URLs expect HTTPS and a public origin you control. Set `MCP_BASE_URL` to that site URL without the `/mcp` path, terminate TLS in front of the app, and follow [Exposing it remotely](#exposing-it-remotely). For the full variable reference, see [Configuration](#configuration).
+**Public HTTPS (e.g. Claude).** See **Remote deployment** below.
 
-## Running with Docker
+## Deployment
 
-Use [Quick start](#quick-start) for Bun on a laptop or VM. For long-running container deploys, here's a Docker Compose example:
+### Docker
+
+For a long-lived container, use Docker Compose (or equivalent) with env vars in `environment`:
 
 ```yaml
 services:
@@ -82,31 +80,17 @@ services:
       - "3456:3456"
 ```
 
-## Exposing it remotely
+For OAuth in Docker, mount a host directory and set `TOKEN_STORE_PATH` inside the container if you want sign-ins to survive container restarts.
 
-Remote MCP clients (and OAuth) expect **HTTPS** and a **public origin** you control.
+### HTTPS and `MCP_BASE_URL`
 
-A common setup is:
+Remote MCP and OAuth expect **HTTPS** and a **public origin** you control. Put a reverse proxy in front of the app, terminate TLS there, and expose something like `https://mcp.example.com`. Set **`MCP_BASE_URL`** on the server to that origin **without** the `/mcp` path—it must match what users see in the browser bar for the site.
 
-1. Run the server on a host you control—for example with Bun directly, in a Docker container, or under a process manager
-2. Put a reverse proxy in front of it
-3. Expose it on a public HTTPS origin such as `https://mcp.example.com`
-4. Set `MCP_BASE_URL` to that same origin, without `/mcp`
+If you use Cloudflare Zero Trust, a practical pattern is to put the identity gate **only** on `/authorize`, so users log in to approve access while `/.well-known/*`, `/oauth/token`, and `/mcp` stay reachable for the protocol.
 
-If you use Cloudflare Zero Trust to secure the URL, be careful where you place it. A practical setup is to put the identity gate only in front of `/authorize`, so adding the connector still requires a real login but `/.well-known/*`, `/oauth/token`, and `/mcp` remain reachable for the OAuth and MCP request flow.
+### Environment variables
 
-On a Claude Pro plan, the connector setup is:
-
-1. Add a remote connector pointing at your MCP URL, for example `https://mcp.example.com/mcp`.
-2. Under advanced settings, provide an OAuth client ID. Any stable identifier is fine as long as it matches `MCP_CLIENT_ID` on the server.
-3. Optionally provide an OAuth client secret. Any generated secret, token, or password is fine, but if you set one in Claude it must match `MCP_CLIENT_SECRET` on the server.
-4. Set `MCP_BASE_URL` to the same origin as the connector URL, without `/mcp`.
-
-How tokens and optional fixed secrets work is covered in [Authentication](#authentication). Browser **origin** allowlisting is covered in [CORS](#cors).
-
-## Configuration
-
-Set options via environment variables. [Vault path](#vault-path), [Vault context note](#vault-context-note), [Daily note paths](#daily-note-paths), [Authentication](#authentication), and [CORS](#cors) expand on the entries below.
+Set these on the server process (Compose `environment:`, Portainer, shell `export`, etc.):
 
 ```env
 MCP_CLIENT_ID=your-client-id
@@ -124,6 +108,92 @@ MCP_STATIC_BEARER_TOKEN=               # optional; fixed Bearer for /mcp (e.g. m
 VAULT_READ_ONLY=true                   # optional
 PORT=3456
 ```
+
+`VAULT_PATH`, `VAULT_CONTEXT_PATH`, and `DAILY_NOTE_PATH_TEMPLATE` are also documented under **Vault path**, **Vault context note**, and **Daily note paths** later in this readme.
+
+### Authenticating to `/mcp`
+
+Every `POST /mcp` request must send `Authorization: Bearer …`. You can offer **OAuth**, **fixed bearer**, or **both**; each client then uses whichever path it supports.
+
+#### OAuth (browser)
+
+For clients where the user can open a browser. The server uses **OAuth 2.1**: approve on `/authorize`, exchange the short-lived code at `POST /oauth/token`, then send the issued access token in `Authorization` on `/mcp`.
+
+**Server:** **`MCP_CLIENT_ID`** is required. **`MCP_CLIENT_SECRET`** is optional; if you set it on the server, configure the same value in each OAuth client so they send it at `POST /oauth/token`. If you leave it unset, that step does not use a shared secret—use HTTPS and limit who can reach `/authorize`. **`MCP_BASE_URL`** must match the public site origin (no `/mcp`). **`MCP_ALLOWED_REDIRECT_URIS`** is an optional comma-separated list; Claude’s callback is allowed by default.
+
+**Persisted sign-in:** **`TOKEN_STORE_PATH`** (default `./tokens.json`) stores OAuth-issued tokens after login so clients survive server restarts.
+
+**Add as a remote MCP connector to Claude** (paid plans only): Use your base URL with `/mcp` included. Under advanced settings, set OAuth client ID to your **`MCP_CLIENT_ID`**, optionally OAuth client secret to your **`MCP_CLIENT_SECRET`** (required at token exchange if the server has a secret configured). On the server, set **`MCP_BASE_URL`** to the same origin as the connector URL, without `/mcp`.
+
+Cursor `mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "obsidian-vault": {
+      "url": "https://your-host/mcp",
+      "auth": {
+        "CLIENT_ID": "your-mcp-client-id",
+        "CLIENT_SECRET": "your-mcp-client-secret (optional)"
+      }
+    }
+  }
+}
+```
+
+Cursor uses the redirect URI **`cursor://anysphere.cursor-mcp/oauth/callback`**. Add it to **`MCP_ALLOWED_REDIRECT_URIS`** on the server (comma-separated alongside any other clients, e.g. Claude’s callback).
+
+#### Fixed bearer (non-browser)
+
+For scripts, Antigravity + `mcp-remote`, or any client that cannot run the browser flow. Do not set both **`auth`** and **`headers`** on the same mcp.json entry—pick OAuth or fixed bearer.
+
+Set **`MCP_STATIC_BEARER_TOKEN`** on the server; the client sends that exact string as `Authorization: Bearer …` on every `/mcp` request. This skips `/authorize`, `POST /oauth/token`, **`TOKEN_STORE_PATH`** for that client.
+
+Antigravity `mcp_config.json`:
+
+```json
+"obsidian-vault": {
+  "serverUrl": "https://your-host/mcp",
+  "headers": {
+    "Authorization": "Bearer YOUR_MCP_STATIC_BEARER_TOKEN"
+  }
+}
+```
+
+Cursor `mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "obsidian-vault": {
+      "url": "https://your-host/mcp",
+      "headers": {
+        "Authorization": "Bearer YOUR_MCP_STATIC_BEARER_TOKEN"
+      }
+    }
+  }
+}
+```
+
+Bridging over stdio with **`mcp-remote`**:
+
+```json
+"obsidian-vault": {
+  "command": "bunx",
+  "args": ["-y", "mcp-remote", "https://your-host/mcp", "--transport", "http-only", "--header", "Authorization: Bearer YOUR_MCP_STATIC_BEARER_TOKEN"]
+}
+```
+
+### CORS
+
+`CORS_ALLOWED_ORIGINS` limits which **browser origins** may call the API from JavaScript. It is separate from OAuth and from `MCP_STATIC_BEARER_TOKEN`. Default is `*` (allow all). To restrict:
+
+```env
+CORS_ALLOWED_ORIGINS=https://claude.ai
+CORS_ALLOWED_ORIGINS=https://claude.ai,http://localhost:3000
+```
+
+When set, only listed origins get a reflected `Access-Control-Allow-Origin`; other browser preflights fail.
 
 ## Vault path
 
@@ -216,75 +286,6 @@ DAILY_NOTE_PATH_TEMPLATE=Daily/{YYYY}/{YYYY}-{MM}-{DD}.md
 DAILY_NOTE_PATH_TEMPLATE=Journal/{YYYY}-{MM}-{DD}-{dddd}.md
 DAILY_NOTE_PATH_TEMPLATE=Journal/{YYYY}/{MMM}/{D}-{ddd}.md
 ```
-
-## Authentication
-
-This section is about **who may call `/mcp`**. Public URL and TLS come first—see [Exposing it remotely](#exposing-it-remotely). All related env vars are listed in [Configuration](#configuration).
-
-### OAuth (browser clients such as Claude)
-
-The server uses **OAuth 2.1** authorization code + **PKCE**. The client opens your approval page, then exchanges a short-lived code for an access token at `POST /oauth/token`.
-
-- **`MCP_CLIENT_ID`** is required (any stable string, often provided by the client app).
-- **`MCP_CLIENT_SECRET`** is optional to configure. If you set it on the server, clients must send the same `client_secret` during token exchange. If you leave it unset, PKCE-only clients can sign in without one.
-
-By default the server allows Claude’s OAuth callback URI. To allow other clients, set **`MCP_ALLOWED_REDIRECT_URIS`** to a comma-separated list.
-
-### Access tokens on disk
-
-After a successful browser login, the server saves access tokens under **`TOKEN_STORE_PATH`** (default `./tokens.json`) so clients stay signed in across restarts. To use another path:
-
-```env
-TOKEN_STORE_PATH=/data/tokens.json
-```
-
-### Fixed bearer token (Antigravity, scripts, non-browser clients)
-
-There are **two ways** to prove access to `/mcp`:
-
-1. **OAuth (above)** — After you approve in the browser, the server stores a token in `tokens.json`. The client sends that token on later `/mcp` requests. Browser clients usually do this for you.
-
-2. **Shared secret** — Set **`MCP_STATIC_BEARER_TOKEN`** in your environment (e.g. Portainer) to a long random string. Any client that sends `Authorization: Bearer <that exact string>` to `/mcp` is allowed. Use this when the client cannot run the browser login.
-
-You can use both at once. Use **HTTPS** so bearer values are not sent in clear text.
-
-- `MCP_CLIENT_SECRET` is used only during OAuth login, at `POST /oauth/token`.
-- `MCP_STATIC_BEARER_TOKEN` is the value sent later in the `Authorization` header on `/mcp`.
-
-You may set both env vars to the same random string if you want one secret to remember.
-
-**Antigravity / `mcp_config.json`** — when the client supports HTTP MCP directly, use **`serverUrl` + `headers`**:
-
-```json
-"obsidian-vault": {
-  "serverUrl": "https://your-host/mcp",
-  "headers": {
-    "Authorization": "Bearer YOUR_MCP_STATIC_BEARER_TOKEN"
-  }
-}
-```
-
-If you must bridge over stdio, **`mcp-remote`** in one line:
-
-```json
-"obsidian-vault": {
-  "command": "bunx",
-  "args": ["-y", "mcp-remote", "https://your-host/mcp", "--transport", "http-only", "--header", "Authorization: Bearer YOUR_MCP_STATIC_BEARER_TOKEN"]
-}
-```
-
-## CORS
-
-`CORS_ALLOWED_ORIGINS` controls which **browser origins** may call the API from JavaScript. It is separate from OAuth and from `MCP_STATIC_BEARER_TOKEN`.
-
-By default the server sends `Access-Control-Allow-Origin: *`. To restrict:
-
-```env
-CORS_ALLOWED_ORIGINS=https://claude.ai
-CORS_ALLOWED_ORIGINS=https://claude.ai,http://localhost:3000
-```
-
-When set, only matching origins get reflected `Access-Control-Allow-Origin`; other browser preflights are rejected.
 
 ## Notes
 
