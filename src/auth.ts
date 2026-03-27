@@ -1,6 +1,6 @@
 // ABOUTME: OAuth 2.1 authorization server - discovery, authorization code flow with PKCE, and token issuance.
 import type { Request, Response, NextFunction } from 'express';
-import { randomUUID, createHash } from 'crypto';
+import { randomUUID, createHash, timingSafeEqual } from 'crypto';
 import { readFileSync, writeFileSync } from 'fs';
 import { getVaultDisplayName } from './vault.js';
 
@@ -115,6 +115,7 @@ export function protectedResourceHandler(_req: Request, res: Response) {
 // Advertises all auth server capabilities including PKCE support.
 export function discoveryHandler(_req: Request, res: Response) {
   const base = getBaseUrl();
+  const clientSecret = getClientSecret();
   res.json({
     issuer:                               base,
     authorization_endpoint:              `${base}/authorize`,
@@ -122,7 +123,7 @@ export function discoveryHandler(_req: Request, res: Response) {
     response_types_supported:            ['code'],
     grant_types_supported:               ['authorization_code'],
     code_challenge_methods_supported:    ['S256'],
-    token_endpoint_auth_methods_supported: ['client_secret_post', 'none'],
+    token_endpoint_auth_methods_supported: clientSecret ? ['client_secret_post'] : ['client_secret_post', 'none'],
   });
 }
 
@@ -221,7 +222,7 @@ export function authorizationApproveHandler(req: Request, res: Response) {
 // --- Token endpoint ----------------------------------------------------------
 
 // POST /oauth/token  — exchange authorization code + code_verifier for access token.
-// Public PKCE clients may omit client_secret; confidential clients can send one via client_secret_post.
+// If MCP_CLIENT_SECRET is set on the server, clients must send the same value via client_secret_post.
 export function tokenHandler(req: Request, res: Response) {
   const { grant_type, code, code_verifier, client_id, client_secret, redirect_uri } = req.body as Record<string, string>;
 
@@ -244,12 +245,15 @@ export function tokenHandler(req: Request, res: Response) {
     res.status(400).json({ error: 'invalid_grant' });
     return;
   }
-  if (client_secret !== undefined) {
-    const expectedSecret = getClientSecret();
-    if (!expectedSecret || client_secret !== expectedSecret) {
+  const expectedSecret = getClientSecret();
+  if (expectedSecret) {
+    if (client_secret !== expectedSecret) {
       res.status(401).json({ error: 'invalid_client' });
       return;
     }
+  } else if (client_secret !== undefined) {
+    res.status(401).json({ error: 'invalid_client' });
+    return;
   }
   if (!verifyPKCE(code_verifier ?? '', pending.codeChallenge)) {
     res.status(400).json({ error: 'invalid_grant', error_description: 'PKCE verification failed' });
@@ -269,6 +273,21 @@ export function validateToken(token: string): boolean {
   pruneExpired();
   const expiry = tokens.get(token);
   return expiry !== undefined && Date.now() <= expiry;
+}
+
+/** Optional long-lived bearer for clients that send a fixed Authorization header (e.g. mcp-remote + Antigravity). Not OAuth; set via MCP_STATIC_BEARER_TOKEN in Portainer. */
+function getStaticBearerToken(): string | undefined {
+  const t = process.env.MCP_STATIC_BEARER_TOKEN?.trim();
+  return t ? t : undefined;
+}
+
+function bearerMatchesStatic(token: string): boolean {
+  const expected = getStaticBearerToken();
+  if (!expected) return false;
+  const a = Buffer.from(token, 'utf8');
+  const b = Buffer.from(expected, 'utf8');
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
 }
 
 /** Inserts a valid opaque access token for HTTP tests. Only when `VAULT_MCP_TEST=1`. */
@@ -291,7 +310,7 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction) 
   }
 
   const token = authHeader.slice(7);
-  if (!validateToken(token)) {
+  if (!bearerMatchesStatic(token) && !validateToken(token)) {
     res.setHeader('WWW-Authenticate', wwwAuthenticate('error="invalid_token"'));
     res.status(401).json({ error: 'invalid_token' });
     return;

@@ -106,10 +106,12 @@ describe('OAuth discovery', () => {
         issuer: string;
         authorization_endpoint: string;
         token_endpoint: string;
+        token_endpoint_auth_methods_supported: string[];
       };
       expect(body.issuer).toBe('https://example.test');
       expect(body.authorization_endpoint).toBe('https://example.test/authorize');
       expect(body.token_endpoint).toBe('https://example.test/oauth/token');
+      expect(body.token_endpoint_auth_methods_supported).toEqual(['client_secret_post']);
     } finally {
       await close();
     }
@@ -117,7 +119,7 @@ describe('OAuth discovery', () => {
 });
 
 describe('OAuth token endpoint', () => {
-  test('exchanges code without client_secret for PKCE clients', async () => {
+  test('requires client_secret when MCP_CLIENT_SECRET is set', async () => {
     const app = createApp();
     const { base, close } = await listen(app);
     try {
@@ -137,10 +139,9 @@ describe('OAuth token endpoint', () => {
         }),
       });
 
-      expect(res.ok).toBe(true);
-      const body = (await res.json()) as { access_token?: string; token_type?: string };
-      expect(body.access_token).toBeTruthy();
-      expect(body.token_type).toBe('bearer');
+      expect(res.status).toBe(401);
+      const body = (await res.json()) as { error?: string };
+      expect(body.error).toBe('invalid_client');
     } finally {
       await close();
     }
@@ -200,6 +201,39 @@ describe('OAuth token endpoint', () => {
       const body = (await res.json()) as { error?: string };
       expect(body.error).toBe('invalid_client');
     } finally {
+      await close();
+    }
+  });
+
+  test('allows PKCE-only exchange when MCP_CLIENT_SECRET is unset', async () => {
+    const prev = process.env.MCP_CLIENT_SECRET;
+    delete process.env.MCP_CLIENT_SECRET;
+    const app = createApp();
+    const { base, close } = await listen(app);
+    try {
+      const verifier = 'verifier-without-configured-secret';
+      const code = await issueAuthCode(base, toCodeChallenge(verifier));
+      const res = await fetch(`${base}/oauth/token`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: new URLSearchParams({
+          grant_type: 'authorization_code',
+          code,
+          code_verifier: verifier,
+          client_id: 'test-client',
+          redirect_uri: 'https://claude.ai/api/mcp/auth_callback',
+        }),
+      });
+
+      expect(res.ok).toBe(true);
+      const body = (await res.json()) as { access_token?: string; token_type?: string };
+      expect(body.access_token).toBeTruthy();
+      expect(body.token_type).toBe('bearer');
+    } finally {
+      if (prev === undefined) delete process.env.MCP_CLIENT_SECRET;
+      else process.env.MCP_CLIENT_SECRET = prev;
       await close();
     }
   });
@@ -460,6 +494,29 @@ describe('MCP /mcp', () => {
       expect(res.headers.get('allow')?.toUpperCase()).toContain('POST');
     } finally {
       await close();
+    }
+  });
+
+  test('GET /mcp accepts MCP_STATIC_BEARER_TOKEN when set', async () => {
+    const prev = process.env.MCP_STATIC_BEARER_TOKEN;
+    process.env.MCP_STATIC_BEARER_TOKEN = 'static-bearer-test-secret';
+    try {
+      const app = createApp();
+      const { base, close } = await listen(app);
+      try {
+        const res = await fetch(`${base}/mcp`, {
+          headers: {
+            Accept: 'text/event-stream',
+            Authorization: 'Bearer static-bearer-test-secret',
+          },
+        });
+        expect(res.status).toBe(405);
+      } finally {
+        await close();
+      }
+    } finally {
+      if (prev === undefined) delete process.env.MCP_STATIC_BEARER_TOKEN;
+      else process.env.MCP_STATIC_BEARER_TOKEN = prev;
     }
   });
 
