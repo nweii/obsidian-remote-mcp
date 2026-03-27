@@ -5,6 +5,16 @@ A self-hosted [MCP](https://modelcontextprotocol.io) server for headless Obsidia
 This is meant for server environments: home servers, NAS boxes, VPSes, containers, and other setups where your vault lives on disk and you want to expose it through a remote MCP endpoint for apps like Claude.ai.
 `obsidian-remote-mcp` is filesystem-backed instead: it works directly from the vault on disk.
 
+## Security and scope
+
+Remote MCP is powerful access to your vault. Use HTTPS, place the service and any extra gates deliberately (e.g. Cloudflare Zero Trust on `/authorize`; see [Exposing it remotely](#exposing-it-remotely)), and tweak controls to your risk tolerance.
+
+**Built-in controls**
+
+- **[Authentication](#authentication)** — OAuth 2.1 + PKCE, optional `MCP_CLIENT_SECRET` on token exchange, persisted tokens, optional `MCP_STATIC_BEARER_TOKEN` for `/mcp`
+- **[CORS](#cors)** — browser origin allowlisting
+- **[Vault access and tool defaults](#vault-access-and-tool-defaults)** — path sandboxing, `.mcpignore`, `VAULT_READ_ONLY` mode
+
 ## What it includes
 
 The server currently exposes these tools:
@@ -49,9 +59,7 @@ The process listens on port `3456` by default (`PORT` overrides). The MCP endpoi
 
 ## Running with Docker
 
-Use [Quick start](#quick-start) for Bun on a laptop or VM. Compose is for long-running container deploys.
-
-Minimal Docker Compose example:
+Use [Quick start](#quick-start) for Bun on a laptop or VM. For long-running container deploys, here's a Docker Compose example:
 
 ```yaml
 services:
@@ -74,8 +82,6 @@ services:
       - "3456:3456"
 ```
 
-On my Synology NAS, I use my [`ghcr.io/nweii/debian-node-bun:latest`](https://github.com/nweii/debian-node-bun) image as a base.
-
 ## Exposing it remotely
 
 Remote MCP clients (and OAuth) expect **HTTPS** and a **public origin** you control.
@@ -87,7 +93,7 @@ A common setup is:
 3. Expose it on a public HTTPS origin such as `https://mcp.example.com`
 4. Set `MCP_BASE_URL` to that same origin, without `/mcp`
 
-If you use Cloudflare Zero Trust, be careful where you place it. A practical setup is to put the identity gate only in front of `/authorize`, so adding the connector still requires a real login but `/.well-known/*`, `/oauth/token`, and `/mcp` remain reachable for the OAuth and MCP request flow.
+If you use Cloudflare Zero Trust to secure the URL, be careful where you place it. A practical setup is to put the identity gate only in front of `/authorize`, so adding the connector still requires a real login but `/.well-known/*`, `/oauth/token`, and `/mcp` remain reachable for the OAuth and MCP request flow.
 
 On a Claude Pro plan, the connector setup is:
 
