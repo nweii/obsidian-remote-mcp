@@ -12,7 +12,9 @@ The server currently exposes these tools:
 | Tool | Description |
 |------|-------------|
 | `vault_context` | Read the vault guidance note configured by `VAULT_CONTEXT_PATH`, or fall back to `AGENTS.md` / `CLAUDE.md` |
-| `vault_read` | Read a note: full file, heading outline only (`mode`), or one section under a heading (`mode` + `heading`) |
+| `vault_read` | Full note text (`mode` full, default) or list one folder level (`mode` `list`; `path` `""` = vault root) |
+| `vault_outline` | All `#` headings in a note (one per line); use before `vault_read_section` |
+| `vault_read_section` | Body under a single heading (`heading` = text without `#`, case-insensitive) |
 | `vault_frontmatter` | Read YAML frontmatter from a note; optional `property` for a single key |
 | `vault_links` | Read outgoing wikilinks and optional backlinks |
 | `vault_create` | Create a new note |
@@ -20,7 +22,8 @@ The server currently exposes these tools:
 | `vault_set_frontmatter_property` | Set one frontmatter property without rewriting the note body |
 | `vault_edit` | Append, prepend, or replace exact text within a note |
 | `vault_trash` | Move a note to `.trash` |
-| `vault_search` | Search by note title (`by: "title"`) or regex across content (`by: "content"`) |
+| `vault_search_title` | Find notes by filename (partial or exact); returns paths for `vault_read` |
+| `vault_search_content` | Regex search in note bodies; optional `folder` to scope large vaults |
 | `vault_daily_note` | Read or create a daily note using a configurable path template |
 
 ## Quick start
@@ -249,7 +252,7 @@ On a Claude Pro plan, the connector setup is:
 - All vault paths are validated against the resolved vault root to prevent directory traversal.
 - `.mcpignore` in the vault root can block paths from all MCP access.
 - `VAULT_READ_ONLY=true` blocks all write operations.
-- `vault_search` with `by: "title"` defaults to `limit=50`; with `by: "content"` and backlink lookups default to `limit=20`. These are capped by default for performance, but the limits are adjustable and `0` means no limit.
+- `vault_search_title` defaults to `limit=50`; `vault_search_content` defaults to `limit=20`. Limits are adjustable; `0` means no limit.
 - `vault_frontmatter` and `vault_set_frontmatter_property` let agents work with frontmatter properties without reading or rewriting the whole note body.
 
 ## Tests

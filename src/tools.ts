@@ -1,23 +1,24 @@
-// ABOUTME: Registers all vault tools on an McpServer - context, read (full/outline/section), frontmatter, links, writes, search (title/content), daily note.
+// ABOUTME: Registers all vault tools on an McpServer - context, read (full/list), outline, read section, frontmatter, links, writes, title search, content search, daily note.
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import * as vault from "./vault.js";
 
-const vaultSearchSchema = z.discriminatedUnion("by", [
-  z.object({
-    by: z.literal("title"),
-    title: z.string().describe("Note title or partial title to search for (filename without .md)"),
-    exact: z.boolean().optional().default(false).describe("If true, full filename match (default false = partial)"),
-    limit: z.number().optional().default(50).describe("Max matches (default 50, 0 = no limit)"),
-  }),
-  z.object({
-    by: z.literal("content"),
-    query: z.string().describe("Regex pattern to search for"),
-    folder: z.string().optional().describe('Scope to a subfolder (e.g. "02-Notes"). Strongly recommended.'),
-    limit: z.number().optional().default(20).describe("Max matching files (default 20, 0 = no limit)"),
-    case_sensitive: z.boolean().optional().default(false).describe("Case-sensitive regex (default false)"),
-  }),
-]);
+async function titleSearchToolResult(title: string, exact: boolean, limit: number) {
+  const results = await vault.findByTitle(title, exact, limit);
+  if (results.length === 0) {
+    return { content: [{ type: "text" as const, text: `No notes found matching "${title}".` }] };
+  }
+  const hitLimit = limit > 0 && results.length === limit;
+  const text = results.map((r) => r.path).join("\n");
+  return {
+    content: [
+      {
+        type: "text" as const,
+        text: hitLimit ? `${text}\n\n(limit of ${limit} reached — increase limit or use a more specific title)` : text,
+      },
+    ],
+  };
+}
 
 export function registerTools(server: McpServer) {
   server.registerTool(
@@ -50,38 +51,99 @@ export function registerTools(server: McpServer) {
     {
       title: "Read vault note",
       description:
-        'Read note content by path. mode "full" (default) loads the whole file; "outline" returns # headings only; "section" reads under one heading (use outline first to list headings). If you only have a title, use vault_search with by "title" first.',
+        'Read full note text (mode full, default) or list one folder level (mode list; path "" = vault root). For # headings only use vault_outline; for one section under a heading use vault_read_section after vault_outline. If you only have a note title, use vault_search_title first.',
       inputSchema: z.object({
-        path: z.string().describe('Relative path to the note (e.g. "Projects/plan.md")'),
+        path: z
+          .string()
+          .describe('Note path when mode is full, or folder path when mode is list (use "" for vault root).'),
         mode: z
-          .enum(["full", "outline", "section"])
+          .enum(["full", "list"])
           .optional()
           .default("full")
-          .describe('full — entire note; outline — headings; section — one heading\'s body (requires heading)'),
-        heading: z
-          .string()
+          .describe("full — entire .md file; list — immediate children of path (directory only)"),
+        list_limit: z
+          .number()
           .optional()
-          .describe("Required when mode is section: heading text without # prefix, case-insensitive"),
+          .default(200)
+          .describe('When mode is list: max entries (default 200, 0 = no limit).'),
       }),
     },
-    async ({ path, mode, heading }) => {
-      if (mode === "section") {
-        if (heading === undefined || heading.trim() === "") {
+    async ({ path, mode, list_limit }) => {
+      if (mode === "list") {
+        const entries = await vault.listVaultFolder(path, list_limit);
+        if (entries.length === 0) {
+          return { content: [{ type: "text", text: "(empty folder)" }] };
+        }
+        const hitLimit = list_limit > 0 && entries.length === list_limit;
+        const lines = entries.map((e) => `${e.kind === "directory" ? "dir " : "file "}${e.path}`);
+        return {
+          content: [
+            {
+              type: "text",
+              text: hitLimit ? `${lines.join("\n")}\n\n(limit of ${list_limit} reached)` : lines.join("\n"),
+            },
+          ],
+        };
+      }
+      try {
+        const content = await vault.readNote(path);
+        return { content: [{ type: "text", text: content }] };
+      } catch (e) {
+        const err = e as NodeJS.ErrnoException;
+        if (err?.code === "EISDIR") {
           return {
-            content: [{ type: "text", text: "Error: heading is required when mode is section" }],
+            content: [
+              {
+                type: "text",
+                text: `Error: "${path}" is a directory, not a note. Use mode "list" with the same path (or path "") to browse.`,
+              },
+            ],
             isError: true,
           };
         }
+        throw e;
+      }
+    },
+  );
+
+  server.registerTool(
+    "vault_outline",
+    {
+      title: "Note heading outline",
+      description:
+        "List all markdown headings (# through ######) in one note, one per line with # prefix (like Obsidian CLI `obsidian outline`). Use before vault_read_section to get exact heading text.",
+      inputSchema: z.object({
+        path: z.string().describe("Relative path to the note"),
+      }),
+    },
+    async ({ path }) => {
+      const headings = await vault.getNoteOutline(path);
+      if (headings.length === 0) return { content: [{ type: "text", text: "(no headings)" }] };
+      return { content: [{ type: "text", text: headings.join("\n") }] };
+    },
+  );
+
+  server.registerTool(
+    "vault_read_section",
+    {
+      title: "Read note section under heading",
+      description:
+        "Return the body from one heading through the next same-or-higher-level heading. Pass heading text without # (case-insensitive). Prefer calling vault_outline first and copy the heading text after the #'s.",
+      inputSchema: z.object({
+        path: z.string().describe("Relative path to the note"),
+        heading: z
+          .string()
+          .describe("Heading text only — no # prefix; must match a heading in the file (see vault_outline)"),
+      }),
+    },
+    async ({ path, heading }) => {
+      try {
         const content = await vault.readNoteSection(path, heading);
         return { content: [{ type: "text", text: content }] };
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        return { content: [{ type: "text", text: message }], isError: true };
       }
-      if (mode === "outline") {
-        const headings = await vault.getNoteOutline(path);
-        if (headings.length === 0) return { content: [{ type: "text", text: "(no headings)" }] };
-        return { content: [{ type: "text", text: headings.join("\n") }] };
-      }
-      const content = await vault.readNote(path);
-      return { content: [{ type: "text", text: content }] };
     },
   );
 
@@ -253,37 +315,39 @@ export function registerTools(server: McpServer) {
   );
 
   server.registerTool(
-    "vault_search",
+    "vault_search_title",
     {
-      title: "Search vault",
+      title: "Search vault by note title",
       description:
-        'by "title" — resolve a title to paths (try before content search). by "content" — regex across note bodies; use folder to scope large vaults.',
-      inputSchema: vaultSearchSchema,
+        "Find notes by filename (partial or exact match). Returns relative paths — use before vault_read when you know a title fragment but not the path.",
+      inputSchema: z.object({
+        title: z.string().describe("Note title or partial title (filename without .md)"),
+        exact: z.boolean().optional().default(false).describe("If true, require full filename match"),
+        limit: z.number().optional().default(50).describe("Max matches (default 50, 0 = no limit)"),
+      }),
     },
-    async (args) => {
-      if (args.by === "title") {
-        const { title, exact, limit } = args;
-        const results = await vault.findByTitle(title, exact, limit);
-        if (results.length === 0) {
-          return { content: [{ type: "text", text: `No notes found matching "${title}".` }] };
-        }
-        const hitLimit = limit > 0 && results.length === limit;
-        const text = results.map((r) => r.path).join("\n");
-        return {
-          content: [
-            {
-              type: "text",
-              text: hitLimit ? `${text}\n\n(limit of ${limit} reached — increase limit or use a more specific title)` : text,
-            },
-          ],
-        };
-      }
-      const { query, folder, limit, case_sensitive } = args;
+    async ({ title, exact, limit }) => titleSearchToolResult(title, exact, limit),
+  );
+
+  server.registerTool(
+    "vault_search_content",
+    {
+      title: "Search vault note contents",
+      description:
+        "Regex search across markdown bodies. Prefer folder to scope large vaults. Returns paths with matching line snippets.",
+      inputSchema: z.object({
+        query: z.string().describe("Regex pattern to search for in .md files"),
+        folder: z.string().optional().describe('Limit search to this subfolder (e.g. "02-Notes"). Strongly recommended in large vaults.'),
+        limit: z.number().optional().default(20).describe("Max files with matches (default 20, 0 = no limit)"),
+        case_sensitive: z.boolean().optional().default(false).describe("Case-sensitive regex (default false)"),
+      }),
+    },
+    async ({ query, folder, limit, case_sensitive }) => {
       const results = await vault.searchContent(query, { folder, limit, caseSensitive: case_sensitive });
       if (results.length === 0) {
         return { content: [{ type: "text", text: "No matches found." }] };
       }
-      const hitLimit = results.length === limit;
+      const hitLimit = limit > 0 && results.length === limit;
       const text = results.map((r) => `${r.path}:\n${r.matches.map((m) => `  ${m}`).join("\n")}`).join("\n\n");
       return {
         content: [

@@ -1,4 +1,4 @@
-// ABOUTME: Filesystem operations for the configured Obsidian vault - safe path resolution, read/write/search helpers.
+// ABOUTME: Filesystem operations for the configured Obsidian vault - safe path resolution, read/write/search, list folder.
 import fs from 'fs/promises';
 import { readFileSync } from 'fs';
 import { load as parseYaml, dump as stringifyYaml } from 'js-yaml';
@@ -325,6 +325,41 @@ export interface FindResult {
 
 // Find notes by title, matching against filenames (case-insensitive).
 // exact=true requires a full match; exact=false matches any filename containing the query.
+export interface VaultFolderEntry {
+  name: string;
+  path: string;
+  kind: 'file' | 'directory';
+}
+
+// Immediate children of a vault folder (non-recursive). Skips dotfiles and .mcpignore-blocked paths.
+export async function listVaultFolder(relativeDir = '', limit = 200): Promise<VaultFolderEntry[]> {
+  const normalized = relativeDir.trim() === '' ? '.' : relativeDir;
+  const absDir = resolveSafePath(normalized);
+  const st = await fs.stat(absDir);
+  if (!st.isDirectory()) {
+    throw new Error(`Not a directory: ${relativeDir || '.'}`);
+  }
+  const entries = await fs.readdir(absDir, { withFileTypes: true });
+  const out: VaultFolderEntry[] = [];
+  const max = limit > 0 ? limit : Number.POSITIVE_INFINITY;
+  for (const entry of entries) {
+    if (out.length >= max) break;
+    if (entry.name.startsWith('.')) continue;
+    const childAbs = path.join(absDir, entry.name);
+    if (isIgnored(childAbs)) continue;
+    out.push({
+      name: entry.name,
+      path: path.relative(VAULT_ROOT, childAbs),
+      kind: entry.isDirectory() ? 'directory' : 'file',
+    });
+  }
+  out.sort((a, b) => {
+    if (a.kind !== b.kind) return a.kind === 'directory' ? -1 : 1;
+    return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+  });
+  return out;
+}
+
 export async function findByTitle(query: string, exact = false, limit = 50): Promise<FindResult[]> {
   const results: FindResult[] = [];
   const normalizedQuery = query.toLowerCase();
