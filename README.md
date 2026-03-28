@@ -2,14 +2,20 @@
 
 A self-hosted [MCP](https://modelcontextprotocol.io) server for headless Obsidian vaults. It gives remote AI clients read and write access to a vault over HTTPS **without requiring the Obsidian desktop app to be running on the same machine.**
 
-This is meant for server environments: home servers, NAS boxes, VPSes, containers, and other setups where your vault lives on disk and you want to expose it through a remote MCP endpoint for apps like Claude.ai.
-`obsidian-remote-mcp` is filesystem-backed instead: it works directly from the vault on disk.
+It works directly from the vault files on disk — no Obsidian app or sync service required. This is meant for server environments: home servers, NAS boxes, VPSes, and other setups where your vault lives on disk and you want to expose it through a remote MCP endpoint for apps like Claude.ai.
 
 ## Security and scope
 
-Remote MCP is powerful access to your vault: use HTTPS, think about where the service listens, and add extra gates if you need them (for example Cloudflare Zero Trust only on `/authorize` so the OAuth and MCP endpoints stay reachable).
+Remote MCP is powerful access to your vault — use HTTPS, and think about where the service listens.
 
-The server supports OAuth 2.1 + PKCE with optional `MCP_CLIENT_SECRET` on token exchange, persisted OAuth tokens, an optional fixed `MCP_STATIC_BEARER_TOKEN` for `/mcp`, browser CORS allowlisting, vault path sandboxing, `.mcpignore`, and `VAULT_READ_ONLY` mode.
+Built-in safeguards:
+
+- **OAuth 2.1 + PKCE** with optional `MCP_CLIENT_SECRET` on token exchange
+- **Fixed bearer token** (`MCP_STATIC_BEARER_TOKEN`) for clients that skip browser auth
+- **CORS allowlisting** (`CORS_ALLOWED_ORIGINS`) for browser-based clients
+- **Vault path sandboxing** — all paths validated against the vault root
+- **`.mcpignore`** to block specific paths from MCP access
+- **`VAULT_READ_ONLY`** mode to prevent all writes
 
 ## What it includes
 
@@ -51,40 +57,45 @@ bun run src/server.ts
 
 The process listens on port `3456` by default. The MCP endpoint is `POST /mcp` on that port; OAuth metadata is served under `/.well-known/oauth-authorization-server`.
 
-**Public HTTPS (e.g. Claude).** See **Remote deployment** below.
+To make the server reachable from the internet (required by Claude.ai and other remote clients), see **Deployment** below.
 
 ## Deployment
 
 ### Docker
 
-For a long-lived container, use Docker Compose (or equivalent) with env vars in `environment`:
+Save this as `docker-compose.yml` in the cloned repo directory:
 
 ```yaml
 services:
   obsidian-remote-mcp:
-    image: oven/bun:1
+    image: oven/bun:1              # pre-built Bun runtime — no local Bun install needed
     working_dir: /app
     restart: unless-stopped
     environment:
-      MCP_CLIENT_ID: ${MCP_CLIENT_ID}
-      MCP_CLIENT_SECRET: ${MCP_CLIENT_SECRET}
+      MCP_CLIENT_ID: your-client-id
+      MCP_CLIENT_SECRET: your-client-secret     # optional
       MCP_BASE_URL: https://mcp.example.com
-      VAULT_PATH: /vault
+      VAULT_PATH: /vault                         # path inside the container (mapped by volumes below)
       CORS_ALLOWED_ORIGINS: https://claude.ai
       PORT: 3456
+      # TOKEN_STORE_PATH: /app/data/tokens.json  # uncomment to persist OAuth sign-ins across restarts
     volumes:
-      - ./:/app
-      - /path/to/your/vault:/vault
+      - ./:/app                                  # mounts the repo into the container
+      - /path/to/your/vault:/vault               # left = path on your machine, right = path inside container
+      # - ./data:/app/data                       # uncomment to persist TOKEN_STORE_PATH on the host
     command: ["bun", "run", "src/server.ts"]
     ports:
-      - "3456:3456"
+      - "3456:3456"                              # host:container — access on http://localhost:3456
 ```
 
-For OAuth in Docker, mount a host directory and set `TOKEN_STORE_PATH` inside the container if you want sign-ins to survive container restarts.
+```bash
+docker compose up -d      # start in background
+docker compose logs -f    # watch output
+```
 
 ### HTTPS and `MCP_BASE_URL`
 
-Remote MCP and OAuth expect **HTTPS** and a **public origin** you control. Put a reverse proxy in front of the app, terminate TLS there, and expose something like `https://mcp.example.com`. Set **`MCP_BASE_URL`** on the server to that origin **without** the `/mcp` path—it must match what users see in the browser bar for the site.
+Remote MCP and OAuth require **HTTPS**. Use a reverse proxy (Caddy, nginx, Cloudflare Tunnel, etc.) to handle TLS in front of the app and expose a public URL like `https://mcp.example.com`. Set **`MCP_BASE_URL`** on the server to that origin **without** the `/mcp` path — it must match what users see in the browser bar.
 
 If you use Cloudflare Zero Trust, a practical pattern is to put the identity gate **only** on `/authorize`, so users log in to approve access while `/.well-known/*`, `/oauth/token`, and `/mcp` stay reachable for the protocol.
 
@@ -208,15 +219,13 @@ The display name used in the OAuth approval page defaults to the resolved vault 
 
 ### Headless / no Obsidian installed
 
-If you are running on a headless server or in a container without Obsidian installed, you can still use the automatic vault discovery by creating the Obsidian config file yourself.
-
-1. Create the config directory:
+Most users should just set `VAULT_PATH` and skip this. If you prefer the automatic discovery path on a machine without Obsidian, create the config file yourself:
 
 ```bash
 mkdir -p ~/.config/obsidian
 ```
 
-1. Create `~/.config/obsidian/obsidian.json`:
+`~/.config/obsidian/obsidian.json`:
 
 ```json
 {
@@ -228,24 +237,7 @@ mkdir -p ~/.config/obsidian
 }
 ```
 
-With multiple vaults:
-
-```json
-{
-  "vaults": {
-    "personal": {
-      "path": "/home/user/vaults/personal"
-    },
-    "work": {
-      "path": "/home/user/vaults/work"
-    }
-  }
-}
-```
-
-In that case, set `OBSIDIAN_VAULT_ID=work` or whichever entry you want the server to use.
-
-Use absolute paths. Do not rely on `~` expansion inside `obsidian.json`.
+With multiple vaults, add more entries and set `OBSIDIAN_VAULT_ID` to the one you want. Use absolute paths — `~` is not expanded inside `obsidian.json`.
 
 ## Vault context note
 
