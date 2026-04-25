@@ -21,7 +21,8 @@ src/
   app.ts      — createApp() — Express routes (OAuth + MCP)
   auth.ts     — OAuth discovery, token issuance, optional client-secret validation, and Bearer validation middleware
   vault.ts    — Vault filesystem operations, frontmatter helpers, vault discovery, and config-derived defaults
-  tools.ts    — MCP tool definitions (14 tools: context, read, outline, read section, frontmatter, links, create/update/edit/trash, set frontmatter, search title, search content, daily note)
+  tools.ts    — MCP tool definitions (15 tools: context, read, outline, read section, frontmatter, links, create/update/edit/trash, set frontmatter, search title, search content, daily note, feedback)
+  log.ts      — Append-only JSONL logger for tool calls and agent feedback (LOG_DIR, default ./logs)
 test/
   server.test.ts — HTTP checks for discovery, GET /mcp, POST initialize
 ```
@@ -52,6 +53,8 @@ MCP endpoint: `POST /mcp` (requires Bearer token)
 | `DAILY_NOTE_PATH_TEMPLATE` | no | Daily note path template. Defaults to `Daily/{YYYY}-{MM}-{DD}.md`. |
 | `CORS_ALLOWED_ORIGINS` | no | Comma-separated browser origin allowlist. Defaults to `*`. |
 | `TOKEN_STORE_PATH` | no | Path to the persisted bearer token store. Defaults to `./tokens.json`. |
+| `LOG_ENABLED` | no | Set to `false` to disable tool-call logging and skip registering `vault_feedback`. Defaults to `true`. |
+| `LOG_DIR` | no | Directory for JSONL logs (`tool-calls.jsonl`, `feedback.jsonl`). Defaults to `./logs`. Created on first write. Skipped when `VAULT_MCP_TEST=1` or `LOG_ENABLED=false`. |
 | `MCP_STATIC_BEARER_TOKEN` | no | Optional fixed secret: requests to `/mcp` with `Authorization: Bearer <same value>` are allowed (for clients that cannot use browser OAuth). Long random string; use HTTPS. Works alongside normal OAuth tokens. |
 | `VAULT_READ_ONLY` | no | Set to `true` to block all write operations (create, update, edit, trash) |
 | `PORT` | no | HTTP port (default: `3456`) |
@@ -80,6 +83,11 @@ MCP endpoint: `POST /mcp` (requires Bearer token)
 - All vault paths are validated against the resolved vault root to prevent directory traversal.
 - Place a `.mcpignore` file in the vault root to block specific paths from MCP access. One relative path pattern per line; lines starting with `#` are comments. Trailing slashes are stripped — `03-Records/Journaling` blocks that folder and everything inside it.
 - Tokens persist to `TOKEN_STORE_PATH` (default `./tokens.json`) and expire after 30 days.
+- When logging is enabled (default), every tool call is recorded to `LOG_DIR/tool-calls.jsonl` with `{ ts, tool, args, ok, duration_ms, error? }`. The `error` field captures the suggestion text returned to the client on `isError` responses, so review can show both the failure and what the agent was told to try next.
+- Args are summarized before logging: strings over 80 chars become `<str:Nchars>`, and the fields `content`, `value`, `template`, and `find` are always redacted to `<redacted:Nchars>` regardless of length so note bodies and frontmatter values never land on disk. Tool names, paths, and structural args remain visible.
+- Agents can call `vault_feedback` to log a structured note when they get stuck or want a tool that doesn't exist; entries land in `LOG_DIR/feedback.jsonl`. The tool is only registered when logging is enabled. Feedback fields (`goal`, `attempted`, `stuck_on`, `suggested_tool`) are agent-authored and stored verbatim.
+- No automatic rotation — log files grow forever. Mount `LOG_DIR` as a persistent volume in production and rotate or truncate manually if size becomes a concern.
+- Set `LOG_ENABLED=false` to disable both — useful for forks that don't want disk writes recording agent activity, or for ephemeral deployments without a persistent volume.
 
 ## Tests
 

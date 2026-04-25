@@ -1,8 +1,54 @@
-// ABOUTME: Registers all vault tools on an McpServer - context, read (full/list), outline, read section, frontmatter, links, writes, title search, content search, daily note, clip URL.
+// ABOUTME: Registers all vault tools on an McpServer - context, read (full/list), outline, read section, frontmatter, links, writes, title search, content search, daily note, clip URL, feedback.
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import * as vault from "./vault.js";
 import { registerClipTool } from "./clip.js";
+import { logToolCall, logFeedback, isLoggingEnabled } from "./log.js";
+import { parseLocalYmd, localYmd } from "./date.js";
+
+type ToolResult = { content: Array<{ type: "text"; text: string }>; isError?: boolean };
+
+function extractErrorText(result: ToolResult): string | undefined {
+  const first = result.content?.[0];
+  return first && first.type === "text" ? first.text : undefined;
+}
+
+// Wraps server.registerTool with timing + JSONL logging. Logs args summary, ok/error, duration, and the suggestion text returned on isError responses.
+// Uses `any` for def and handler because the SDK's registerTool is heavily generic and re-typing it here just fights the compiler with no runtime benefit.
+function registerLogged(
+  server: McpServer,
+  name: string,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  def: any,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  handler: (args: any) => Promise<ToolResult>,
+) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (server.registerTool as any)(name, def, async (args: any) => {
+    const start = Date.now();
+    try {
+      const result = await handler(args);
+      const ok = result.isError !== true;
+      logToolCall({
+        tool: name,
+        args,
+        ok,
+        duration_ms: Date.now() - start,
+        error: ok ? undefined : extractErrorText(result),
+      });
+      return result;
+    } catch (e) {
+      logToolCall({
+        tool: name,
+        args,
+        ok: false,
+        duration_ms: Date.now() - start,
+        error: e instanceof Error ? e.message : String(e),
+      });
+      throw e;
+    }
+  });
+}
 
 async function titleSearchToolResult(title: string, exact: boolean, limit: number) {
   const results = await vault.findByTitle(title, exact, limit);
@@ -33,7 +79,7 @@ export async function registerTools(server: McpServer) {
     );
   }
 
-  server.registerTool(
+  registerLogged(server,
     "vault_context",
     {
       title: "Vault context",
@@ -58,7 +104,7 @@ export async function registerTools(server: McpServer) {
     },
   );
 
-  server.registerTool(
+  registerLogged(server,
     "vault_read",
     {
       title: "Read vault note",
@@ -118,7 +164,7 @@ export async function registerTools(server: McpServer) {
     },
   );
 
-  server.registerTool(
+  registerLogged(server,
     "vault_outline",
     {
       title: "Note heading outline",
@@ -135,7 +181,7 @@ export async function registerTools(server: McpServer) {
     },
   );
 
-  server.registerTool(
+  registerLogged(server,
     "vault_read_section",
     {
       title: "Read note section under heading",
@@ -154,12 +200,15 @@ export async function registerTools(server: McpServer) {
         return { content: [{ type: "text", text: content }] };
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e);
-        return { content: [{ type: "text", text: message }], isError: true };
+        const hint = message.startsWith("Heading ")
+          ? " — call vault_outline first and copy heading text exactly (without # prefix)."
+          : "";
+        return { content: [{ type: "text", text: message + hint }], isError: true };
       }
     },
   );
 
-  server.registerTool(
+  registerLogged(server,
     "vault_frontmatter",
     {
       title: "Read note frontmatter",
@@ -193,7 +242,7 @@ export async function registerTools(server: McpServer) {
     },
   );
 
-  server.registerTool(
+  registerLogged(server,
     "vault_links",
     {
       title: "Get note links",
@@ -227,7 +276,7 @@ export async function registerTools(server: McpServer) {
     },
   );
 
-  server.registerTool(
+  registerLogged(server,
     "vault_create",
     {
       title: "Create vault note",
@@ -240,7 +289,7 @@ export async function registerTools(server: McpServer) {
     async ({ path, content }) => {
       try {
         await vault.readNote(path);
-        return { content: [{ type: "text", text: `Error: file already exists at ${path}` }], isError: true };
+        return { content: [{ type: "text", text: `Error: file already exists at ${path}. To replace it, use vault_update; to modify part of it, use vault_edit.` }], isError: true };
       } catch {
         // File does not exist — safe to create
       }
@@ -249,7 +298,7 @@ export async function registerTools(server: McpServer) {
     },
   );
 
-  server.registerTool(
+  registerLogged(server,
     "vault_update",
     {
       title: "Update vault note",
@@ -265,7 +314,7 @@ export async function registerTools(server: McpServer) {
     },
   );
 
-  server.registerTool(
+  registerLogged(server,
     "vault_set_frontmatter_property",
     {
       title: "Set note frontmatter property",
@@ -282,7 +331,7 @@ export async function registerTools(server: McpServer) {
     },
   );
 
-  server.registerTool(
+  registerLogged(server,
     "vault_edit",
     {
       title: "Edit vault note",
@@ -302,7 +351,7 @@ export async function registerTools(server: McpServer) {
         await vault.writeNote(path, content + existing);
       } else {
         if (!find) {
-          return { content: [{ type: "text", text: "Error: find is required for replace operation" }], isError: true };
+          return { content: [{ type: "text", text: "Error: find is required for replace operation — pass the exact text to swap. For section-scoped edits, prefer vault_update after vault_read." }], isError: true };
         }
         const existing = await vault.readNote(path);
         await vault.writeNote(path, existing.replace(find, content));
@@ -311,7 +360,7 @@ export async function registerTools(server: McpServer) {
     },
   );
 
-  server.registerTool(
+  registerLogged(server,
     "vault_trash",
     {
       title: "Trash vault note",
@@ -326,7 +375,7 @@ export async function registerTools(server: McpServer) {
     },
   );
 
-  server.registerTool(
+  registerLogged(server,
     "vault_search_title",
     {
       title: "Search vault by note title",
@@ -341,7 +390,7 @@ export async function registerTools(server: McpServer) {
     async ({ title, exact, limit }) => titleSearchToolResult(title, exact, limit),
   );
 
-  server.registerTool(
+  registerLogged(server,
     "vault_search_content",
     {
       title: "Search vault note contents",
@@ -372,7 +421,7 @@ export async function registerTools(server: McpServer) {
     },
   );
 
-  server.registerTool(
+  registerLogged(server,
     "vault_daily_note",
     {
       title: "Get or create daily note",
@@ -384,9 +433,19 @@ export async function registerTools(server: McpServer) {
       }),
     },
     async ({ date, create_if_missing, template }) => {
-      const parsed = date ? new Date(date) : undefined;
+      let parsed: Date | undefined;
+      if (date !== undefined) {
+        const p = parseLocalYmd(date);
+        if (!p) {
+          return {
+            content: [{ type: "text", text: `Error: invalid date "${date}". Expected YYYY-MM-DD (e.g. 2026-04-25).` }],
+            isError: true,
+          };
+        }
+        parsed = p;
+      }
       const notePath = vault.getDailyNotePath(parsed);
-      const dateStr = date ?? new Date().toISOString().split("T")[0];
+      const dateStr = date ?? localYmd(new Date());
 
       try {
         const content = await vault.readNote(notePath);
@@ -399,6 +458,27 @@ export async function registerTools(server: McpServer) {
         await vault.writeNote(notePath, noteContent);
         return { content: [{ type: "text", text: `Created: ${notePath}\n\n${noteContent}` }] };
       }
+    },
+  );
+
+  if (!isLoggingEnabled()) return;
+
+  registerLogged(server,
+    "vault_feedback",
+    {
+      title: "Submit feedback about vault tools",
+      description:
+        "Call when you can't accomplish a vault task with the existing tools, when a tool's behavior surprised you, or when an error message wasn't actionable. Records your goal, what you tried, and where you got stuck so the vault owner can improve the tools. Optional: name a missing tool that would have helped.",
+      inputSchema: z.object({
+        goal: z.string().describe("What you were trying to accomplish (one sentence)"),
+        attempted: z.string().describe("What tools/args you tried"),
+        stuck_on: z.string().describe("What blocked you — error message, missing capability, or surprising behavior"),
+        suggested_tool: z.string().optional().describe("Optional: name and brief description of a tool that would have helped"),
+      }),
+    },
+    async ({ goal, attempted, stuck_on, suggested_tool }) => {
+      logFeedback({ goal, attempted, stuck_on, suggested_tool });
+      return { content: [{ type: "text", text: "Feedback recorded. Thanks." }] };
     },
   );
 }
