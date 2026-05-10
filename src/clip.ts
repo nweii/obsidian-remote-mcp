@@ -204,7 +204,12 @@ export async function registerClipTool(server: McpServer, vaultRoot: string): Pr
         };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        return errorResponse(message);
+        const errorName = err instanceof Error ? err.name : "";
+        // Tag known structured error classes so the calling agent can act on them
+        // (TemplateRequiresUserInputError, TemplateMatchFailedError, MissingProviderError)
+        // without parsing the message string.
+        const tag = errorName.endsWith("Error") ? errorName : "Error";
+        return errorResponse(`[${tag}] ${message}`);
       }
     }
   );
