@@ -335,6 +335,31 @@ export interface VaultFolderEntry {
   kind: 'file' | 'directory';
 }
 
+// Folders only, walked from the vault root up to maxDepth levels (1 = top-level only).
+// Skips dotfiles and .mcpignore-blocked paths. Returned lines are markdown bullets indented
+// by depth so the tree can be inlined into a text response.
+export async function getFolderTree(maxDepth: number): Promise<string[]> {
+  if (maxDepth <= 0) return [];
+  const lines: string[] = [];
+
+  async function walk(absDir: string, depth: number) {
+    if (depth > maxDepth) return;
+    const entries = await fs.readdir(absDir, { withFileTypes: true });
+    const dirs = entries
+      .filter(e => e.isDirectory() && !e.name.startsWith('.'))
+      .map(e => ({ name: e.name, abs: path.join(absDir, e.name) }))
+      .filter(e => !isIgnored(e.abs))
+      .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+    for (const dir of dirs) {
+      lines.push(`${'  '.repeat(depth - 1)}- ${dir.name}/`);
+      await walk(dir.abs, depth + 1);
+    }
+  }
+
+  await walk(VAULT_ROOT, 1);
+  return lines;
+}
+
 // Immediate children of a vault folder (non-recursive). Skips dotfiles and .mcpignore-blocked paths.
 export async function listVaultFolder(relativeDir = '', limit = 200): Promise<VaultFolderEntry[]> {
   const normalized = relativeDir.trim() === '' ? '.' : relativeDir;

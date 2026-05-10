@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { createHash } from 'crypto';
-import { mkdtemp, writeFile, rm } from 'fs/promises';
+import { mkdir, mkdtemp, writeFile, rm } from 'fs/promises';
 import os from 'os';
 import path from 'path';
 import type { Express } from 'express';
@@ -377,6 +377,43 @@ describe('Vault-derived defaults', () => {
       tags: ['journal'],
       publish: false,
     });
+  });
+
+  test('getFolderTree returns indented dirs up to maxDepth, honours .mcpignore', async () => {
+    const treeRoot = await mkdtemp(path.join(os.tmpdir(), 'obsidian-remote-mcp-tree-'));
+    const prevVault = process.env.VAULT_PATH;
+    process.env.VAULT_PATH = treeRoot;
+
+    try {
+      await mkdir(path.join(treeRoot, '02-Notes', 'Projects', 'Deep'), { recursive: true });
+      await mkdir(path.join(treeRoot, '02-Notes', 'Reference'), { recursive: true });
+      await mkdir(path.join(treeRoot, '03-Records', 'Journaling'), { recursive: true });
+      await mkdir(path.join(treeRoot, '.obsidian'), { recursive: true });
+      await writeFile(path.join(treeRoot, '.mcpignore'), '03-Records/Journaling\n', 'utf-8');
+
+      // Re-import vault module so it re-resolves VAULT_PATH and reloads .mcpignore patterns.
+      const treeVault: typeof import('../src/vault.js') = await import(`../src/vault.js?tree=${Date.now()}`);
+
+      const depth1 = await treeVault.getFolderTree(1);
+      expect(depth1).toEqual(['- 02-Notes/', '- 03-Records/']);
+
+      const depth3 = await treeVault.getFolderTree(3);
+      expect(depth3).toContain('- 02-Notes/');
+      expect(depth3).toContain('  - Projects/');
+      expect(depth3).toContain('    - Deep/');
+      expect(depth3).toContain('  - Reference/');
+      expect(depth3).toContain('- 03-Records/');
+      // .mcpignore blocks 03-Records/Journaling
+      expect(depth3.some(l => l.includes('Journaling'))).toBe(false);
+      // dotfiles skipped
+      expect(depth3.some(l => l.includes('.obsidian'))).toBe(false);
+
+      expect(await treeVault.getFolderTree(0)).toEqual([]);
+    } finally {
+      if (prevVault === undefined) delete process.env.VAULT_PATH;
+      else process.env.VAULT_PATH = prevVault;
+      await rm(treeRoot, { recursive: true, force: true });
+    }
   });
 
   test('parses inline array frontmatter syntax', async () => {

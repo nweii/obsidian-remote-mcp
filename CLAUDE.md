@@ -77,7 +77,7 @@ MCP endpoint: `POST /mcp` (requires Bearer token)
 - If `VAULT_PATH` is unset, the server reads `.config/obsidian/obsidian.json` (walks up from cwd and from the package directory). With a single vault entry that has a `path`, that path is used; with several, set `OBSIDIAN_VAULT_ID` to the vault id. If neither config nor `VAULT_PATH` is available, startup fails.
 - The OAuth approval page uses `VAULT_DISPLAY_NAME` when set, otherwise the resolved vault directory name.
 - Allowed OAuth redirect targets come from `MCP_ALLOWED_REDIRECT_URIS`, defaulting to Claude's callback URI.
-- `vault_context` reads `VAULT_CONTEXT_PATH` when set, otherwise falls back to `AGENTS.md` and then `CLAUDE.md` if present.
+- `vault_context` reads `VAULT_CONTEXT_PATH` when set, otherwise falls back to `AGENTS.md` and then `CLAUDE.md` if present. It also appends a folder-only tree of the vault (default depth 3, configurable per call via `max_depth`; pass 0 to skip). The tree honours `.mcpignore` and skips dotfiles.
 - `vault_daily_note` uses `DAILY_NOTE_PATH_TEMPLATE`, with supported tokens `{YYYY}`, `{YY}`, `{MM}`, `{M}`, `{DD}`, `{D}`, `{MMM}`, `{MMMM}`, `{dd}`, `{ddd}`, and `{dddd}`.
 - CORS defaults to `*`, but `CORS_ALLOWED_ORIGINS` can restrict browser access to specific origins like `https://claude.ai`.
 - All vault paths are validated against the resolved vault root to prevent directory traversal.

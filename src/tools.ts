@@ -41,23 +41,32 @@ export async function registerTools(server: McpServer) {
     {
       title: "Vault context",
       description:
-        "Returns the vault guidance note configured by VAULT_CONTEXT_PATH, or falls back to AGENTS.md / CLAUDE.md when present. Call this at the start of a session to learn vault structure/conventions.",
-      inputSchema: z.object({}),
+        "Returns the vault guidance note configured by VAULT_CONTEXT_PATH (falls back to AGENTS.md / CLAUDE.md), followed by a tree of vault folders for orientation. Call at the start of a session to learn vault structure/conventions.",
+      inputSchema: z.object({
+        max_depth: z
+          .number()
+          .optional()
+          .default(3)
+          .describe("Max folder tree depth (default 3, 0 = no tree)."),
+      }),
     },
-    async () => {
+    async ({ max_depth }) => {
       const contextPath = vault.getContextNotePath();
-      if (!contextPath) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: "No vault context note found. Set VAULT_CONTEXT_PATH, or add AGENTS.md or CLAUDE.md at the vault root.",
-            },
-          ],
-        };
+      const sections: string[] = [];
+      if (contextPath) {
+        sections.push(await vault.readNote(contextPath));
+      } else {
+        sections.push(
+          "No vault context note found. Set VAULT_CONTEXT_PATH, or add AGENTS.md or CLAUDE.md at the vault root.",
+        );
       }
-      const content = await vault.readNote(contextPath);
-      return { content: [{ type: "text", text: content }] };
+      if (max_depth > 0) {
+        const tree = await vault.getFolderTree(max_depth);
+        if (tree.length > 0) {
+          sections.push(`## Vault folders\n\n${tree.join("\n")}`);
+        }
+      }
+      return { content: [{ type: "text", text: sections.join("\n\n") }] };
     },
   );
 
