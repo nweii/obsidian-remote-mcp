@@ -6,6 +6,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import * as path from "node:path";
 import * as fs from "node:fs/promises";
+import { registerLogged } from "./register-logged.js";
 
 // Local interface declarations for web-clipper-headless. The package's own .ts source isn't
 // directly consumable by this tsconfig; we treat its module surface as opaque and shim the
@@ -114,7 +115,8 @@ export async function registerClipTool(server: McpServer, vaultRoot: string): Pr
     return;
   }
 
-  server.registerTool(
+  registerLogged(
+    server,
     "vault_clip_url",
     {
       title: "Clip URL using a Web Clipper template",

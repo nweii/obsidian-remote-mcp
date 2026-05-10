@@ -3,52 +3,9 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import * as vault from "./vault.js";
 import { registerClipTool } from "./clip.js";
-import { logToolCall, logFeedback, isLoggingEnabled } from "./log.js";
+import { logFeedback, isLoggingEnabled } from "./log.js";
 import { parseLocalYmd, localYmd } from "./date.js";
-
-type ToolResult = { content: Array<{ type: "text"; text: string }>; isError?: boolean };
-
-function extractErrorText(result: ToolResult): string | undefined {
-  const first = result.content?.[0];
-  return first && first.type === "text" ? first.text : undefined;
-}
-
-// Wraps server.registerTool with timing + JSONL logging. Logs args summary, ok/error, duration, and the suggestion text returned on isError responses.
-// Uses `any` for def and handler because the SDK's registerTool is heavily generic and re-typing it here just fights the compiler with no runtime benefit.
-function registerLogged(
-  server: McpServer,
-  name: string,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  def: any,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  handler: (args: any) => Promise<ToolResult>,
-) {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (server.registerTool as any)(name, def, async (args: any) => {
-    const start = Date.now();
-    try {
-      const result = await handler(args);
-      const ok = result.isError !== true;
-      logToolCall({
-        tool: name,
-        args,
-        ok,
-        duration_ms: Date.now() - start,
-        error: ok ? undefined : extractErrorText(result),
-      });
-      return result;
-    } catch (e) {
-      logToolCall({
-        tool: name,
-        args,
-        ok: false,
-        duration_ms: Date.now() - start,
-        error: e instanceof Error ? e.message : String(e),
-      });
-      throw e;
-    }
-  });
-}
+import { registerLogged, type ToolResult } from "./register-logged.js";
 
 async function titleSearchToolResult(title: string, exact: boolean, limit: number) {
   const results = await vault.findByTitle(title, exact, limit);
