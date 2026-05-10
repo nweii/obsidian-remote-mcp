@@ -1,7 +1,8 @@
-// ABOUTME: Registers all vault tools on an McpServer - context, read (full/list), outline, read section, frontmatter, links, writes, title search, content search, daily note.
+// ABOUTME: Registers all vault tools on an McpServer - context, read (full/list), outline, read section, frontmatter, links, writes, title search, content search, daily note, clip URL.
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import * as vault from "./vault.js";
+import { registerClipTool } from "./clip.js";
 
 async function titleSearchToolResult(title: string, exact: boolean, limit: number) {
   const results = await vault.findByTitle(title, exact, limit);
@@ -20,7 +21,18 @@ async function titleSearchToolResult(title: string, exact: boolean, limit: numbe
   };
 }
 
-export function registerTools(server: McpServer) {
+export async function registerTools(server: McpServer) {
+  // Optional: vault_clip_url. Wrapped in try/catch so a failure in the optional clip layer
+  // can never break registration of the core vault tools.
+  try {
+    await registerClipTool(server, vault.getVaultRoot());
+  } catch (err) {
+    console.error(
+      "[obsidian-remote-mcp] vault_clip_url registration failed; continuing with core tools.",
+      err instanceof Error ? err.message : err,
+    );
+  }
+
   server.registerTool(
     "vault_context",
     {

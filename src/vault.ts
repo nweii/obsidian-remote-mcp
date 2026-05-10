@@ -98,6 +98,10 @@ function resolveVaultRoot(): string {
 
 const VAULT_ROOT = resolveVaultRoot();
 
+export function getVaultRoot(): string {
+  return VAULT_ROOT;
+}
+
 export function getVaultDisplayName(): string {
   const fromEnv = process.env.VAULT_DISPLAY_NAME?.trim();
   return fromEnv || path.basename(VAULT_ROOT);

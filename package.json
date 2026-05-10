@@ -4,13 +4,17 @@
   "type": "module",
   "scripts": {
     "start": "bun run src/server.ts",
-    "test": "VAULT_MCP_TEST=1 bun test"
+    "test": "VAULT_MCP_TEST=1 bun test",
+    "setup:clipper": "cd node_modules/web-clipper-headless && bun install && bun run setup"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.10.2",
     "express": "^4.21.2",
     "js-yaml": "^4.1.1",
     "zod": "^3.24.2"
+  },
+  "optionalDependencies": {
+    "web-clipper-headless": "github:nweii/web-clipper-headless"
   },
   "devDependencies": {
     "@types/express": "^5.0.1",

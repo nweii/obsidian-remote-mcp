@@ -98,7 +98,7 @@ export function createApp(): Express {
     console.log(`[${ts()}] MCP ${mcpMethod}${toolName ? ` (${toolName})` : ''}`);
 
     const server = new McpServer({ name: 'obsidian-remote-mcp', version: '1.0.0' });
-    registerTools(server);
+    await registerTools(server);
 
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined, // stateless — no session tracking
