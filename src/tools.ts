@@ -7,6 +7,29 @@ import { logFeedback, isLoggingEnabled } from "./log.js";
 import { parseLocalYmd, localYmd } from "./date.js";
 import { registerLogged, type ToolResult } from "./register-logged.js";
 
+// Hard cap on the folder-tree walk inside vault_context. The tree is a bonus orientation
+// section; if filesystem traversal stalls (slow disk, network mount, huge vault) we'd rather
+// return the context note quickly than block on the bonus.
+const TREE_TIMEOUT_MS = 1500;
+
+async function withTimeout<T>(
+  promise: Promise<T>,
+  ms: number,
+): Promise<{ ok: true; value: T } | { ok: false }> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<{ ok: false }>(resolve => {
+    timer = setTimeout(() => resolve({ ok: false }), ms);
+  });
+  try {
+    return await Promise.race([
+      promise.then(value => ({ ok: true as const, value })),
+      timeoutPromise,
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 async function titleSearchToolResult(title: string, exact: boolean, limit: number) {
   const results = await vault.findByTitle(title, exact, limit);
   if (results.length === 0) {
@@ -61,9 +84,20 @@ export async function registerTools(server: McpServer) {
         );
       }
       if (max_depth > 0) {
-        const tree = await vault.getFolderTree(max_depth);
-        if (tree.length > 0) {
-          sections.push(`## Vault folders\n\n${tree.join("\n")}`);
+        try {
+          const result = await withTimeout(vault.getFolderTree(max_depth), TREE_TIMEOUT_MS);
+          if (result.ok && result.value.length > 0) {
+            sections.push(`## Vault folders\n\n${result.value.join("\n")}`);
+          } else if (!result.ok) {
+            sections.push(
+              `## Vault folders\n\n_Folder tree skipped — took longer than ${TREE_TIMEOUT_MS}ms to build._`,
+            );
+          }
+        } catch (e) {
+          // Tree is a bonus; don't fail the whole call if directory walk errors out.
+          sections.push(
+            `## Vault folders\n\n_Folder tree failed: ${e instanceof Error ? e.message : String(e)}_`,
+          );
         }
       }
       return { content: [{ type: "text", text: sections.join("\n\n") }] };
