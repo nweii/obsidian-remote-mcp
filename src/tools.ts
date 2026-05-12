@@ -59,9 +59,12 @@ function withResolveWarning(
 }
 
 // Wrap vault.resolveNoteReference so handlers can short-circuit on resolver
-// errors with a consistent isError tool result. eisdirHint is appended to the
-// "is a directory" message for tools that have a sensible folder-browsing
-// alternative (vault_read / vault_read_section); other tools omit it.
+// errors with a consistent isError tool result. Only known resolver-layer
+// rejections (policy violations, EISDIR, missed lookup, empty input) become
+// friendly isError results; unexpected throws (e.g. EACCES during walk) bubble
+// up so the SDK records them with a stack instead of muting them into agent
+// text. eisdirHint is appended to the "is a directory" message for vault_read,
+// which has a folder-browsing alternative (mode "list").
 async function resolveOrError(
   input: string,
   opts: { eisdirHint?: string } = {},
@@ -70,8 +73,14 @@ async function resolveOrError(
     const ref = await vault.resolveNoteReference(input);
     return { ok: true, ref };
   } catch (e) {
-    const message = e instanceof Error ? e.message : String(e);
     const code = (e as NodeJS.ErrnoException)?.code;
+    const message = e instanceof Error ? e.message : String(e);
+    const isResolverError =
+      e instanceof vault.VaultPolicyError ||
+      code === "EISDIR" ||
+      (e instanceof Error &&
+        (message === "Empty note reference" || message.startsWith("Could not resolve")));
+    if (!isResolverError) throw e;
     const text = code === "EISDIR" && opts.eisdirHint ? `${message}${opts.eisdirHint}` : message;
     return { ok: false, result: { content: [{ type: "text" as const, text }], isError: true } };
   }
@@ -235,9 +244,7 @@ export async function registerTools(server: McpServer) {
       }),
     },
     async ({ path, heading }) => {
-      const out = await resolveOrError(path, {
-        eisdirHint: ` Pass a note title or vault-relative .md path.`,
-      });
+      const out = await resolveOrError(path);
       if (!out.ok) return out.result;
       try {
         const content = await vault.readNoteSection(out.ref.path, heading);
