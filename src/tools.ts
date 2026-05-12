@@ -30,6 +30,53 @@ async function withTimeout<T>(
   }
 }
 
+// Build the collision-warning text for a resolved reference, or return null if
+// the resolution was unambiguous. Paths are wrapped in backticks so commas inside
+// filenames don't make the list ambiguous.
+function buildResolveWarning(
+  reference: vault.ResolvedReference,
+  input: string,
+): string | null {
+  if (!reference.candidates || reference.candidates.length <= 1) return null;
+  const others = reference.candidates.slice(1).map((p) => `- \`${p}\``).join("\n");
+  return `Note: "${input}" matched ${reference.candidates.length} notes by title; used \`${reference.path}\`.\nOther matches:\n${others}`;
+}
+
+// Prepend the collision warning as a separate content block so agents parsing
+// the note body (frontmatter extraction, word counts, etc.) don't see it bleed
+// into the content.
+function withResolveWarning(
+  result: ToolResult,
+  reference: vault.ResolvedReference,
+  input: string,
+): ToolResult {
+  const warning = buildResolveWarning(reference, input);
+  if (!warning) return result;
+  return {
+    ...result,
+    content: [{ type: "text" as const, text: warning }, ...result.content],
+  };
+}
+
+// Wrap vault.resolveNoteReference so handlers can short-circuit on resolver
+// errors with a consistent isError tool result. eisdirHint is appended to the
+// "is a directory" message for tools that have a sensible folder-browsing
+// alternative (vault_read / vault_read_section); other tools omit it.
+async function resolveOrError(
+  input: string,
+  opts: { eisdirHint?: string } = {},
+): Promise<{ ok: true; ref: vault.ResolvedReference } | { ok: false; result: ToolResult }> {
+  try {
+    const ref = await vault.resolveNoteReference(input);
+    return { ok: true, ref };
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    const code = (e as NodeJS.ErrnoException)?.code;
+    const text = code === "EISDIR" && opts.eisdirHint ? `${message}${opts.eisdirHint}` : message;
+    return { ok: false, result: { content: [{ type: "text" as const, text }], isError: true } };
+  }
+}
+
 async function titleSearchToolResult(title: string, exact: boolean, limit: number) {
   const results = await vault.findByTitle(title, exact, limit);
   if (results.length === 0) {
@@ -109,11 +156,11 @@ export async function registerTools(server: McpServer) {
     {
       title: "Read vault note",
       description:
-        'Read full note text (mode full, default) or list one folder level (mode list; path "" = vault root). For # headings only use vault_outline; for one section under a heading use vault_read_section after vault_outline. If you only have a note title, use vault_search_title first.',
+        'Read full note text (mode full, default) or list one folder level (mode list; path "" = vault root). In full mode, path accepts a vault-relative path (e.g. "Notes/Foo.md") or a bare note title (e.g. "Foo"); ambiguous titles return the first match with a warning. For # headings only use vault_outline; for one section under a heading use vault_read_section after vault_outline.',
       inputSchema: z.object({
         path: z
           .string()
-          .describe('Note path when mode is full, or folder path when mode is list (use "" for vault root).'),
+          .describe('In full mode: a vault-relative path or a bare note title. In list mode: a folder path (use "" for vault root).'),
         mode: z
           .enum(["full", "list"])
           .optional()
@@ -143,24 +190,12 @@ export async function registerTools(server: McpServer) {
           ],
         };
       }
-      try {
-        const content = await vault.readNote(path);
-        return { content: [{ type: "text", text: content }] };
-      } catch (e) {
-        const err = e as NodeJS.ErrnoException;
-        if (err?.code === "EISDIR") {
-          return {
-            content: [
-              {
-                type: "text",
-                text: `Error: "${path}" is a directory, not a note. Use mode "list" with the same path (or path "") to browse.`,
-              },
-            ],
-            isError: true,
-          };
-        }
-        throw e;
-      }
+      const out = await resolveOrError(path, {
+        eisdirHint: ` Use mode "list" with the same path (or path "") to browse.`,
+      });
+      if (!out.ok) return out.result;
+      const content = await vault.readNote(out.ref.path);
+      return withResolveWarning({ content: [{ type: "text", text: content }] }, out.ref, path);
     },
   );
 
@@ -171,13 +206,18 @@ export async function registerTools(server: McpServer) {
       description:
         "List all markdown headings (# through ######) in one note, one per line with # prefix (like Obsidian CLI `obsidian outline`). Use before vault_read_section to get exact heading text.",
       inputSchema: z.object({
-        path: z.string().describe("Relative path to the note"),
+        path: z.string().describe("Vault-relative path or bare note title"),
       }),
     },
     async ({ path }) => {
-      const headings = await vault.getNoteOutline(path);
-      if (headings.length === 0) return { content: [{ type: "text", text: "(no headings)" }] };
-      return { content: [{ type: "text", text: headings.join("\n") }] };
+      const out = await resolveOrError(path);
+      if (!out.ok) return out.result;
+      const headings = await vault.getNoteOutline(out.ref.path);
+      const body =
+        headings.length === 0
+          ? { content: [{ type: "text" as const, text: "(no headings)" }] }
+          : { content: [{ type: "text" as const, text: headings.join("\n") }] };
+      return withResolveWarning(body, out.ref, path);
     },
   );
 
@@ -188,22 +228,30 @@ export async function registerTools(server: McpServer) {
       description:
         "Return the body from one heading through the next same-or-higher-level heading. Pass heading text without # (case-insensitive). Prefer calling vault_outline first and copy the heading text after the #'s.",
       inputSchema: z.object({
-        path: z.string().describe("Relative path to the note"),
+        path: z.string().describe("Vault-relative path or bare note title"),
         heading: z
           .string()
           .describe("Heading text only — no # prefix; must match a heading in the file (see vault_outline)"),
       }),
     },
     async ({ path, heading }) => {
+      const out = await resolveOrError(path, {
+        eisdirHint: ` Pass a note title or vault-relative .md path.`,
+      });
+      if (!out.ok) return out.result;
       try {
-        const content = await vault.readNoteSection(path, heading);
-        return { content: [{ type: "text", text: content }] };
+        const content = await vault.readNoteSection(out.ref.path, heading);
+        return withResolveWarning({ content: [{ type: "text", text: content }] }, out.ref, path);
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e);
         const hint = message.startsWith("Heading ")
           ? " — call vault_outline first and copy heading text exactly (without # prefix)."
           : "";
-        return { content: [{ type: "text", text: message + hint }], isError: true };
+        // If the title was ambiguous, prepend the warning so the agent knows the
+        // heading miss may belong to a different candidate than expected.
+        const warning = buildResolveWarning(out.ref, path);
+        const text = warning ? `${warning}\n\n${message}${hint}` : `${message}${hint}`;
+        return { content: [{ type: "text", text }], isError: true };
       }
     },
   );
@@ -215,30 +263,34 @@ export async function registerTools(server: McpServer) {
       description:
         "Read YAML frontmatter from a note without loading the full body. Omit property for all keys; set property to read one key.",
       inputSchema: z.object({
-        path: z.string().describe("Relative path to the note"),
+        path: z.string().describe("Vault-relative path or bare note title"),
         property: z.string().optional().describe("If set, return only this frontmatter key"),
       }),
     },
     async ({ path, property }) => {
+      const out = await resolveOrError(path);
+      if (!out.ok) return out.result;
       if (property !== undefined && property.length > 0) {
-        const value = await vault.getFrontmatterProperty(path, property);
-        if (value === undefined) {
-          return { content: [{ type: "text", text: `Property "${property}" not found.` }] };
-        }
-        return {
-          content: [
-            {
-              type: "text",
-              text: typeof value === "string" ? value : JSON.stringify(value, null, 2),
-            },
-          ],
-        };
+        const value = await vault.getFrontmatterProperty(out.ref.path, property);
+        const body =
+          value === undefined
+            ? { content: [{ type: "text" as const, text: `Property "${property}" not found.` }] }
+            : {
+                content: [
+                  {
+                    type: "text" as const,
+                    text: typeof value === "string" ? value : JSON.stringify(value, null, 2),
+                  },
+                ],
+              };
+        return withResolveWarning(body, out.ref, path);
       }
-      const frontmatter = await vault.getFrontmatter(path);
-      if (frontmatter === null) {
-        return { content: [{ type: "text", text: "(no frontmatter)" }] };
-      }
-      return { content: [{ type: "text", text: JSON.stringify(frontmatter, null, 2) }] };
+      const frontmatter = await vault.getFrontmatter(out.ref.path);
+      const body =
+        frontmatter === null
+          ? { content: [{ type: "text" as const, text: "(no frontmatter)" }] }
+          : { content: [{ type: "text" as const, text: JSON.stringify(frontmatter, null, 2) }] };
+      return withResolveWarning(body, out.ref, path);
     },
   );
 
@@ -248,13 +300,15 @@ export async function registerTools(server: McpServer) {
       title: "Get note links",
       description: "Get outgoing [[wikilinks]] from a note with resolved paths, and optionally backlinks (notes that link to it). Use to navigate the graph without reading full content.",
       inputSchema: z.object({
-        path: z.string().describe("Relative path to the note"),
+        path: z.string().describe("Vault-relative path or bare note title"),
         include_backlinks: z.boolean().optional().default(false).describe("Also return notes that link to this one (default false)"),
         backlinks_limit: z.number().optional().default(20).describe("Max backlinks to return (default 20, 0 = no limit)"),
       }),
     },
     async ({ path, include_backlinks, backlinks_limit }) => {
-      const links = await vault.getNoteLinks(path);
+      const out = await resolveOrError(path);
+      if (!out.ok) return out.result;
+      const links = await vault.getNoteLinks(out.ref.path);
       const lines: string[] = ["## Outgoing links"];
       if (links.length === 0) {
         lines.push("(none)");
@@ -264,7 +318,7 @@ export async function registerTools(server: McpServer) {
         }
       }
       if (include_backlinks) {
-        const backlinks = await vault.getBacklinks(path, backlinks_limit);
+        const backlinks = await vault.getBacklinks(out.ref.path, backlinks_limit);
         lines.push("", "## Backlinks");
         if (backlinks.length === 0) {
           lines.push("(none found)");
@@ -272,7 +326,7 @@ export async function registerTools(server: McpServer) {
           for (const b of backlinks) lines.push(`- ${b}`);
         }
       }
-      return { content: [{ type: "text", text: lines.join("\n") }] };
+      return withResolveWarning({ content: [{ type: "text", text: lines.join("\n") }] }, out.ref, path);
     },
   );
 

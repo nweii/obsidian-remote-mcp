@@ -660,3 +660,100 @@ describe('MCP /mcp', () => {
     }
   });
 });
+
+describe('Title resolution via tool round-trips', () => {
+  // Streamable-HTTP tool calls come back as SSE; parse the first data: line as JSON.
+  async function callTool(
+    base: string,
+    token: string,
+    name: string,
+    args: Record<string, unknown>,
+  ): Promise<{
+    content?: Array<{ type: string; text: string }>;
+    isError?: boolean;
+  }> {
+    const res = await fetch(`${base}/mcp`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json, text/event-stream',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: Math.floor(Math.random() * 100000),
+        method: 'tools/call',
+        params: { name, arguments: args },
+      }),
+    });
+    expect(res.ok).toBe(true);
+    const text = await res.text();
+    // Response is either JSON or SSE-wrapped JSON. SSE looks like "event: message\ndata: {...}\n\n".
+    const dataLine = text.split('\n').find(line => line.startsWith('data: '));
+    const payload = dataLine ? dataLine.slice(6) : text;
+    const body = JSON.parse(payload) as {
+      result?: { content?: Array<{ type: string; text: string }>; isError?: boolean };
+      error?: { message: string };
+    };
+    if (body.error) throw new Error(body.error.message);
+    return body.result ?? {};
+  }
+
+  test('vault_read resolves a bare title and returns the note content', async () => {
+    const titleFile = path.join(vaultPath, 'IntegrationFoo.md');
+    await writeFile(titleFile, '# resolved\nhello\n', 'utf-8');
+    vault.invalidateResolverCache();
+
+    const app = createApp();
+    const { base, close } = await listen(app);
+    try {
+      const token = seedTestToken();
+      const result = await callTool(base, token, 'vault_read', { path: 'IntegrationFoo' });
+      const texts = result.content?.map(c => c.text) ?? [];
+      expect(texts.join('\n')).toContain('hello');
+      expect(result.isError).toBeFalsy();
+    } finally {
+      await close();
+      await rm(titleFile, { force: true });
+    }
+  });
+
+  test('vault_read emits a separate warning content block on title collision', async () => {
+    const a = path.join(vaultPath, 'ResolverCollideOneA');
+    const b = path.join(vaultPath, 'ResolverCollideOneB');
+    await mkdir(a, { recursive: true });
+    await mkdir(b, { recursive: true });
+    await writeFile(path.join(a, 'Dupe.md'), '# from A\n', 'utf-8');
+    await writeFile(path.join(b, 'Dupe.md'), '# from B\n', 'utf-8');
+    vault.invalidateResolverCache();
+
+    const app = createApp();
+    const { base, close } = await listen(app);
+    try {
+      const token = seedTestToken();
+      const result = await callTool(base, token, 'vault_read', { path: 'Dupe' });
+      const texts = result.content?.map(c => c.text) ?? [];
+      expect(texts.length).toBeGreaterThanOrEqual(2);
+      expect(texts[0]).toContain('matched 2 notes');
+      expect(texts[1]).toContain('from A'); // deterministic: A sorts before B
+    } finally {
+      await close();
+      await rm(a, { recursive: true, force: true });
+      await rm(b, { recursive: true, force: true });
+    }
+  });
+
+  test('vault_outline returns isError when the title cannot be resolved', async () => {
+    const app = createApp();
+    const { base, close } = await listen(app);
+    try {
+      const token = seedTestToken();
+      const result = await callTool(base, token, 'vault_outline', { path: 'NoSuchNoteIntegration' });
+      expect(result.isError).toBe(true);
+      const texts = result.content?.map(c => c.text) ?? [];
+      expect(texts.join('\n')).toMatch(/Could not resolve/);
+    } finally {
+      await close();
+    }
+  });
+});

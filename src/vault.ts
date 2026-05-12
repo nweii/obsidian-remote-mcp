@@ -154,15 +154,24 @@ function assertWritable() {
 
 // --- Path safety -------------------------------------------------------------
 
+// Thrown by resolveSafePath when a path is rejected for security/policy reasons.
+// Carries a typed `kind` so callers can match without parsing error text.
+export class VaultPolicyError extends Error {
+  constructor(public readonly kind: 'escape' | 'mcpignore', message: string) {
+    super(message);
+    this.name = 'VaultPolicyError';
+  }
+}
+
 // Ensure path stays within vault root and is not blocked by .mcpignore. Returns absolute path.
 export function resolveSafePath(relativePath: string): string {
   const resolved = path.resolve(VAULT_ROOT, relativePath);
   const root = VAULT_ROOT.endsWith(path.sep) ? VAULT_ROOT : VAULT_ROOT + path.sep;
   if (!resolved.startsWith(root) && resolved !== VAULT_ROOT) {
-    throw new Error(`Path escapes vault root: ${relativePath}`);
+    throw new VaultPolicyError('escape', `Path escapes vault root: ${relativePath}`);
   }
   if (isIgnored(resolved)) {
-    throw new Error(`Path is blocked by .mcpignore: ${relativePath}`);
+    throw new VaultPolicyError('mcpignore', `Path is blocked by .mcpignore: ${relativePath}`);
   }
   return resolved;
 }
@@ -215,6 +224,7 @@ export async function writeNote(relativePath: string, content: string): Promise<
   const absPath = resolveSafePath(relativePath);
   await fs.mkdir(path.dirname(absPath), { recursive: true });
   await fs.writeFile(absPath, content, 'utf-8');
+  invalidateResolverCache();
 }
 
 export async function getFrontmatter(relativePath: string): Promise<Record<string, unknown> | null> {
@@ -253,6 +263,7 @@ export async function trashNote(relativePath: string): Promise<void> {
   // Avoid collisions in .trash by prefixing with a timestamp
   const trashPath = path.join(trashDir, `${Date.now()}-${path.basename(relativePath)}`);
   await fs.rename(absPath, trashPath);
+  invalidateResolverCache();
 }
 
 export interface SearchResult {
@@ -470,6 +481,138 @@ export async function readNoteSection(relativePath: string, heading: string): Pr
   }
 
   return lines.slice(startIdx, endIdx).join('\n');
+}
+
+// --- Note reference resolution -----------------------------------------------
+
+// Accepts either a full vault-relative path (with or without .md) or a bare note
+// title and returns the matching vault file. The cached title index here is the
+// "title → relpath" view of the vault built from filename walks; it's recomputed
+// on a short TTL so bursty agent sessions don't pay per-call walk costs.
+
+export interface ResolvedReference {
+  path: string; // vault-relative path with .md
+  candidates?: string[]; // present only when multiple titles matched; candidates[0] === path
+  matchedVia: 'path' | 'title';
+}
+
+const DEFAULT_RESOLVE_INDEX_TTL_MS = 30000;
+
+let titleIndexCache: { map: Map<string, string[]>; builtAt: number } | null = null;
+
+function getResolveIndexTtlMs(): number {
+  const raw = Number(process.env.RESOLVE_INDEX_TTL_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_RESOLVE_INDEX_TTL_MS;
+}
+
+export function invalidateResolverCache(): void {
+  titleIndexCache = null;
+}
+
+// Filename-only walk that collects every basename's relpath. Entries are sorted
+// before recursion so "first match wins" is deterministic across filesystems.
+async function buildResolverTitleIndex(): Promise<Map<string, string[]>> {
+  const index = new Map<string, string[]>();
+
+  async function walk(dir: string) {
+    const entries = await fs.readdir(dir, { withFileTypes: true });
+    entries.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+    for (const entry of entries) {
+      if (entry.name.startsWith('.')) continue;
+      const fullPath = path.join(dir, entry.name);
+      if (isIgnored(fullPath)) continue;
+      if (entry.isDirectory()) {
+        await walk(fullPath);
+      } else if (/\.md$/i.test(entry.name)) {
+        const key = entry.name.slice(0, -3).toLowerCase();
+        const rel = path.relative(VAULT_ROOT, fullPath);
+        const existing = index.get(key);
+        if (existing) existing.push(rel);
+        else index.set(key, [rel]);
+      }
+    }
+  }
+
+  await walk(VAULT_ROOT);
+  return index;
+}
+
+async function getResolverTitleIndex(): Promise<Map<string, string[]>> {
+  const ttl = getResolveIndexTtlMs();
+  if (titleIndexCache && Date.now() - titleIndexCache.builtAt < ttl) {
+    return titleIndexCache.map;
+  }
+  const map = await buildResolverTitleIndex();
+  titleIndexCache = { map, builtAt: Date.now() };
+  return map;
+}
+
+// resolveSafePath throws a typed VaultPolicyError for path-escape or .mcpignore
+// violations; those must propagate unchanged. Only ENOENT/ENOTDIR from a
+// follow-up stat fall through to subsequent resolution steps.
+async function statOrNull(relativePath: string): Promise<import('fs').Stats | null> {
+  try {
+    const abs = resolveSafePath(relativePath);
+    return await fs.stat(abs);
+  } catch (e) {
+    if (e instanceof VaultPolicyError) throw e;
+    const err = e as NodeJS.ErrnoException;
+    if (err?.code === 'ENOENT' || err?.code === 'ENOTDIR') return null;
+    throw e;
+  }
+}
+
+export async function resolveNoteReference(input: string): Promise<ResolvedReference> {
+  const trimmed = input.trim().replace(/\/+$/, '');
+  if (trimmed === '') {
+    throw new Error('Empty note reference');
+  }
+
+  const hasMdSuffix = /\.md$/i.test(trimmed);
+
+  // Step 1: stat the input as-given. If it's a directory, surface EISDIR with
+  // the "use mode list" affordance. Only return it as a path match if it ends
+  // in .md — non-.md files (e.g. binaries, plain text) are not notes and must
+  // not be returned as if they were.
+  const asGivenStat = await statOrNull(trimmed);
+  if (asGivenStat) {
+    if (asGivenStat.isDirectory()) {
+      const err = new Error(`"${trimmed}" is a directory, not a note.`) as NodeJS.ErrnoException;
+      err.code = 'EISDIR';
+      throw err;
+    }
+    if (asGivenStat.isFile() && hasMdSuffix) {
+      return { path: trimmed, matchedVia: 'path' };
+    }
+  }
+
+  // Step 2: append .md and try again. Handles the common "user passed a relpath
+  // without the .md suffix" case.
+  if (!hasMdSuffix) {
+    const normalized = `${trimmed}.md`;
+    const stat = await statOrNull(normalized);
+    if (stat?.isFile()) {
+      return { path: normalized, matchedVia: 'path' };
+    }
+  }
+
+  // Step 3: title lookup. Only meaningful when the input has no path separator —
+  // titles don't contain slashes, so "Notes/Foo" can never match a title key.
+  if (!trimmed.includes('/')) {
+    const key = (hasMdSuffix ? trimmed.slice(0, -3) : trimmed).toLowerCase();
+    const index = await getResolverTitleIndex();
+    const matches = index.get(key);
+    if (matches && matches.length > 0) {
+      if (matches.length === 1) {
+        return { path: matches[0]!, matchedVia: 'title' };
+      }
+      return { path: matches[0]!, candidates: matches.slice(), matchedVia: 'title' };
+    }
+  }
+
+  throw new Error(
+    `Could not resolve "${input}" to a note. Try a full vault-relative path or call vault_search_title to discover it.`,
+  );
 }
 
 // --- Link graph --------------------------------------------------------------
