@@ -46,6 +46,7 @@ interface ClipperLib {
     templateName?: string;
     useInterpreter?: boolean;
     slotOverrides?: Record<string, string>;
+    variableOverrides?: Record<string, string>;
   }): Promise<ClipperResult & { template: ClipperRenderedResult["template"] }>;
 }
 
@@ -123,7 +124,8 @@ export async function registerClipTool(server: McpServer, vaultRoot: string): Pr
       description:
         "Fetch a URL, render it through one of your Obsidian Web Clipper templates, and return the resulting Markdown note (frontmatter + body). Caller writes the note via vault_create. " +
           "If template_name is omitted, the template is auto-matched against the URL via each template's `triggers` array (URL prefix, regex, or schema:@Type) — same as the browser extension. Explicit template_name overrides auto-match. " +
-          "When use_server_interpreter is true the server runs the LLM interpreter for any {{\"prompt\"}} slots in the template; otherwise the response shape is `needs_interpretation` and the caller fills slots itself, then calls again with slot_overrides.",
+          "When use_server_interpreter is true the server runs the LLM interpreter for any {{\"prompt\"}} slots in the template; otherwise the response shape is `needs_interpretation` and the caller fills slots itself, then calls again with slot_overrides. " +
+          "variable_overrides patches caller-supplied values onto defuddle's auto-extracted variables — use for pages where defuddle can't see the rendered body (e.g. X/Twitter URLs where you've fetched the thread via another tool and want to inject its markdown as `content`).",
       inputSchema: z.object({
         url: z.string().url().describe("Public URL to clip. Auth-walled pages will fail to extract."),
         template_name: z
@@ -145,9 +147,15 @@ export async function registerClipTool(server: McpServer, vaultRoot: string): Pr
           .describe(
             "Pre-resolved interpreter slot values, keyed by slot key from a prior `needs_interpretation` response. Skips LLM dispatch for those slots."
           ),
+        variable_overrides: z
+          .record(z.string(), z.string())
+          .optional()
+          .describe(
+            "Corrective values patched onto defuddle's variables before template compilation. Keys are bare variable names like `content`, `title`, `author`. Defuddle still runs for everything not overridden; trigger matching is unaffected. Use this when a sibling tool produced cleaner body text than defuddle can extract from a JS-rendered page."
+          ),
       }),
     },
-    async ({ url, template_name, use_server_interpreter, slot_overrides }) => {
+    async ({ url, template_name, use_server_interpreter, slot_overrides, variable_overrides }) => {
       const settingsPath = await resolveSettingsPath(vaultRoot);
       if (!settingsPath) {
         return errorResponse(
@@ -162,6 +170,7 @@ export async function registerClipTool(server: McpServer, vaultRoot: string): Pr
           templateName: template_name,
           useInterpreter: use_server_interpreter,
           slotOverrides: slot_overrides,
+          variableOverrides: variable_overrides,
         });
 
         if (result.status === "rendered") {
