@@ -293,7 +293,7 @@
 
     "vary": ["vary@1.1.2", "", {}, "sha512-BNGbWLfd0eUPabhkXUVm0j8uuvREyTh5ovRa/dyow/BqAbZJyC+5fU+IzQOzmAKzYqYRAISoRhdQr3eIZ/PXqg=="],
 
-    "web-clipper-headless": ["web-clipper-headless@github:nweii/web-clipper-headless#fecb977", { "dependencies": { "linkedom": "^0.18.0", "obsidian-clipper": "github:obsidianmd/obsidian-clipper" }, "bin": { "wch": "bin/cli.ts" } }, "nweii-web-clipper-headless-fecb977", "sha512-fOwkfwxEPm/JxjXw9HvJCd0Cw6CqpMjHkU7Sbl6MTT1A34OjXICAepQSJtJ6htzVnGs9lfPV/rrliLm98CFPTw=="],
+    "web-clipper-headless": ["web-clipper-headless@github:nweii/web-clipper-headless#cfed8d3", { "dependencies": { "linkedom": "^0.18.0", "obsidian-clipper": "github:obsidianmd/obsidian-clipper" }, "bin": { "wch": "bin/cli.ts" } }, "nweii-web-clipper-headless-cfed8d3", "sha512-VuAfeMdARtuPctoM56JXx7d0DY2+Qs7bMsujcuTcCNIeFzbN7TjGAZZxqA0aSGKEFm5Sc6zsszNuxY2jUkPkEQ=="],
 
     "which": ["which@2.0.2", "", { "dependencies": { "isexe": "^2.0.0" }, "bin": { "node-which": "./bin/node-which" } }, "sha512-BLI3Tl1TW3Pvl70l3yq3Y64i+awpwXqsGBYWkkqMtnbXgrMD+yj7rhW0kuEDxzJaYXGjEW5ogapKNMEKNMjibA=="],
 
