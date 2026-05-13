@@ -1,0 +1,10 @@
+# ABOUTME: Bun install hardening — release-age gate, exact saves, frozen lockfile, text lockfile.
+# Defends against the malicious-publish supply-chain pattern (e.g. May 2026 npm incident):
+# new versions are not eligible to install until they've been on the registry for 3 days.
+# Override per-package via `minimumReleaseAgeExclude` only with a reviewed reason (CVE response).
+
+[install]
+minimumReleaseAge = 259200
+exact = true
+frozenLockfile = true
+saveTextLockfile = true
