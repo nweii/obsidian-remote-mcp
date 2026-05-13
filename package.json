@@ -15,7 +15,7 @@
     "zod": "^3.24.2"
   },
   "optionalDependencies": {
-    "web-clipper-headless": "github:nweii/web-clipper-headless#cfed8d3"
+    "web-clipper-headless": "github:nweii/web-clipper-headless"
   },
   "devDependencies": {
     "@types/express": "^5.0.1",
