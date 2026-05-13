@@ -95,3 +95,13 @@ bun test
 ```
 
 Uses a temporary `VAULT_PATH` and `VAULT_MCP_TEST=1` (see `package.json` `test` script). Covers discovery metadata, `GET /mcp` → 405 with a valid token, and a minimal `POST ... initialize` MCP round-trip.
+
+## Install policy
+
+`bunfig.toml` gates installs. Don't remove it.
+
+- New package versions younger than 3 days aren't eligible — defends against malicious-publish supply-chain attacks (the May 2026 npm incident and its family).
+- `frozenLockfile = true` — commit `bun.lock` and never run `--no-frozen-lockfile` unless you have a reason.
+- `exact = true` — `bun add <pkg>` saves the version without a caret.
+
+**CVE response** — when a patch lands inside the 3-day window and you need it now, add the package to `minimumReleaseAgeExclude` in `bunfig.toml`, run `bun install`, then revert the exclude in the same diff. The git history of the override is the audit trail.
