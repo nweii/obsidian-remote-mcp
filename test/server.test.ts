@@ -65,6 +65,9 @@ beforeAll(async () => {
   process.env.MCP_CLIENT_SECRET = 'test-secret';
   process.env.MCP_BASE_URL = 'https://example.test';
   process.env.VAULT_MCP_TEST = '1';
+  // Defensive: another test file (e.g. vault-resolve.test.ts) may set a long
+  // resolver TTL; clear so this file's resolver behavior is predictable.
+  delete process.env.RESOLVE_INDEX_TTL_MS;
 
   const appMod = await import('../src/app.js');
   const authMod = await import('../src/auth.js');
