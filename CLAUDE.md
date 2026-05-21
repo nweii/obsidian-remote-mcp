@@ -21,7 +21,7 @@ src/
   app.ts      — createApp() — Express routes (OAuth + MCP)
   auth.ts     — OAuth discovery, token issuance, optional client-secret validation, and Bearer validation middleware
   vault.ts    — Vault filesystem operations, frontmatter helpers, vault discovery, and config-derived defaults
-  tools.ts    — MCP tool definitions (15 tools: context, read, outline, read section, frontmatter, links, create/update/edit/trash, set frontmatter, search title, search content, daily note, feedback)
+  tools.ts    — MCP tool definitions (context, read, outline, read section, frontmatter, links, create/update/edit/edit section/trash, set frontmatter, search title, search content, daily note, feedback)
   log.ts      — Append-only JSONL logger for tool calls and agent feedback (LOG_DIR, default ./logs)
 test/
   server.test.ts — HTTP checks for discovery, GET /mcp, POST initialize

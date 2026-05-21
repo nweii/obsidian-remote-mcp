@@ -447,11 +447,13 @@ export async function getNoteOutline(relativePath: string): Promise<string[]> {
 
 // --- Section reading ---------------------------------------------------------
 
-// Read a single heading section from a note (the heading line through the next
-// same-or-higher-level heading). Heading match is case-insensitive, without the # prefix.
-export async function readNoteSection(relativePath: string, heading: string): Promise<string> {
-  const content = await readNote(relativePath);
-  const lines = content.split('\n');
+// Locate a heading section by case-insensitive heading text. Returns the
+// startIdx (heading line) and endIdx (first line of the next same-or-higher
+// heading, or lines.length). Returns null when the heading is missing.
+function findSectionBounds(
+  lines: string[],
+  heading: string,
+): { startIdx: number; endIdx: number } | null {
   const normalizedTarget = heading.toLowerCase().trim();
 
   let startIdx = -1;
@@ -466,11 +468,8 @@ export async function readNoteSection(relativePath: string, heading: string): Pr
     }
   }
 
-  if (startIdx === -1) {
-    throw new Error(`Heading "${heading}" not found in ${relativePath}`);
-  }
+  if (startIdx === -1) return null;
 
-  // Collect until the next heading at the same or higher level
   let endIdx = lines.length;
   for (let i = startIdx + 1; i < lines.length; i++) {
     const match = lines[i].match(/^(#{1,6})\s/);
@@ -480,7 +479,73 @@ export async function readNoteSection(relativePath: string, heading: string): Pr
     }
   }
 
-  return lines.slice(startIdx, endIdx).join('\n');
+  return { startIdx, endIdx };
+}
+
+// Read a single heading section from a note (the heading line through the next
+// same-or-higher-level heading). Heading match is case-insensitive, without the # prefix.
+export async function readNoteSection(relativePath: string, heading: string): Promise<string> {
+  const content = await readNote(relativePath);
+  const lines = content.split('\n');
+  const bounds = findSectionBounds(lines, heading);
+  if (!bounds) {
+    throw new Error(`Heading "${heading}" not found in ${relativePath}`);
+  }
+  return lines.slice(bounds.startIdx, bounds.endIdx).join('\n');
+}
+
+// --- Section editing ---------------------------------------------------------
+
+// Edit a single heading section in-place. Operations:
+//  - replace: replace the section body (keeps the heading line itself)
+//  - prepend: insert content right after the heading line, before existing body
+//  - append:  insert content at the end of the section, before the next heading
+// Body lines are kept verbatim; the caller controls leading/trailing newlines in `content`.
+export async function editNoteSection(
+  relativePath: string,
+  heading: string,
+  operation: 'append' | 'prepend' | 'replace',
+  content: string,
+): Promise<void> {
+  const existing = await readNote(relativePath);
+  const lines = existing.split('\n');
+  const bounds = findSectionBounds(lines, heading);
+  if (!bounds) {
+    throw new Error(`Heading "${heading}" not found in ${relativePath}`);
+  }
+
+  const { startIdx, endIdx } = bounds;
+  const before = lines.slice(0, startIdx);
+  const headingLine = lines[startIdx];
+  const body = lines.slice(startIdx + 1, endIdx);
+  const after = lines.slice(endIdx);
+  const contentLines = content.split('\n');
+
+  // The trailing blank line(s) in `body` are the structural separator between
+  // this section and whatever follows (next heading or EOF). Preserve them
+  // across all three operations so edits don't collapse the section boundary.
+  // Internal spacing between caller content and existing body is the caller's
+  // responsibility — they control it via newlines in `content`.
+  let trailingBlankCount = 0;
+  while (
+    trailingBlankCount < body.length &&
+    body[body.length - 1 - trailingBlankCount] === ''
+  ) {
+    trailingBlankCount++;
+  }
+  const bodyContent = body.slice(0, body.length - trailingBlankCount);
+  const trailingBlanks = body.slice(body.length - trailingBlankCount);
+
+  let newBody: string[];
+  if (operation === 'replace') {
+    newBody = [...contentLines, ...trailingBlanks];
+  } else if (operation === 'prepend') {
+    newBody = [...contentLines, ...bodyContent, ...trailingBlanks];
+  } else {
+    newBody = [...bodyContent, ...contentLines, ...trailingBlanks];
+  }
+
+  await writeNote(relativePath, [...before, headingLine, ...newBody, ...after].join('\n'));
 }
 
 // --- Note reference resolution -----------------------------------------------

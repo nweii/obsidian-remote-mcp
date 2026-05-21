@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { createHash } from 'crypto';
-import { mkdir, mkdtemp, writeFile, rm } from 'fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile, rm } from 'fs/promises';
 import os from 'os';
 import path from 'path';
 import type { Express } from 'express';
@@ -757,6 +757,56 @@ describe('Title resolution via tool round-trips', () => {
       expect(texts.join('\n')).toMatch(/Could not resolve/);
     } finally {
       await close();
+    }
+  });
+
+  test('vault_edit_section appends to a section and writes the file', async () => {
+    const file = path.join(vaultPath, 'SectionEditIntegration.md');
+    await writeFile(file, '# A\nbody\n\n# B\nb body\n', 'utf-8');
+
+    const app = createApp();
+    const { base, close } = await listen(app);
+    try {
+      const token = seedTestToken();
+      const result = await callTool(base, token, 'vault_edit_section', {
+        path: 'SectionEditIntegration.md',
+        heading: 'A',
+        operation: 'append',
+        content: 'appended',
+      });
+      expect(result.isError).toBeFalsy();
+      const updated = await readFile(file, 'utf-8');
+      expect(updated).toBe('# A\nbody\nappended\n\n# B\nb body\n');
+    } finally {
+      await close();
+      await rm(file, { force: true });
+    }
+  });
+
+  test('vault_edit_section returns isError with an outline hint when the heading is missing', async () => {
+    const file = path.join(vaultPath, 'SectionEditMissingHeading.md');
+    await writeFile(file, '# A\nbody\n', 'utf-8');
+
+    const app = createApp();
+    const { base, close } = await listen(app);
+    try {
+      const token = seedTestToken();
+      const result = await callTool(base, token, 'vault_edit_section', {
+        path: 'SectionEditMissingHeading.md',
+        heading: 'NoSuchHeading',
+        operation: 'append',
+        content: 'x',
+      });
+      expect(result.isError).toBe(true);
+      const texts = result.content?.map(c => c.text) ?? [];
+      expect(texts.join('\n')).toMatch(/Heading "NoSuchHeading" not found/);
+      expect(texts.join('\n')).toMatch(/vault_outline/);
+      // File must remain untouched on error.
+      const after = await readFile(file, 'utf-8');
+      expect(after).toBe('# A\nbody\n');
+    } finally {
+      await close();
+      await rm(file, { force: true });
     }
   });
 });

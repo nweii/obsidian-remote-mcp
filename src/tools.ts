@@ -422,6 +422,37 @@ export async function registerTools(server: McpServer) {
   );
 
   registerLogged(server,
+    "vault_edit_section",
+    {
+      title: "Edit a note section under a heading",
+      description:
+        "Edit just one section of a note (heading line through the next same-or-higher heading). Operations: append — add to end of section, before the next heading; prepend — add right after the heading line, before existing body; replace — replace the section body and keep the heading line. Call vault_outline first to get exact heading text.",
+      inputSchema: z.object({
+        path: z.string().describe("Relative path to the note"),
+        heading: z
+          .string()
+          .describe("Heading text only — no # prefix; must match a heading in the file (see vault_outline)"),
+        operation: z
+          .enum(["append", "prepend", "replace"])
+          .describe("append — add to end of section; prepend — add right after heading line; replace — replace section body (keeps heading)"),
+        content: z.string().describe("Content to add, or replacement body for a replace operation"),
+      }),
+    },
+    async ({ path, heading, operation, content }) => {
+      try {
+        await vault.editNoteSection(path, heading, operation, content);
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        const hint = message.startsWith("Heading ")
+          ? " — call vault_outline first and copy heading text exactly (without # prefix)."
+          : "";
+        return { content: [{ type: "text", text: `${message}${hint}` }], isError: true };
+      }
+      return { content: [{ type: "text", text: `Edited ${path} section "${heading}" (${operation})` }] };
+    },
+  );
+
+  registerLogged(server,
     "vault_trash",
     {
       title: "Trash vault note",
