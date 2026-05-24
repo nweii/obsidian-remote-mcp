@@ -2,11 +2,24 @@
 
 A self-hosted [MCP](https://modelcontextprotocol.io) server for headless Obsidian vaults. It gives remote AI clients read and write access to a vault over HTTPS **without requiring the Obsidian desktop app to be running on the same machine.**
 
-It works directly from the vault files on disk — no Obsidian app or sync service required. This is meant for server environments: home servers, NAS boxes, VPSes, and other setups where your vault lives on disk and you want to expose it through a remote MCP endpoint for apps like Claude.ai.
+## Features
+
+This is meant for home servers, NAS boxes, VPSes, and
+other setups where your vault lives on disk and you want to
+expose it through a remote MCP endpoint for apps like
+Claude.ai.
+
+- OAuth (browser sign-in) or a fixed bearer token, depending on what the client supports.
+- `vault_context` serves your vault guide note (defaults to `AGENTS.md`) plus a shallow folder tree so agents have a better understanding of your vault structure
+- Daily notes from a path template you configure.
+- Create, edit, update, and trash notes; wikilinks and YAML frontmatter work as usual.
+- Set or read individual frontmatter properties
+- Read one section under a heading, or list headings first, instead of pulling the whole note every time.
+- Search by filename or regex in note text; content search can be scoped to a folder.
+- Block paths with `.mcpignore`; set `VAULT_READ_ONLY` to turn off writes.
+- Optional JSONL logs of tool calls (note bodies redacted) if you want to review what agents did.
 
 ## Security and scope
-
-Remote MCP is powerful access to your vault — use HTTPS, and think about where the service listens.
 
 Built-in safeguards:
 
