@@ -230,7 +230,7 @@ export async function registerTools(server: McpServer) {
       const result = withResolveWarning({ content: [{ type: "text", text: content }] }, out.ref, path);
       result.content.push({
         type: "text",
-        text: `(version: ${version} — to update this note safely, pass base_version: "${version}" to vault_update so it rejects the write instead of overwriting a concurrent edit by another session.)`,
+        text: `(version: ${version} — pass as base_version to vault_update to avoid clobbering a concurrent edit)`,
       });
       return result;
     },
