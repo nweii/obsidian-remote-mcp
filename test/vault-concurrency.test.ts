@@ -4,6 +4,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:tes
 import { mkdtemp, readFile, writeFile, rm } from 'fs/promises';
 import os from 'os';
 import path from 'path';
+import { withPathLock } from '../src/lock.js';
 
 let vault: typeof import('../src/vault.js');
 let vaultPath: string;
@@ -89,6 +90,19 @@ describe('updateNote', () => {
     expect(await read('week.md')).toBe(BASE + 'changed\n'); // untouched
   });
 
+  test('rejects (rather than silently recreating) when the note was deleted since the read', async () => {
+    const version = vault.recordVersion(BASE);
+    await rm(path.join(vaultPath, 'week.md')); // another session deleted it
+    await expect(vault.updateNote('week.md', 'mine\n', version)).rejects.toThrow(vault.ConcurrentEditError);
+  });
+
+  test('creates a missing note when no base_version is supplied', async () => {
+    await rm(path.join(vaultPath, 'week.md'));
+    const result = await vault.updateNote('week.md', 'fresh\n');
+    expect(result.merged).toBe(false);
+    expect(await read('week.md')).toBe('fresh\n');
+  });
+
   test('respects VAULT_READ_ONLY by refusing to write', async () => {
     process.env.VAULT_READ_ONLY = 'true';
     try {
@@ -97,5 +111,42 @@ describe('updateNote', () => {
     } finally {
       delete process.env.VAULT_READ_ONLY;
     }
+  });
+});
+
+describe('appendNote locking', () => {
+  test('waits for an in-progress locked write on the same note', async () => {
+    // Hold the per-path lock for week.md, then start an append and confirm it can't proceed
+    // until the lock is released — i.e. appendNote participates in the same mutex as the
+    // read-modify-write writers (so it can't clobber / be clobbered by them).
+    const key = vault.resolveSafePath('week.md');
+    let release!: () => void;
+    const gate = new Promise<void>(r => { release = r; });
+    const held = withPathLock(key, async () => { await gate; });
+
+    let appended = false;
+    const append = vault.appendNote('week.md', 'X\n').then(() => { appended = true; });
+
+    await new Promise(r => setTimeout(r, 10));
+    expect(appended).toBe(false); // blocked by the held lock
+
+    release();
+    await held;
+    await append;
+    expect(appended).toBe(true);
+    expect(await read('week.md')).toBe(BASE + 'X\n');
+  });
+});
+
+describe('replaceInNote', () => {
+  beforeEach(async () => {
+    await writeRaw('repl.md', 'price is HERE today\n');
+  });
+
+  test('treats replacement content as literal text, not a regex replacement pattern', async () => {
+    // '$&' and '$1' are special in String.prototype.replace's replacement string; the content
+    // must be inserted verbatim.
+    await vault.replaceInNote('repl.md', 'HERE', '$& and $1 and $$');
+    expect(await read('repl.md')).toBe('price is $& and $1 and $$ today\n');
   });
 });

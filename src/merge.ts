@@ -76,8 +76,9 @@ function arraysEqual(a: string[], b: string[]): boolean {
 //   theirs — the incoming content (this caller's change)
 //
 // Algorithm (the classic diff3 region scan):
-//   1. Split everything into lines. split('\n') is an exact inverse of join('\n'), so a
-//      trailing newline survives as a final '' element and the merged text round-trips.
+//   1. Split everything into lines on \r?\n, so CRLF and LF content compare and align the
+//      same way (without this, a CRLF line "a\r" never matches an LF line "a" and a trivial
+//      edit collapses into a whole-file conflict). The merged text is rejoined with LF.
 //   2. Find which base lines each side kept (matchMap, built from an LCS per side).
 //   3. ANCHORS are base lines kept by *both* sides. Because each match map is monotonic in
 //      base order, and an anchor's positions in ours/theirs are subsequences of monotonic
@@ -95,9 +96,9 @@ function arraysEqual(a: string[], b: string[]): boolean {
 // but it is always *correct*: it never silently merges two overlapping edits, and
 // non-overlapping edits (the common case) always merge cleanly.
 export function threeWayMerge(baseText: string, oursText: string, theirsText: string): MergeResult {
-  const base = baseText.split('\n');
-  const ours = oursText.split('\n');
-  const theirs = theirsText.split('\n');
+  const base = baseText.split(/\r?\n/);
+  const ours = oursText.split(/\r?\n/);
+  const theirs = theirsText.split(/\r?\n/);
 
   const oursMatch = matchMap(base, ours);
   const theirsMatch = matchMap(base, theirs);

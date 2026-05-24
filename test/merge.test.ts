@@ -72,6 +72,29 @@ describe('threeWayMerge', () => {
     expect(mergedText(base, ours, base)).toBe('a\nb\nc\n');
   });
 
+  test('merges CRLF content the same as LF (line endings normalized for alignment)', () => {
+    // All three sides use Windows CRLF endings; a non-overlapping edit on each side must
+    // still merge cleanly rather than collapsing into a whole-file conflict.
+    const base = 'a\r\nb\r\nc\r\n';
+    const ours = 'A\r\nb\r\nc\r\n';   // edited first line
+    const theirs = 'a\r\nb\r\nC\r\n'; // edited last line
+    const merged = mergedText(base, ours, theirs);
+    expect(merged).toContain('A');
+    expect(merged).toContain('C');
+  });
+
+  test('aligns a CRLF base against LF content instead of conflicting on every line', () => {
+    // The on-disk file is CRLF but the caller submits LF content (common: agents emit LF).
+    // With normalization the unchanged 'b' line still anchors, so the two edits (first line
+    // CRLF, last line LF) merge instead of the whole file conflicting on the \r boundary.
+    const base = 'a\r\nb\r\nc\r\n';
+    const ours = 'A\r\nb\r\nc\r\n'; // another session edited the first line, kept CRLF
+    const theirs = 'a\nb\nC\n';     // caller edited the last line, used LF
+    const merged = mergedText(base, ours, theirs);
+    expect(merged).toContain('A');
+    expect(merged).toContain('C');
+  });
+
   test('merges an insertion on one side with an edit elsewhere on the other', () => {
     const base = 'intro\nbody\noutro\n';
     const ours = 'intro\nbody\nnew line\noutro\n'; // inserted before outro

@@ -869,6 +869,38 @@ describe('Title resolution via tool round-trips', () => {
     }
   });
 
+  test('vault_update resolves a bare title to the same note vault_read versioned (no wrong-path write)', async () => {
+    // Read by bare title resolves into a subfolder; updating by the same bare title must
+    // target that resolved note, not create a stray <root>/Titled.md, and the merge must apply.
+    const dir = path.join(vaultPath, 'TitleResolveFolder');
+    await mkdir(dir, { recursive: true });
+    const file = path.join(dir, 'Titled.md');
+    await writeFile(file, '# T\nshared\n', 'utf-8');
+    vault.invalidateResolverCache();
+
+    const app = createApp();
+    const { base, close } = await listen(app);
+    try {
+      const token = seedTestToken();
+      const readResult = await callTool(base, token, 'vault_read', { path: 'Titled' });
+      const version = versionFrom(readResult.content?.map(c => c.text) ?? []);
+
+      const result = await callTool(base, token, 'vault_update', {
+        path: 'Titled', // bare title, same as the read
+        content: '# T\nshared\nedited\n',
+        base_version: version,
+      });
+
+      expect(result.isError).toBeFalsy();
+      expect(await readFile(file, 'utf-8')).toContain('edited'); // wrote the resolved note
+      // No stray note created at the vault root.
+      await expect(readFile(path.join(vaultPath, 'Titled.md'), 'utf-8')).rejects.toThrow();
+    } finally {
+      await close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   test('vault_update returns isError when a concurrent change overlaps the edit', async () => {
     const file = path.join(vaultPath, 'ConflictRoundTrip.md');
     const baseContent = '# C\nshared line\n';

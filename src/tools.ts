@@ -86,6 +86,23 @@ async function resolveOrError(
   }
 }
 
+// vault_update takes the same path/bare-title input as vault_read, and vault_read records the
+// note's version against its *resolved* path. updateNote must operate on that same resolved
+// path or the version/merge guarantee silently won't apply (and a brand-new file could be
+// written at the unresolved path). Resolve to an existing note when possible; fall back to the
+// literal input when it doesn't resolve (e.g. creating a new note). Policy/EISDIR errors
+// propagate as before.
+async function resolveForWrite(input: string): Promise<string> {
+  try {
+    const ref = await vault.resolveNoteReference(input);
+    return ref.path;
+  } catch (e) {
+    if (e instanceof vault.VaultPolicyError) throw e;
+    if ((e as NodeJS.ErrnoException)?.code === "EISDIR") throw e;
+    return input;
+  }
+}
+
 async function titleSearchToolResult(title: string, exact: boolean, limit: number) {
   const results = await vault.findByTitle(title, exact, limit);
   if (results.length === 0) {
@@ -383,10 +400,11 @@ export async function registerTools(server: McpServer) {
     },
     async ({ path, content, base_version }) => {
       try {
-        const result = await vault.updateNote(path, content, base_version);
+        const targetPath = await resolveForWrite(path);
+        const result = await vault.updateNote(targetPath, content, base_version);
         const note = result.merged
-          ? `Updated ${path} (merged with a concurrent change from another session). New version: ${result.version}`
-          : `Updated ${path}. New version: ${result.version}`;
+          ? `Updated ${targetPath} (merged with a concurrent change from another session). New version: ${result.version}`
+          : `Updated ${targetPath}. New version: ${result.version}`;
         return { content: [{ type: "text", text: note }] };
       } catch (e) {
         if (e instanceof vault.ConcurrentEditError) {

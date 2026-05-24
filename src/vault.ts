@@ -304,9 +304,23 @@ export async function updateNote(
       else throw e;
     }
 
-    // New file, or caller opted out of the version check: straight overwrite.
-    if (current === null || baseVersion === undefined) {
+    if (current === null) {
+      // The note doesn't exist. If the caller supplied a base version they read an existing
+      // note that has since been deleted — surface that rather than silently recreating it.
+      if (baseVersion !== undefined) {
+        throw new ConcurrentEditError(
+          `"${relativePath}" no longer exists — it was deleted or moved since you read it. If you intend to recreate it, call vault_update again without base_version (or vault_create).`,
+        );
+      }
+      // No base version: plain create.
       await fs.mkdir(path.dirname(absPath), { recursive: true });
+      await fs.writeFile(absPath, content, 'utf-8');
+      invalidateResolverCache();
+      return { version: recordVersion(content), merged: false };
+    }
+
+    // Caller opted out of the version check: straight overwrite of the existing note.
+    if (baseVersion === undefined) {
       await fs.writeFile(absPath, content, 'utf-8');
       invalidateResolverCache();
       return { version: recordVersion(content), merged: false };
@@ -329,8 +343,9 @@ export async function updateNote(
       );
     }
 
-    // Guard the O(n*m) merge against pathologically large notes.
-    const tooLarge = [base, current, content].some(t => t.split('\n').length > MERGE_MAX_LINES);
+    // Guard the O(n*m) merge against pathologically large notes (the LCS allocates an n*m
+    // matrix). >= so a note at exactly the cap is rejected rather than allocating at the limit.
+    const tooLarge = [base, current, content].some(t => t.split('\n').length >= MERGE_MAX_LINES);
     if (tooLarge) {
       throw new ConcurrentEditError(
         `"${relativePath}" changed since you last read it and is too large to merge automatically. Re-read the note and reapply your change to the current text.`,
@@ -374,11 +389,16 @@ export async function setFrontmatterProperty(relativePath: string, name: string,
   });
 }
 
-// No lock needed: appendFile opens with O_APPEND, so concurrent appends are atomic at the
-// OS level — they can interleave in order but never lose each other's bytes.
+// Locked like the other writers: O_APPEND is atomic against other appends, but NOT against
+// a read-modify-write writer that read the file before this append landed — without the
+// lock, that writer would overwrite the appended bytes. Taking the same per-path lock
+// serializes appends with updateNote/editNoteSection/etc. so no write is lost.
 export async function appendNote(relativePath: string, content: string): Promise<void> {
   assertWritable();
-  await fs.appendFile(resolveSafePath(relativePath), content, 'utf-8');
+  const absPath = resolveSafePath(relativePath);
+  await withPathLock(absPath, async () => {
+    await fs.appendFile(absPath, content, 'utf-8');
+  });
 }
 
 // Insert content at the very start of a note. Locked so the read and write are atomic.
@@ -400,7 +420,9 @@ export async function replaceInNote(relativePath: string, find: string, content:
   const absPath = resolveSafePath(relativePath);
   await withPathLock(absPath, async () => {
     const existing = await fs.readFile(absPath, 'utf-8');
-    await fs.writeFile(absPath, existing.replace(find, content), 'utf-8');
+    // Function replacer keeps `content` literal — a plain string replacement would interpret
+    // $&, $1, $$ etc. in the agent's content as special replacement patterns.
+    await fs.writeFile(absPath, existing.replace(find, () => content), 'utf-8');
   });
   invalidateResolverCache();
 }
