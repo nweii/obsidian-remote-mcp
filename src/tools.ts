@@ -86,19 +86,22 @@ async function resolveOrError(
   }
 }
 
-// vault_update takes the same path/bare-title input as vault_read, and vault_read records the
-// note's version against its *resolved* path. updateNote must operate on that same resolved
-// path or the version/merge guarantee silently won't apply (and a brand-new file could be
-// written at the unresolved path). Resolve to an existing note when possible; fall back to the
-// literal input when it doesn't resolve (e.g. creating a new note). Policy/EISDIR errors
-// propagate as before.
+// vault_update takes the same path/bare-title input as vault_read, and vault_read versions the
+// note against its *resolved* path. updateNote must operate on that same resolved path or the
+// version check silently won't apply (and a brand-new file could be written at the unresolved
+// path). Resolve to an existing note when possible; fall back to the literal input only when
+// the note genuinely doesn't exist (e.g. creating a new one). Every other failure — policy
+// violations, EISDIR, transient FS errors during the resolver walk — propagates, matching
+// resolveOrError on the read path; swallowing them could write a stray file at the wrong path.
 async function resolveForWrite(input: string): Promise<string> {
   try {
     const ref = await vault.resolveNoteReference(input);
     return ref.path;
   } catch (e) {
-    if (e instanceof vault.VaultPolicyError) throw e;
-    if ((e as NodeJS.ErrnoException)?.code === "EISDIR") throw e;
+    const isNotFound =
+      e instanceof Error &&
+      (e.message === "Empty note reference" || e.message.startsWith("Could not resolve"));
+    if (!isNotFound) throw e;
     return input;
   }
 }

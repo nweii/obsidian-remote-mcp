@@ -1,5 +1,5 @@
-// ABOUTME: Tests for updateNote's concurrent-edit handling — version match, three-way merge
-// of non-overlapping concurrent edits, conflict/eviction rejection, and read-only mode.
+// ABOUTME: Tests for updateNote's concurrent-edit handling — version match, stale-version and
+// deleted-note rejection, plain create/overwrite, the appendNote lock, and replaceInNote.
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdtemp, readFile, writeFile, rm } from 'fs/promises';
 import os from 'os';
@@ -61,6 +61,26 @@ describe('updateNote', () => {
     // Caller, working from the stale base version, tries to overwrite.
     await expect(vault.updateNote('week.md', BASE + '- reviewed PRs\n', version)).rejects.toThrow(vault.ConcurrentEditError);
     expect(await read('week.md')).toBe(concurrent); // the other session's edit is preserved
+  });
+
+  test('serializes two concurrent updates from the same base: one wins, the other is rejected', async () => {
+    // The headline guarantee. Both callers hold the original version and fire at once. The
+    // per-path lock serializes them, so the first writes and the second — now seeing the
+    // first's change — is rejected instead of both "succeeding" and silently clobbering.
+    // (Without the lock both could read the original concurrently and both overwrite.)
+    const version = vault.versionOf(BASE);
+    const [first, second] = await Promise.allSettled([
+      vault.updateNote('week.md', BASE + 'A\n', version),
+      vault.updateNote('week.md', BASE + 'B\n', version),
+    ]);
+
+    // Exactly one fulfilled and one rejected — never two writes landing.
+    expect([first.status, second.status].sort()).toEqual(['fulfilled', 'rejected']);
+    const rejected = (first.status === 'rejected' ? first : second) as PromiseRejectedResult;
+    expect(rejected.reason).toBeInstanceOf(vault.ConcurrentEditError);
+
+    // The file holds exactly the winner's content, not a clobbered blend.
+    expect([BASE + 'A\n', BASE + 'B\n']).toContain(await read('week.md'));
   });
 
   test('rejects (rather than silently recreating) when the note was deleted since the read', async () => {

@@ -868,7 +868,7 @@ describe('Title resolution via tool round-trips', () => {
 
   test('vault_update resolves a bare title to the same note vault_read versioned (no wrong-path write)', async () => {
     // Read by bare title resolves into a subfolder; updating by the same bare title must
-    // target that resolved note, not create a stray <root>/Titled.md, and the merge must apply.
+    // target that resolved note (so the version check applies), not create a stray <root>/Titled.md.
     const dir = path.join(vaultPath, 'TitleResolveFolder');
     await mkdir(dir, { recursive: true });
     const file = path.join(dir, 'Titled.md');
