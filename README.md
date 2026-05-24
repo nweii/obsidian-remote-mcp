@@ -4,10 +4,7 @@ A self-hosted [MCP](https://modelcontextprotocol.io) server for headless Obsidia
 
 ## Features
 
-This is meant for home servers, NAS boxes, VPSes, and
-other setups where your vault lives on disk and you want to
-expose it through a remote MCP endpoint for apps like
-Claude.ai.
+This is meant for home servers, NAS boxes, VPSes, and other setups where your vault lives on disk and you want to expose it through a remote MCP endpoint for apps like Claude.ai.
 
 - OAuth (browser sign-in) or a fixed bearer token, depending on what the client supports.
 - `vault_context` serves your vault guide note (defaults to `AGENTS.md`) plus a shallow folder tree so agents can see your vault structure.
