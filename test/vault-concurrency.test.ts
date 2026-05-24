@@ -40,66 +40,38 @@ beforeEach(async () => {
 describe('updateNote', () => {
   test('overwrites directly when no base version is supplied', async () => {
     const result = await vault.updateNote('week.md', 'replaced\n');
-    expect(result.merged).toBe(false);
+    expect(result.version).toBe(vault.versionOf('replaced\n'));
     expect(await read('week.md')).toBe('replaced\n');
   });
 
   test('overwrites directly when the note is unchanged since the caller read it', async () => {
-    const version = vault.recordVersion(BASE); // simulates the version vault_read handed back
+    const version = vault.versionOf(BASE); // simulates the version vault_read handed back
     const next = BASE + 'extra\n';
-    const result = await vault.updateNote('week.md', next, version);
-    expect(result.merged).toBe(false);
+    await vault.updateNote('week.md', next, version);
     expect(await read('week.md')).toBe(next);
   });
 
-  test('merges a non-overlapping concurrent edit instead of overwriting it', async () => {
-    const version = vault.recordVersion(BASE); // caller read the base
+  test('rejects and leaves the file untouched when the note changed since the read', async () => {
+    const version = vault.versionOf(BASE); // caller read the base
 
-    // Another session edited the Mon section and saved.
-    const concurrent = ['# Week 21', '', '## Mon', '- planned', '- shipped auth', '', '## Tue', '- planned', ''].join('\n');
+    // Another session edited the note and saved.
+    const concurrent = BASE + '- shipped auth\n';
     await writeRaw('week.md', concurrent);
 
-    // Caller, working from the base, edits the Tue section and updates with their stale version.
-    const callerEdit = ['# Week 21', '', '## Mon', '- planned', '', '## Tue', '- planned', '- reviewed PRs', ''].join('\n');
-    const result = await vault.updateNote('week.md', callerEdit, version);
-
-    expect(result.merged).toBe(true);
-    const final = await read('week.md');
-    expect(final).toContain('- shipped auth');  // the other session's edit survived
-    expect(final).toContain('- reviewed PRs');  // the caller's edit landed
-  });
-
-  test('rejects and leaves the file untouched when edits overlap', async () => {
-    const version = vault.recordVersion(BASE);
-
-    // Both the other session and the caller change the same line differently.
-    const concurrent = BASE.replace('- planned\n\n## Tue', '- OTHER SESSION\n\n## Tue');
-    await writeRaw('week.md', concurrent);
-    const callerEdit = BASE.replace('- planned\n\n## Tue', '- CALLER\n\n## Tue');
-
-    await expect(vault.updateNote('week.md', callerEdit, version)).rejects.toThrow(vault.ConcurrentEditError);
-    expect(await read('week.md')).toBe(concurrent); // not overwritten
-  });
-
-  test('rejects when the base version is no longer available to merge', async () => {
-    // A concurrent change makes the current hash differ from the (uncached) base version.
-    await writeRaw('week.md', BASE + 'changed\n');
-    await expect(
-      vault.updateNote('week.md', 'mine\n', 'never-recorded00'),
-    ).rejects.toThrow(vault.ConcurrentEditError);
-    expect(await read('week.md')).toBe(BASE + 'changed\n'); // untouched
+    // Caller, working from the stale base version, tries to overwrite.
+    await expect(vault.updateNote('week.md', BASE + '- reviewed PRs\n', version)).rejects.toThrow(vault.ConcurrentEditError);
+    expect(await read('week.md')).toBe(concurrent); // the other session's edit is preserved
   });
 
   test('rejects (rather than silently recreating) when the note was deleted since the read', async () => {
-    const version = vault.recordVersion(BASE);
+    const version = vault.versionOf(BASE);
     await rm(path.join(vaultPath, 'week.md')); // another session deleted it
     await expect(vault.updateNote('week.md', 'mine\n', version)).rejects.toThrow(vault.ConcurrentEditError);
   });
 
   test('creates a missing note when no base_version is supplied', async () => {
     await rm(path.join(vaultPath, 'week.md'));
-    const result = await vault.updateNote('week.md', 'fresh\n');
-    expect(result.merged).toBe(false);
+    await vault.updateNote('week.md', 'fresh\n');
     expect(await read('week.md')).toBe('fresh\n');
   });
 

@@ -6,7 +6,6 @@ import { load as parseYaml, dump as stringifyYaml } from 'js-yaml';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { withPathLock } from './lock.js';
-import { threeWayMerge, summarizeConflicts, MERGE_MAX_LINES } from './merge.js';
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 export const DEFAULT_CONTEXT_NOTE_CANDIDATES = ['AGENTS.md', 'CLAUDE.md'] as const;
@@ -230,17 +229,16 @@ export async function writeNote(relativePath: string, content: string): Promise<
   invalidateResolverCache();
 }
 
-// --- Concurrent-edit safety: versions, content cache, and three-way merge ----
+// --- Concurrent-edit safety: optimistic versioning ---------------------------
 //
 // Two sessions can edit the same note in overlapping requests. `vault_read` hands back a
-// content-addressed "version" (a hash) and remembers the text behind it; `updateNote`
-// accepts that version back and, if the note changed underneath the caller, three-way
-// merges the caller's text against the current file using the remembered base. Edits that
-// don't overlap both land; edits that genuinely conflict are rejected instead of silently
-// overwriting the other session's work.
+// content-addressed "version" (a hash of the note text); `updateNote` accepts that version
+// back as `baseVersion`. If the note changed since the caller read it, the update is rejected
+// with a ConcurrentEditError ("re-read and retry") instead of silently overwriting the other
+// session's work. Omitting `baseVersion` keeps the old last-writer-wins overwrite.
 
-// Thrown by updateNote when a concurrent change can't be merged automatically. Typed (like
-// VaultPolicyError) so the tool layer can turn it into a friendly isError result.
+// Thrown by updateNote when the note changed under the caller. Typed (like VaultPolicyError)
+// so the tool layer can turn it into a friendly isError result.
 export class ConcurrentEditError extends Error {
   constructor(message: string) {
     super(message);
@@ -248,45 +246,20 @@ export class ConcurrentEditError extends Error {
   }
 }
 
-// Content-addressed cache of recently seen note bodies: version hash -> exact text. The
-// hash IS the version string handed to agents, so identical content always maps to one
-// entry. Bounded with simple FIFO eviction — losing an old base just means a stale-base
-// update falls back to a reject-and-reread instead of an automatic merge.
-const VERSION_CACHE_LIMIT = 200;
-const versionCache = new Map<string, string>();
-
-function hashContent(content: string): string {
+// Content-addressed version string for a note's text. Identical content always hashes to the
+// same value, so a caller's version matches iff the on-disk bytes are unchanged.
+export function versionOf(content: string): string {
   return createHash('sha256').update(content).digest('hex').slice(0, 16);
-}
-
-// Hash `content`, remember it for later merges, and return the version string.
-export function recordVersion(content: string): string {
-  const version = hashContent(content);
-  if (!versionCache.has(version)) {
-    versionCache.set(version, content);
-    if (versionCache.size > VERSION_CACHE_LIMIT) {
-      const oldest = versionCache.keys().next().value;
-      if (oldest !== undefined) versionCache.delete(oldest);
-    }
-  }
-  return version;
 }
 
 export interface UpdateResult {
   version: string; // version of the content now on disk
-  merged: boolean; // true if a three-way merge combined concurrent changes
 }
 
-// Replace a note's full content, merging with any concurrent change when possible.
-//
-// Without `baseVersion` this is a plain overwrite (preserves the original vault_update
-// behavior for callers that didn't read first). With `baseVersion` it runs under a per-path
-// lock and:
-//   - writes directly if the file is new or unchanged since the caller read it;
-//   - otherwise three-way merges the caller's text against the current file using the
-//     remembered base, writing the result when the edits don't overlap;
-//   - throws ConcurrentEditError when the base is no longer cached, the note is too large to
-//     merge safely, or the edits genuinely conflict.
+// Replace a note's full content. Without `baseVersion` this is a plain overwrite (preserves
+// the original vault_update behavior for callers that didn't read first). With `baseVersion`
+// it runs under a per-path lock and rejects with ConcurrentEditError if the note was changed
+// or deleted since the caller read it, so a concurrent edit is never silently clobbered.
 export async function updateNote(
   relativePath: string,
   content: string,
@@ -316,52 +289,20 @@ export async function updateNote(
       await fs.mkdir(path.dirname(absPath), { recursive: true });
       await fs.writeFile(absPath, content, 'utf-8');
       invalidateResolverCache();
-      return { version: recordVersion(content), merged: false };
+      return { version: versionOf(content) };
     }
 
-    // Caller opted out of the version check: straight overwrite of the existing note.
-    if (baseVersion === undefined) {
-      await fs.writeFile(absPath, content, 'utf-8');
-      invalidateResolverCache();
-      return { version: recordVersion(content), merged: false };
-    }
-
-    // The note is byte-identical to what the caller last read: their overwrite is exactly
-    // what they intend, so apply it without merging.
-    if (hashContent(current) === baseVersion) {
-      await fs.writeFile(absPath, content, 'utf-8');
-      invalidateResolverCache();
-      return { version: recordVersion(content), merged: false };
-    }
-
-    // The note changed since the caller read it. We need the exact text they based their
-    // edit on to merge safely.
-    const base = versionCache.get(baseVersion);
-    if (base === undefined) {
+    // The note changed since the caller read it: reject rather than overwrite the other edit.
+    if (baseVersion !== undefined && versionOf(current) !== baseVersion) {
       throw new ConcurrentEditError(
-        `"${relativePath}" changed since you last read it, and the version you based your edit on (${baseVersion}) is no longer available to merge. Re-read the note and reapply your change to the current text.`,
+        `"${relativePath}" changed since you last read it, so overwriting it would discard another session's edit. Re-read the note and reapply your change to the current text.`,
       );
     }
 
-    // Guard the O(n*m) merge against pathologically large notes (the LCS allocates an n*m
-    // matrix). >= so a note at exactly the cap is rejected rather than allocating at the limit.
-    const tooLarge = [base, current, content].some(t => t.split('\n').length >= MERGE_MAX_LINES);
-    if (tooLarge) {
-      throw new ConcurrentEditError(
-        `"${relativePath}" changed since you last read it and is too large to merge automatically. Re-read the note and reapply your change to the current text.`,
-      );
-    }
-
-    const result = threeWayMerge(base, current, content);
-    if (!result.clean) {
-      throw new ConcurrentEditError(
-        `"${relativePath}" was changed by another session in the same place(s) you edited, so it can't be merged automatically without losing work. Re-read the note and reapply your change.\n\n${summarizeConflicts(result.conflicts)}`,
-      );
-    }
-
-    await fs.writeFile(absPath, result.text, 'utf-8');
+    // No base version (opted out), or the note is unchanged since the caller read it.
+    await fs.writeFile(absPath, content, 'utf-8');
     invalidateResolverCache();
-    return { version: recordVersion(result.text), merged: true };
+    return { version: versionOf(content) };
   });
 }
 

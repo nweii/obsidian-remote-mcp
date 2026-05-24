@@ -221,13 +221,13 @@ export async function registerTools(server: McpServer) {
       });
       if (!out.ok) return out.result;
       const content = await vault.readNote(out.ref.path);
-      // Hand back a version for the note so vault_update can merge concurrent edits safely.
+      // Hand back a version for the note so vault_update can detect concurrent edits.
       // Kept as its own content block so it never bleeds into the note body the agent parses.
-      const version = vault.recordVersion(content);
+      const version = vault.versionOf(content);
       const result = withResolveWarning({ content: [{ type: "text", text: content }] }, out.ref, path);
       result.content.push({
         type: "text",
-        text: `(version: ${version} — to update this note safely, pass base_version: "${version}" to vault_update so a concurrent edit by another session is merged instead of overwritten.)`,
+        text: `(version: ${version} — to update this note safely, pass base_version: "${version}" to vault_update so it rejects the write instead of overwriting a concurrent edit by another session.)`,
       });
       return result;
     },
@@ -388,24 +388,21 @@ export async function registerTools(server: McpServer) {
     "vault_update",
     {
       title: "Update vault note",
-      description: "Replace the entire content of an existing note. For section-level changes, prefer vault_edit to avoid resending the full note. Pass base_version (from your last vault_read of this note) so a concurrent edit by another session is merged instead of silently overwritten.",
+      description: "Replace the entire content of an existing note. For section-level changes, prefer vault_edit to avoid resending the full note. Pass base_version (from your last vault_read of this note) so the write is rejected instead of silently overwriting a concurrent edit by another session.",
       inputSchema: z.object({
         path: z.string().describe("Relative path to the note"),
         content: z.string().describe("New content to write"),
         base_version: z
           .string()
           .optional()
-          .describe("Version string from your last vault_read of this note. When set, non-overlapping concurrent edits are merged automatically; edits that overlap yours are rejected so no work is lost. Omit only when intentionally overwriting whatever is on disk."),
+          .describe("Version string from your last vault_read of this note. When set, the update is rejected if the note changed since you read it (re-read and reapply your change). Omit only when intentionally overwriting whatever is on disk."),
       }),
     },
     async ({ path, content, base_version }) => {
       try {
         const targetPath = await resolveForWrite(path);
         const result = await vault.updateNote(targetPath, content, base_version);
-        const note = result.merged
-          ? `Updated ${targetPath} (merged with a concurrent change from another session). New version: ${result.version}`
-          : `Updated ${targetPath}. New version: ${result.version}`;
-        return { content: [{ type: "text", text: note }] };
+        return { content: [{ type: "text", text: `Updated ${targetPath}. New version: ${result.version}` }] };
       } catch (e) {
         if (e instanceof vault.ConcurrentEditError) {
           return { content: [{ type: "text", text: e.message }], isError: true };
