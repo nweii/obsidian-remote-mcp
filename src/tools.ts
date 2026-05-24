@@ -204,7 +204,15 @@ export async function registerTools(server: McpServer) {
       });
       if (!out.ok) return out.result;
       const content = await vault.readNote(out.ref.path);
-      return withResolveWarning({ content: [{ type: "text", text: content }] }, out.ref, path);
+      // Hand back a version for the note so vault_update can merge concurrent edits safely.
+      // Kept as its own content block so it never bleeds into the note body the agent parses.
+      const version = vault.recordVersion(content);
+      const result = withResolveWarning({ content: [{ type: "text", text: content }] }, out.ref, path);
+      result.content.push({
+        type: "text",
+        text: `(version: ${version} — to update this note safely, pass base_version: "${version}" to vault_update so a concurrent edit by another session is merged instead of overwritten.)`,
+      });
+      return result;
     },
   );
 
@@ -363,15 +371,29 @@ export async function registerTools(server: McpServer) {
     "vault_update",
     {
       title: "Update vault note",
-      description: "Replace the entire content of an existing note. For section-level changes, prefer vault_edit to avoid resending the full note.",
+      description: "Replace the entire content of an existing note. For section-level changes, prefer vault_edit to avoid resending the full note. Pass base_version (from your last vault_read of this note) so a concurrent edit by another session is merged instead of silently overwritten.",
       inputSchema: z.object({
         path: z.string().describe("Relative path to the note"),
         content: z.string().describe("New content to write"),
+        base_version: z
+          .string()
+          .optional()
+          .describe("Version string from your last vault_read of this note. When set, non-overlapping concurrent edits are merged automatically; edits that overlap yours are rejected so no work is lost. Omit only when intentionally overwriting whatever is on disk."),
       }),
     },
-    async ({ path, content }) => {
-      await vault.writeNote(path, content);
-      return { content: [{ type: "text", text: `Updated ${path}` }] };
+    async ({ path, content, base_version }) => {
+      try {
+        const result = await vault.updateNote(path, content, base_version);
+        const note = result.merged
+          ? `Updated ${path} (merged with a concurrent change from another session). New version: ${result.version}`
+          : `Updated ${path}. New version: ${result.version}`;
+        return { content: [{ type: "text", text: note }] };
+      } catch (e) {
+        if (e instanceof vault.ConcurrentEditError) {
+          return { content: [{ type: "text", text: e.message }], isError: true };
+        }
+        throw e;
+      }
     },
   );
 
@@ -408,14 +430,12 @@ export async function registerTools(server: McpServer) {
       if (operation === "append") {
         await vault.appendNote(path, content);
       } else if (operation === "prepend") {
-        const existing = await vault.readNote(path);
-        await vault.writeNote(path, content + existing);
+        await vault.prependToNote(path, content);
       } else {
         if (!find) {
           return { content: [{ type: "text", text: "Error: find is required for replace operation — pass the exact text to swap. For section-scoped edits, prefer vault_update after vault_read." }], isError: true };
         }
-        const existing = await vault.readNote(path);
-        await vault.writeNote(path, existing.replace(find, content));
+        await vault.replaceInNote(path, find, content);
       }
       return { content: [{ type: "text", text: `Edited ${path} (${operation})` }] };
     },

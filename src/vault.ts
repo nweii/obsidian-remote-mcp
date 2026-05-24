@@ -1,9 +1,12 @@
 // ABOUTME: Filesystem operations for the configured Obsidian vault - safe path resolution, read/write/search, list folder.
 import fs from 'fs/promises';
 import { readFileSync } from 'fs';
+import { createHash } from 'crypto';
 import { load as parseYaml, dump as stringifyYaml } from 'js-yaml';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { withPathLock } from './lock.js';
+import { threeWayMerge, summarizeConflicts, MERGE_MAX_LINES } from './merge.js';
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 export const DEFAULT_CONTEXT_NOTE_CANDIDATES = ['AGENTS.md', 'CLAUDE.md'] as const;
@@ -227,6 +230,126 @@ export async function writeNote(relativePath: string, content: string): Promise<
   invalidateResolverCache();
 }
 
+// --- Concurrent-edit safety: versions, content cache, and three-way merge ----
+//
+// Two sessions can edit the same note in overlapping requests. `vault_read` hands back a
+// content-addressed "version" (a hash) and remembers the text behind it; `updateNote`
+// accepts that version back and, if the note changed underneath the caller, three-way
+// merges the caller's text against the current file using the remembered base. Edits that
+// don't overlap both land; edits that genuinely conflict are rejected instead of silently
+// overwriting the other session's work.
+
+// Thrown by updateNote when a concurrent change can't be merged automatically. Typed (like
+// VaultPolicyError) so the tool layer can turn it into a friendly isError result.
+export class ConcurrentEditError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ConcurrentEditError';
+  }
+}
+
+// Content-addressed cache of recently seen note bodies: version hash -> exact text. The
+// hash IS the version string handed to agents, so identical content always maps to one
+// entry. Bounded with simple FIFO eviction — losing an old base just means a stale-base
+// update falls back to a reject-and-reread instead of an automatic merge.
+const VERSION_CACHE_LIMIT = 200;
+const versionCache = new Map<string, string>();
+
+function hashContent(content: string): string {
+  return createHash('sha256').update(content).digest('hex').slice(0, 16);
+}
+
+// Hash `content`, remember it for later merges, and return the version string.
+export function recordVersion(content: string): string {
+  const version = hashContent(content);
+  if (!versionCache.has(version)) {
+    versionCache.set(version, content);
+    if (versionCache.size > VERSION_CACHE_LIMIT) {
+      const oldest = versionCache.keys().next().value;
+      if (oldest !== undefined) versionCache.delete(oldest);
+    }
+  }
+  return version;
+}
+
+export interface UpdateResult {
+  version: string; // version of the content now on disk
+  merged: boolean; // true if a three-way merge combined concurrent changes
+}
+
+// Replace a note's full content, merging with any concurrent change when possible.
+//
+// Without `baseVersion` this is a plain overwrite (preserves the original vault_update
+// behavior for callers that didn't read first). With `baseVersion` it runs under a per-path
+// lock and:
+//   - writes directly if the file is new or unchanged since the caller read it;
+//   - otherwise three-way merges the caller's text against the current file using the
+//     remembered base, writing the result when the edits don't overlap;
+//   - throws ConcurrentEditError when the base is no longer cached, the note is too large to
+//     merge safely, or the edits genuinely conflict.
+export async function updateNote(
+  relativePath: string,
+  content: string,
+  baseVersion?: string,
+): Promise<UpdateResult> {
+  assertWritable();
+  const absPath = resolveSafePath(relativePath);
+
+  return withPathLock(absPath, async () => {
+    let current: string | null;
+    try {
+      current = await fs.readFile(absPath, 'utf-8');
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT') current = null;
+      else throw e;
+    }
+
+    // New file, or caller opted out of the version check: straight overwrite.
+    if (current === null || baseVersion === undefined) {
+      await fs.mkdir(path.dirname(absPath), { recursive: true });
+      await fs.writeFile(absPath, content, 'utf-8');
+      invalidateResolverCache();
+      return { version: recordVersion(content), merged: false };
+    }
+
+    // The note is byte-identical to what the caller last read: their overwrite is exactly
+    // what they intend, so apply it without merging.
+    if (hashContent(current) === baseVersion) {
+      await fs.writeFile(absPath, content, 'utf-8');
+      invalidateResolverCache();
+      return { version: recordVersion(content), merged: false };
+    }
+
+    // The note changed since the caller read it. We need the exact text they based their
+    // edit on to merge safely.
+    const base = versionCache.get(baseVersion);
+    if (base === undefined) {
+      throw new ConcurrentEditError(
+        `"${relativePath}" changed since you last read it, and the version you based your edit on (${baseVersion}) is no longer available to merge. Re-read the note and reapply your change to the current text.`,
+      );
+    }
+
+    // Guard the O(n*m) merge against pathologically large notes.
+    const tooLarge = [base, current, content].some(t => t.split('\n').length > MERGE_MAX_LINES);
+    if (tooLarge) {
+      throw new ConcurrentEditError(
+        `"${relativePath}" changed since you last read it and is too large to merge automatically. Re-read the note and reapply your change to the current text.`,
+      );
+    }
+
+    const result = threeWayMerge(base, current, content);
+    if (!result.clean) {
+      throw new ConcurrentEditError(
+        `"${relativePath}" was changed by another session in the same place(s) you edited, so it can't be merged automatically without losing work. Re-read the note and reapply your change.\n\n${summarizeConflicts(result.conflicts)}`,
+      );
+    }
+
+    await fs.writeFile(absPath, result.text, 'utf-8');
+    invalidateResolverCache();
+    return { version: recordVersion(result.text), merged: true };
+  });
+}
+
 export async function getFrontmatter(relativePath: string): Promise<Record<string, unknown> | null> {
   const content = await readNote(relativePath);
   return parseFrontmatter(content);
@@ -239,16 +362,47 @@ export async function getFrontmatterProperty(relativePath: string, name: string)
 
 export async function setFrontmatterProperty(relativePath: string, name: string, value: unknown): Promise<void> {
   assertWritable();
-  const content = await readNote(relativePath);
-  const { body } = splitFrontmatter(content);
-  const frontmatter = parseFrontmatter(content) ?? {};
-  frontmatter[name] = value;
-  await writeNote(relativePath, serializeFrontmatter(frontmatter, body));
+  const absPath = resolveSafePath(relativePath);
+  // Lock the read-modify-write so a concurrent edit to the same note can't interleave
+  // between reading the body and writing the updated frontmatter (Race A).
+  await withPathLock(absPath, async () => {
+    const content = await readNote(relativePath);
+    const { body } = splitFrontmatter(content);
+    const frontmatter = parseFrontmatter(content) ?? {};
+    frontmatter[name] = value;
+    await writeNote(relativePath, serializeFrontmatter(frontmatter, body));
+  });
 }
 
+// No lock needed: appendFile opens with O_APPEND, so concurrent appends are atomic at the
+// OS level — they can interleave in order but never lose each other's bytes.
 export async function appendNote(relativePath: string, content: string): Promise<void> {
   assertWritable();
   await fs.appendFile(resolveSafePath(relativePath), content, 'utf-8');
+}
+
+// Insert content at the very start of a note. Locked so the read and write are atomic.
+export async function prependToNote(relativePath: string, content: string): Promise<void> {
+  assertWritable();
+  const absPath = resolveSafePath(relativePath);
+  await withPathLock(absPath, async () => {
+    const existing = await fs.readFile(absPath, 'utf-8');
+    await fs.writeFile(absPath, content + existing, 'utf-8');
+  });
+  invalidateResolverCache();
+}
+
+// Replace the first occurrence of `find` with `content`. Locked so the read and write are
+// atomic; because it reads the current file at write time, concurrent changes elsewhere in
+// the note are preserved. If `find` is absent the note is rewritten unchanged.
+export async function replaceInNote(relativePath: string, find: string, content: string): Promise<void> {
+  assertWritable();
+  const absPath = resolveSafePath(relativePath);
+  await withPathLock(absPath, async () => {
+    const existing = await fs.readFile(absPath, 'utf-8');
+    await fs.writeFile(absPath, existing.replace(find, content), 'utf-8');
+  });
+  invalidateResolverCache();
 }
 
 export async function deleteNote(relativePath: string): Promise<void> {
@@ -507,7 +661,27 @@ export async function editNoteSection(
   operation: 'append' | 'prepend' | 'replace',
   content: string,
 ): Promise<void> {
-  const existing = await readNote(relativePath);
+  assertWritable();
+  const absPath = resolveSafePath(relativePath);
+  // Lock the read-modify-write so a concurrent edit to the same note can't interleave
+  // between reading the section and writing it back (Race A).
+  await withPathLock(absPath, async () => {
+    const existing = await fs.readFile(absPath, 'utf-8');
+    await fs.writeFile(absPath, applySectionEdit(existing, heading, operation, content, relativePath), 'utf-8');
+  });
+  invalidateResolverCache();
+}
+
+// Pure section splice: given the full note text, return it with the named section edited.
+// Throws if the heading is missing. Kept separate from I/O so the transform is easy to test
+// and so editNoteSection can run it inside a single locked read-write.
+function applySectionEdit(
+  existing: string,
+  heading: string,
+  operation: 'append' | 'prepend' | 'replace',
+  content: string,
+  relativePath: string,
+): string {
   const lines = existing.split('\n');
   const bounds = findSectionBounds(lines, heading);
   if (!bounds) {
@@ -545,7 +719,7 @@ export async function editNoteSection(
     newBody = [...bodyContent, ...contentLines, ...trailingBlanks];
   }
 
-  await writeNote(relativePath, [...before, headingLine, ...newBody, ...after].join('\n'));
+  return [...before, headingLine, ...newBody, ...after].join('\n');
 }
 
 // --- Note reference resolution -----------------------------------------------

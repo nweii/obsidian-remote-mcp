@@ -809,4 +809,93 @@ describe('Title resolution via tool round-trips', () => {
       await rm(file, { force: true });
     }
   });
+
+  // Pull the version hash out of the trailing block vault_read appends.
+  function versionFrom(texts: string[]): string {
+    const match = texts.join('\n').match(/version: ([0-9a-f]{16})/);
+    if (!match) throw new Error(`no version block found in: ${texts.join(' | ')}`);
+    return match[1]!;
+  }
+
+  test('vault_read returns a version block alongside the note body', async () => {
+    const file = path.join(vaultPath, 'VersionedRead.md');
+    await writeFile(file, '# V\nbody\n', 'utf-8');
+
+    const app = createApp();
+    const { base, close } = await listen(app);
+    try {
+      const token = seedTestToken();
+      const result = await callTool(base, token, 'vault_read', { path: 'VersionedRead.md' });
+      const texts = result.content?.map(c => c.text) ?? [];
+      expect(texts.join('\n')).toContain('body');     // note body present
+      expect(texts.join('\n')).toMatch(/version: [0-9a-f]{16}/); // version present
+    } finally {
+      await close();
+      await rm(file, { force: true });
+    }
+  });
+
+  test('vault_update merges a concurrent change when given a stale base_version', async () => {
+    const file = path.join(vaultPath, 'MergeRoundTrip.md');
+    const baseContent = ['# Week', '', '## Mon', '- planned', '', '## Tue', '- planned', ''].join('\n');
+    await writeFile(file, baseContent, 'utf-8');
+
+    const app = createApp();
+    const { base, close } = await listen(app);
+    try {
+      const token = seedTestToken();
+      const readResult = await callTool(base, token, 'vault_read', { path: 'MergeRoundTrip.md' });
+      const version = versionFrom(readResult.content?.map(c => c.text) ?? []);
+
+      // Another session edits the Mon section out-of-band.
+      await writeFile(file, baseContent.replace('## Mon\n- planned', '## Mon\n- planned\n- shipped auth'), 'utf-8');
+
+      // Caller, holding the stale version, edits the Tue section.
+      const callerEdit = baseContent.replace('## Tue\n- planned', '## Tue\n- planned\n- reviewed PRs');
+      const result = await callTool(base, token, 'vault_update', {
+        path: 'MergeRoundTrip.md',
+        content: callerEdit,
+        base_version: version,
+      });
+
+      expect(result.isError).toBeFalsy();
+      expect(result.content?.map(c => c.text).join('\n')).toMatch(/merged/);
+      const final = await readFile(file, 'utf-8');
+      expect(final).toContain('- shipped auth');
+      expect(final).toContain('- reviewed PRs');
+    } finally {
+      await close();
+      await rm(file, { force: true });
+    }
+  });
+
+  test('vault_update returns isError when a concurrent change overlaps the edit', async () => {
+    const file = path.join(vaultPath, 'ConflictRoundTrip.md');
+    const baseContent = '# C\nshared line\n';
+    await writeFile(file, baseContent, 'utf-8');
+
+    const app = createApp();
+    const { base, close } = await listen(app);
+    try {
+      const token = seedTestToken();
+      const readResult = await callTool(base, token, 'vault_read', { path: 'ConflictRoundTrip.md' });
+      const version = versionFrom(readResult.content?.map(c => c.text) ?? []);
+
+      // Another session and the caller both change the same line, differently.
+      const concurrent = '# C\nother session line\n';
+      await writeFile(file, concurrent, 'utf-8');
+      const result = await callTool(base, token, 'vault_update', {
+        path: 'ConflictRoundTrip.md',
+        content: '# C\ncaller line\n',
+        base_version: version,
+      });
+
+      expect(result.isError).toBe(true);
+      expect(result.content?.map(c => c.text).join('\n')).toMatch(/can't be merged|Re-read/);
+      expect(await readFile(file, 'utf-8')).toBe(concurrent); // untouched
+    } finally {
+      await close();
+      await rm(file, { force: true });
+    }
+  });
 });
