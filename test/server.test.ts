@@ -809,4 +809,93 @@ describe('Title resolution via tool round-trips', () => {
       await rm(file, { force: true });
     }
   });
+
+  // Pull the version hash out of the trailing block vault_read appends.
+  function versionFrom(texts: string[]): string {
+    const match = texts.join('\n').match(/version: ([0-9a-f]{16})/);
+    if (!match) throw new Error(`no version block found in: ${texts.join(' | ')}`);
+    return match[1]!;
+  }
+
+  test('vault_read returns a version block alongside the note body', async () => {
+    const file = path.join(vaultPath, 'VersionedRead.md');
+    await writeFile(file, '# V\nbody\n', 'utf-8');
+
+    const app = createApp();
+    const { base, close } = await listen(app);
+    try {
+      const token = seedTestToken();
+      const result = await callTool(base, token, 'vault_read', { path: 'VersionedRead.md' });
+      const texts = result.content?.map(c => c.text) ?? [];
+      expect(texts.join('\n')).toContain('body');     // note body present
+      expect(texts.join('\n')).toMatch(/version: [0-9a-f]{16}/); // version present
+    } finally {
+      await close();
+      await rm(file, { force: true });
+    }
+  });
+
+  test('vault_update rejects a stale base_version instead of overwriting a concurrent change', async () => {
+    const file = path.join(vaultPath, 'RejectRoundTrip.md');
+    await writeFile(file, '# R\noriginal\n', 'utf-8');
+
+    const app = createApp();
+    const { base, close } = await listen(app);
+    try {
+      const token = seedTestToken();
+      const readResult = await callTool(base, token, 'vault_read', { path: 'RejectRoundTrip.md' });
+      const version = versionFrom(readResult.content?.map(c => c.text) ?? []);
+
+      // Another session changes the note out-of-band after the read.
+      const concurrent = '# R\nother session edit\n';
+      await writeFile(file, concurrent, 'utf-8');
+
+      // Caller holding the stale version tries to overwrite — must be rejected.
+      const result = await callTool(base, token, 'vault_update', {
+        path: 'RejectRoundTrip.md',
+        content: '# R\ncaller edit\n',
+        base_version: version,
+      });
+
+      expect(result.isError).toBe(true);
+      expect(result.content?.map(c => c.text).join('\n')).toMatch(/changed since you last read it|Re-read/);
+      expect(await readFile(file, 'utf-8')).toBe(concurrent); // the other session's edit is preserved
+    } finally {
+      await close();
+      await rm(file, { force: true });
+    }
+  });
+
+  test('vault_update resolves a bare title to the same note vault_read versioned (no wrong-path write)', async () => {
+    // Read by bare title resolves into a subfolder; updating by the same bare title must
+    // target that resolved note (so the version check applies), not create a stray <root>/Titled.md.
+    const dir = path.join(vaultPath, 'TitleResolveFolder');
+    await mkdir(dir, { recursive: true });
+    const file = path.join(dir, 'Titled.md');
+    await writeFile(file, '# T\nshared\n', 'utf-8');
+    vault.invalidateResolverCache();
+
+    const app = createApp();
+    const { base, close } = await listen(app);
+    try {
+      const token = seedTestToken();
+      const readResult = await callTool(base, token, 'vault_read', { path: 'Titled' });
+      const version = versionFrom(readResult.content?.map(c => c.text) ?? []);
+
+      const result = await callTool(base, token, 'vault_update', {
+        path: 'Titled', // bare title, same as the read
+        content: '# T\nshared\nedited\n',
+        base_version: version,
+      });
+
+      expect(result.isError).toBeFalsy();
+      expect(await readFile(file, 'utf-8')).toContain('edited'); // wrote the resolved note
+      // No stray note created at the vault root.
+      await expect(readFile(path.join(vaultPath, 'Titled.md'), 'utf-8')).rejects.toThrow();
+    } finally {
+      await close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
 });

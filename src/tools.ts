@@ -86,6 +86,26 @@ async function resolveOrError(
   }
 }
 
+// vault_update takes the same path/bare-title input as vault_read, and vault_read versions the
+// note against its *resolved* path. updateNote must operate on that same resolved path or the
+// version check silently won't apply (and a brand-new file could be written at the unresolved
+// path). Resolve to an existing note when possible; fall back to the literal input only when
+// the note genuinely doesn't exist (e.g. creating a new one). Every other failure — policy
+// violations, EISDIR, transient FS errors during the resolver walk — propagates, matching
+// resolveOrError on the read path; swallowing them could write a stray file at the wrong path.
+async function resolveForWrite(input: string): Promise<string> {
+  try {
+    const ref = await vault.resolveNoteReference(input);
+    return ref.path;
+  } catch (e) {
+    const isNotFound =
+      e instanceof Error &&
+      (e.message === "Empty note reference" || e.message.startsWith("Could not resolve"));
+    if (!isNotFound) throw e;
+    return input;
+  }
+}
+
 async function titleSearchToolResult(title: string, exact: boolean, limit: number) {
   const results = await vault.findByTitle(title, exact, limit);
   if (results.length === 0) {
@@ -204,7 +224,15 @@ export async function registerTools(server: McpServer) {
       });
       if (!out.ok) return out.result;
       const content = await vault.readNote(out.ref.path);
-      return withResolveWarning({ content: [{ type: "text", text: content }] }, out.ref, path);
+      // Hand back a version for the note so vault_update can detect concurrent edits.
+      // Kept as its own content block so it never bleeds into the note body the agent parses.
+      const version = vault.versionOf(content);
+      const result = withResolveWarning({ content: [{ type: "text", text: content }] }, out.ref, path);
+      result.content.push({
+        type: "text",
+        text: `(version: ${version} — pass as base_version to vault_update to avoid clobbering a concurrent edit)`,
+      });
+      return result;
     },
   );
 
@@ -363,15 +391,27 @@ export async function registerTools(server: McpServer) {
     "vault_update",
     {
       title: "Update vault note",
-      description: "Replace the entire content of an existing note. For section-level changes, prefer vault_edit to avoid resending the full note.",
+      description: "Replace the entire content of an existing note. For section-level changes, prefer vault_edit to avoid resending the full note. Pass base_version (from your last vault_read of this note) so the write is rejected instead of silently overwriting a concurrent edit by another session.",
       inputSchema: z.object({
         path: z.string().describe("Relative path to the note"),
         content: z.string().describe("New content to write"),
+        base_version: z
+          .string()
+          .optional()
+          .describe("Version string from your last vault_read of this note. When set, the update is rejected if the note changed since you read it (re-read and reapply your change). Omit only when intentionally overwriting whatever is on disk."),
       }),
     },
-    async ({ path, content }) => {
-      await vault.writeNote(path, content);
-      return { content: [{ type: "text", text: `Updated ${path}` }] };
+    async ({ path, content, base_version }) => {
+      try {
+        const targetPath = await resolveForWrite(path);
+        const result = await vault.updateNote(targetPath, content, base_version);
+        return { content: [{ type: "text", text: `Updated ${targetPath}. New version: ${result.version}` }] };
+      } catch (e) {
+        if (e instanceof vault.ConcurrentEditError) {
+          return { content: [{ type: "text", text: e.message }], isError: true };
+        }
+        throw e;
+      }
     },
   );
 
@@ -408,14 +448,12 @@ export async function registerTools(server: McpServer) {
       if (operation === "append") {
         await vault.appendNote(path, content);
       } else if (operation === "prepend") {
-        const existing = await vault.readNote(path);
-        await vault.writeNote(path, content + existing);
+        await vault.prependToNote(path, content);
       } else {
         if (!find) {
           return { content: [{ type: "text", text: "Error: find is required for replace operation — pass the exact text to swap. For section-scoped edits, prefer vault_update after vault_read." }], isError: true };
         }
-        const existing = await vault.readNote(path);
-        await vault.writeNote(path, existing.replace(find, content));
+        await vault.replaceInNote(path, find, content);
       }
       return { content: [{ type: "text", text: `Edited ${path} (${operation})` }] };
     },
