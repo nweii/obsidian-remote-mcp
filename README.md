@@ -10,10 +10,12 @@ expose it through a remote MCP endpoint for apps like
 Claude.ai.
 
 - OAuth (browser sign-in) or a fixed bearer token, depending on what the client supports.
-- `vault_context` serves your vault guide note (defaults to `AGENTS.md`) plus a shallow folder tree so agents have a better understanding of your vault structure
+- `vault_context` serves your vault guide note (defaults to `AGENTS.md`) plus a shallow folder tree so agents can see your vault structure.
 - Daily notes from a path template you configure.
 - Create, edit, update, and trash notes; wikilinks and YAML frontmatter work as usual.
-- Set or read individual frontmatter properties
+- Edit just one section under a heading, without replacing the whole note.
+- Full-note updates can check the version you last read, so another agent's edit is not overwritten by accident.
+- Set or read individual frontmatter properties.
 - Read one section under a heading, or list headings first, instead of pulling the whole note every time.
 - Search by filename or regex in note text; content search can be scoped to a folder.
 - Block paths with `.mcpignore`; set `VAULT_READ_ONLY` to turn off writes.
@@ -37,15 +39,16 @@ The server currently exposes these tools:
 | Tool | Description |
 |------|-------------|
 | `vault_context` | Read the vault guidance note configured by `VAULT_CONTEXT_PATH`, or fall back to `AGENTS.md` / `CLAUDE.md` |
-| `vault_read` | Full note text (`mode` full, default) or list one folder level (`mode` `list`; `path` `""` = vault root) |
+| `vault_read` | Full note text (`mode` full, default) with a version for safe updates, or list one folder level (`mode` `list`; `path` `""` = vault root) |
 | `vault_outline` | All `#` headings in a note (one per line); use before `vault_read_section` |
 | `vault_read_section` | Body under a single heading (`heading` = text without `#`, case-insensitive) |
 | `vault_frontmatter` | Read YAML frontmatter from a note; optional `property` for a single key |
 | `vault_links` | Read outgoing wikilinks and optional backlinks |
 | `vault_create` | Create a new note |
-| `vault_update` | Replace a note's full contents |
+| `vault_update` | Replace a note's full contents; optional `base_version` rejects stale writes |
 | `vault_set_frontmatter_property` | Set one frontmatter property without rewriting the note body |
 | `vault_edit` | Append, prepend, or replace exact text within a note |
+| `vault_edit_section` | Append, prepend, or replace the body under one heading |
 | `vault_trash` | Move a note to `.trash` |
 | `vault_search_title` | Find notes by filename (partial or exact); returns paths for `vault_read` |
 | `vault_search_content` | Regex search in note bodies; optional `folder` to scope large vaults |
@@ -305,6 +308,7 @@ DAILY_NOTE_PATH_TEMPLATE=Journal/{YYYY}/{MMM}/{D}-{ddd}.md
 - `VAULT_READ_ONLY=true` blocks all write operations.
 - `vault_search_title` defaults to `limit=50`; `vault_search_content` defaults to `limit=20`. Limits are adjustable; `0` means no limit.
 - `vault_frontmatter` and `vault_set_frontmatter_property` let agents work with frontmatter properties without reading or rewriting the whole note body.
+- `vault_read` returns a version block. Pass it to `vault_update` as `base_version` if you want stale full-note updates to fail instead of overwriting another edit.
 
 ## Tests
 
