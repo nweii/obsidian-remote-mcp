@@ -323,11 +323,113 @@ export async function setFrontmatterProperty(relativePath: string, name: string,
   // between reading the body and writing the updated frontmatter (Race A).
   await withPathLock(absPath, async () => {
     const content = await readNote(relativePath);
-    const { body } = splitFrontmatter(content);
-    const frontmatter = parseFrontmatter(content) ?? {};
-    frontmatter[name] = value;
-    await writeNote(relativePath, serializeFrontmatter(frontmatter, body));
+    const coerced = coerceFrontmatterValue(value);
+    const updated = setFrontmatterKey(content, name, coerced);
+    await writeNote(relativePath, updated);
   });
+}
+
+// If a client serialized an array or object as a JSON string before sending (because
+// the MCP tool's input schema didn't pin the shape), parse it back so YAML emits a
+// proper sequence/map instead of folding the long quoted string. Plain strings that
+// happen to look bracket-ish but aren't valid JSON pass through as literals — a
+// property value of `[draft]` is legitimate text.
+function coerceFrontmatterValue(value: unknown): unknown {
+  if (typeof value !== 'string') return value;
+  const trimmed = value.trim();
+  const looksLikeJson =
+    (trimmed.startsWith('[') && trimmed.endsWith(']')) ||
+    (trimmed.startsWith('{') && trimmed.endsWith('}'));
+  if (!looksLikeJson) return value;
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (Array.isArray(parsed) || (typeof parsed === 'object' && parsed !== null)) {
+      return parsed;
+    }
+  } catch {
+    // Not JSON after all — keep as the literal string the caller sent.
+  }
+  return value;
+}
+
+// Textual single-key edit on the frontmatter block. Splices over just the target
+// key's lines and leaves every other byte intact — so untouched dates, quoting
+// styles, key order, comments, and blank lines all survive a one-property write.
+// For JSON-shaped frontmatter (the `---\n{ ... }\n---` form) we fall back to
+// parse-and-reserialize, matching Obsidian's own "JSON read, YAML write" behavior
+// documented at https://help.obsidian.md/properties#JSON+properties.
+function setFrontmatterKey(content: string, key: string, value: unknown): string {
+  const { frontmatter, body } = splitFrontmatter(content);
+  const rendered = stringifyYaml({ [key]: value }, { lineWidth: 0, noRefs: true })
+    .replace(/\n+$/, '');
+
+  if (frontmatter === null) {
+    return `---\n${rendered}\n---\n${content}`;
+  }
+
+  if (isJsonFrontmatter(frontmatter)) {
+    const data = parseFrontmatter(content) ?? {};
+    data[key] = value;
+    return serializeFrontmatter(data, body);
+  }
+
+  const fmLines = frontmatter.split('\n');
+  const region = findFrontmatterKeyRegion(fmLines, key);
+  const renderedLines = rendered.split('\n');
+
+  let nextLines: string[];
+  if (region) {
+    nextLines = [
+      ...fmLines.slice(0, region.start),
+      ...renderedLines,
+      ...fmLines.slice(region.end + 1),
+    ];
+  } else {
+    let tail = fmLines.length;
+    while (tail > 0 && fmLines[tail - 1] === '') tail--;
+    nextLines = [...fmLines.slice(0, tail), ...renderedLines, ...fmLines.slice(tail)];
+  }
+
+  return `---\n${nextLines.join('\n')}\n---\n${body}`;
+}
+
+function isJsonFrontmatter(frontmatter: string): boolean {
+  return frontmatter.trimStart().startsWith('{');
+}
+
+// A top-level key line in the frontmatter block has no leading whitespace, isn't
+// a comment, and matches `name:` (with the name allowed to contain spaces). The
+// key's region extends through any indented continuation lines (list items,
+// block scalars, nested maps). Blank lines and comments terminate the region
+// without being claimed by it — they belong between keys, not inside one.
+function findFrontmatterKeyRegion(
+  lines: string[],
+  key: string,
+): { start: number; end: number } | null {
+  for (let i = 0; i < lines.length; i++) {
+    if (parseTopLevelKey(lines[i]) !== key) continue;
+    let end = i;
+    for (let j = i + 1; j < lines.length; j++) {
+      if (/^[ \t]/.test(lines[j])) {
+        end = j;
+        continue;
+      }
+      break;
+    }
+    return { start: i, end };
+  }
+  return null;
+}
+
+function parseTopLevelKey(line: string): string | null {
+  if (line.length === 0 || /^[\s#]/.test(line)) return null;
+  const m = line.match(/^([^:]+?)\s*:(\s|$)/);
+  if (!m) return null;
+  const raw = m[1];
+  if ((raw.startsWith('"') && raw.endsWith('"')) || (raw.startsWith("'") && raw.endsWith("'"))) {
+    return raw.slice(1, -1);
+  }
+  return raw;
 }
 
 // Locked like the other writers: O_APPEND is atomic against other appends, but NOT against

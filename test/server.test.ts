@@ -419,6 +419,130 @@ describe('Vault-derived defaults', () => {
     }
   });
 
+  test('setFrontmatterProperty writes an array as a YAML sequence, not a folded scalar', async () => {
+    const notePath = path.join(vaultPath, 'fm-array.md');
+    await writeFile(notePath, '---\nstatus: draft\n---\n# Array\n', 'utf-8');
+    await vault.setFrontmatterProperty('fm-array.md', 'related', ['[[A]]', '[[B]]']);
+    const raw = await readFile(notePath, 'utf-8');
+    expect(raw).not.toContain('>-');
+    expect(raw).toMatch(/related:\s*\n\s+-\s+["']?\[\[A\]\]/);
+    expect(raw).toMatch(/-\s+["']?\[\[B\]\]/);
+    // Round-trip: read it back and confirm it's an array.
+    const frontmatter = await vault.getFrontmatter('fm-array.md');
+    expect(Array.isArray(frontmatter?.related)).toBe(true);
+    expect(frontmatter?.related).toEqual(['[[A]]', '[[B]]']);
+  });
+
+  test('setFrontmatterProperty coerces a JSON-stringified array (client that lost the array shape)', async () => {
+    const notePath = path.join(vaultPath, 'fm-json-string.md');
+    await writeFile(notePath, '---\nstatus: draft\n---\n# JSON string\n', 'utf-8');
+    await vault.setFrontmatterProperty('fm-json-string.md', 'related', '["[[A]]","[[B]]"]');
+    const frontmatter = await vault.getFrontmatter('fm-json-string.md');
+    expect(frontmatter?.related).toEqual(['[[A]]', '[[B]]']);
+  });
+
+  test('setFrontmatterProperty leaves a string value that happens to contain brackets unchanged', async () => {
+    const notePath = path.join(vaultPath, 'fm-bracket-string.md');
+    await writeFile(notePath, '---\nstatus: draft\n---\n# Brackets\n', 'utf-8');
+    // Looks bracket-like but isn't JSON — should be stored as a literal string.
+    await vault.setFrontmatterProperty('fm-bracket-string.md', 'note', '[draft]');
+    const frontmatter = await vault.getFrontmatter('fm-bracket-string.md');
+    expect(frontmatter?.note).toBe('[draft]');
+  });
+
+  test('setFrontmatterProperty preserves untouched bare-date keys as date-only on round-trip', async () => {
+    const notePath = path.join(vaultPath, 'fm-date.md');
+    await writeFile(
+      notePath,
+      ['---', 'created: 2026-05-25', 'status: draft', '---', '# Dates', ''].join('\n'),
+      'utf-8',
+    );
+    await vault.setFrontmatterProperty('fm-date.md', 'status', 'published');
+    const raw = await readFile(notePath, 'utf-8');
+    // The created date was never touched — it should still read as bare-date on disk,
+    // not get normalized to a full ISO datetime.
+    expect(raw).toContain('created: 2026-05-25');
+    expect(raw).not.toContain('2026-05-25T');
+  });
+
+  test('setFrontmatterProperty appends when the key does not exist', async () => {
+    const notePath = path.join(vaultPath, 'fm-append.md');
+    await writeFile(notePath, '---\nstatus: draft\n---\n# Append\n', 'utf-8');
+    await vault.setFrontmatterProperty('fm-append.md', 'tags', ['one', 'two']);
+    const raw = await readFile(notePath, 'utf-8');
+    expect(raw).toContain('status: draft');
+    expect(raw).toMatch(/tags:\s*\n\s+-\s+one\s*\n\s+-\s+two/);
+  });
+
+  test('setFrontmatterProperty creates the frontmatter block when none exists', async () => {
+    const notePath = path.join(vaultPath, 'fm-create.md');
+    await writeFile(notePath, '# No frontmatter yet\n', 'utf-8');
+    await vault.setFrontmatterProperty('fm-create.md', 'status', 'draft');
+    const raw = await readFile(notePath, 'utf-8');
+    expect(raw.startsWith('---\n')).toBe(true);
+    expect(raw).toContain('status: draft');
+    expect(raw).toContain('# No frontmatter yet');
+  });
+
+  test('setFrontmatterProperty on JSON frontmatter saves as YAML (matches Obsidian behavior)', async () => {
+    const notePath = path.join(vaultPath, 'fm-json-block.md');
+    await writeFile(
+      notePath,
+      ['---', '{', '  "tags": ["journal"],', '  "publish": false', '}', '---', '# JSON', ''].join('\n'),
+      'utf-8',
+    );
+    await vault.setFrontmatterProperty('fm-json-block.md', 'status', 'published');
+    const frontmatter = await vault.getFrontmatter('fm-json-block.md');
+    // All keys present; values intact; new key added.
+    expect(frontmatter?.tags).toEqual(['journal']);
+    expect(frontmatter?.publish).toBe(false);
+    expect(frontmatter?.status).toBe('published');
+    // Body intact.
+    const raw = await readFile(notePath, 'utf-8');
+    expect(raw).toContain('# JSON');
+  });
+
+  test('setFrontmatterProperty preserves an inline-array value on an untouched key', async () => {
+    // Obsidian frontmatter accepts both `tags: [a, b, c]` (inline flow) and the
+    // multi-line `tags:\n  - a` form. Setting an unrelated property should leave
+    // the inline form byte-identical — the splice only touches the target key.
+    const notePath = path.join(vaultPath, 'fm-inline.md');
+    await writeFile(
+      notePath,
+      ['---', 'tags: [journal, draft]', 'status: draft', '---', '# Inline', ''].join('\n'),
+      'utf-8',
+    );
+    await vault.setFrontmatterProperty('fm-inline.md', 'status', 'published');
+    const raw = await readFile(notePath, 'utf-8');
+    expect(raw).toContain('tags: [journal, draft]');
+    expect(raw).toContain('status: published');
+  });
+
+  test('setFrontmatterProperty preserves blank lines and comments in the frontmatter', async () => {
+    const notePath = path.join(vaultPath, 'fm-preserve.md');
+    await writeFile(
+      notePath,
+      [
+        '---',
+        '# top-of-file comment',
+        'created: 2026-05-25',
+        '',
+        'status: draft',
+        '---',
+        '# Preserve',
+        '',
+      ].join('\n'),
+      'utf-8',
+    );
+    await vault.setFrontmatterProperty('fm-preserve.md', 'status', 'published');
+    const raw = await readFile(notePath, 'utf-8');
+    expect(raw).toContain('# top-of-file comment');
+    expect(raw).toContain('created: 2026-05-25');
+    expect(raw).toContain('status: published');
+    // The blank line between created and status should still be there.
+    expect(raw).toMatch(/created: 2026-05-25\n\nstatus: published/);
+  });
+
   test('parses inline array frontmatter syntax', async () => {
     const notePath = path.join(vaultPath, 'frontmatter-inline-arrays.md');
     await writeFile(

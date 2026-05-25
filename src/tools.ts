@@ -419,11 +419,24 @@ export async function registerTools(server: McpServer) {
     "vault_set_frontmatter_property",
     {
       title: "Set note frontmatter property",
-      description: "Set one YAML frontmatter property on a note without rewriting the body.",
+      description:
+        "Set one YAML frontmatter property on a note. Splices over just the target key's lines, so untouched keys keep their on-disk form (including bare YYYY-MM-DD dates, quoting style, blank lines, comments). " +
+        "Pass arrays as JSON arrays (e.g. `[\"[[A]]\", \"[[B]]\"]`) so they render as a YAML sequence — a JSON-stringified array sent as a string is parsed defensively but the array shape is preferred.",
       inputSchema: z.object({
         path: z.string().describe("Relative path to the note"),
         name: z.string().describe("Frontmatter property name"),
-        value: z.any().describe("Value to store. Strings, numbers, booleans, arrays, and objects are supported."),
+        value: z
+          .union([
+            z.string(),
+            z.number(),
+            z.boolean(),
+            z.null(),
+            z.array(z.unknown()),
+            z.record(z.string(), z.unknown()),
+          ])
+          .describe(
+            "Value to store. Pass arrays as JSON arrays (renders as YAML sequence), objects as JSON objects, scalars as strings/numbers/booleans. null is allowed.",
+          ),
       }),
     },
     async ({ path, name, value }) => {

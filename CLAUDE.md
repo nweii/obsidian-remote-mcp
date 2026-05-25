@@ -90,6 +90,7 @@ MCP endpoint: `POST /mcp` (requires Bearer token)
 - Agents can call `vault_feedback` to log a structured note when they get stuck or want a tool that doesn't exist; entries land in `LOG_DIR/feedback.jsonl`. The tool is only registered when logging is enabled. Feedback fields (`goal`, `attempted`, `stuck_on`, `suggested_tool`) are agent-authored and stored verbatim.
 - No automatic rotation — log files grow forever. Mount `LOG_DIR` as a persistent volume in production and rotate or truncate manually if size becomes a concern.
 - Set `LOG_ENABLED=false` to disable both — useful for forks that don't want disk writes recording agent activity, or for ephemeral deployments without a persistent volume.
+- `setFrontmatterProperty` (and the `vault_set_frontmatter_property` tool) does a textual single-key splice on the frontmatter block instead of round-tripping the whole block through js-yaml. Untouched keys keep their on-disk byte form — including bare `YYYY-MM-DD` dates (which the YAML parser would otherwise normalize to full ISO datetimes), quoting style, key order, blank lines, and comments. JSON-shaped frontmatter (`---\n{ ... }\n---`) falls back to parse-and-reserialize, which converts to YAML — matching Obsidian's own behavior documented at `help.obsidian.md/properties#JSON+properties`. Values that arrive as JSON-stringified arrays or objects (e.g. from a client whose schema lost the array shape) are defensively parsed back; literal strings that happen to start with `[` or `{` but aren't valid JSON pass through unchanged.
 
 ## Tests
 
