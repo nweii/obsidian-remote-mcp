@@ -263,7 +263,7 @@ export async function registerTools(server: McpServer) {
     {
       title: "Read note section under heading",
       description:
-        "Return the body from one heading through the next same-or-higher-level heading. Pass heading text without # (case-insensitive). Prefer calling vault_outline first and copy the heading text after the #'s.",
+        "Return the body from one heading through the next same-or-higher-level heading. Pass heading text without # (case-insensitive). Prefer calling vault_outline first and copy the heading text after the #'s. If the heading text matches more than one section in the note, all matching sections are returned, each prefixed with a `<!-- match N of M (line X) -->` label so the caller can tell them apart.",
       inputSchema: z.object({
         path: z.string().describe("Vault-relative path or bare note title"),
         heading: z
@@ -477,7 +477,7 @@ export async function registerTools(server: McpServer) {
     {
       title: "Edit a note section under a heading",
       description:
-        "Edit just one section of a note (heading line through the next same-or-higher heading). Operations: append — add to end of section, before the next heading; prepend — add right after the heading line, before existing body; replace — replace the section body and keep the heading line. Call vault_outline first to get exact heading text.",
+        "Edit just one section of a note (heading line through the next same-or-higher heading). Operations: append — add to end of section, before the next heading; prepend — add right after the heading line, before existing body; replace — replace the section body and keep the heading line. Call vault_outline first to get exact heading text. If the heading text matches more than one section in the note, this tool refuses to guess and returns an AmbiguousHeadingError listing each candidate — use vault_edit with a find-anchored replace on unique text instead.",
       inputSchema: z.object({
         path: z.string().describe("Relative path to the note"),
         heading: z
@@ -494,6 +494,11 @@ export async function registerTools(server: McpServer) {
         await vault.editNoteSection(path, heading, operation, content);
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e);
+        // Ambiguous-heading errors carry their own recovery guidance — don't append
+        // the "call vault_outline first" hint, which only fits the missing-heading case.
+        if (e instanceof vault.AmbiguousHeadingError) {
+          return { content: [{ type: "text", text: message }], isError: true };
+        }
         const hint = message.startsWith("Heading ")
           ? " — call vault_outline first and copy heading text exactly (without # prefix)."
           : "";

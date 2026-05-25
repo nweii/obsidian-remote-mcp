@@ -666,51 +666,105 @@ export async function getNoteOutline(relativePath: string): Promise<string[]> {
 
 // --- Section reading ---------------------------------------------------------
 
-// Locate a heading section by case-insensitive heading text. Returns the
-// startIdx (heading line) and endIdx (first line of the next same-or-higher
-// heading, or lines.length). Returns null when the heading is missing.
-function findSectionBounds(
+// Locate every section whose heading matches the target text (case-insensitive).
+// Returns each match's startIdx (heading line) and endIdx (first line of the next
+// same-or-higher heading, or lines.length). Returns an empty array if no heading
+// matches. Callers decide what to do with multiple matches — reads can present all
+// of them; writes refuse to guess.
+function findAllSectionBounds(
   lines: string[],
   heading: string,
-): { startIdx: number; endIdx: number } | null {
+): Array<{ startIdx: number; endIdx: number }> {
   const normalizedTarget = heading.toLowerCase().trim();
-
-  let startIdx = -1;
-  let headingLevel = 0;
+  const results: Array<{ startIdx: number; endIdx: number }> = [];
 
   for (let i = 0; i < lines.length; i++) {
     const match = lines[i].match(/^(#{1,6})\s+(.+)/);
-    if (match && match[2].trim().toLowerCase() === normalizedTarget) {
-      startIdx = i;
-      headingLevel = match[1].length;
-      break;
+    if (!match || match[2].trim().toLowerCase() !== normalizedTarget) continue;
+    const headingLevel = match[1].length;
+
+    let endIdx = lines.length;
+    for (let j = i + 1; j < lines.length; j++) {
+      const next = lines[j].match(/^(#{1,6})\s/);
+      if (next && next[1].length <= headingLevel) {
+        endIdx = j;
+        break;
+      }
     }
+    results.push({ startIdx: i, endIdx });
   }
 
-  if (startIdx === -1) return null;
+  return results;
+}
 
-  let endIdx = lines.length;
-  for (let i = startIdx + 1; i < lines.length; i++) {
-    const match = lines[i].match(/^(#{1,6})\s/);
-    if (match && match[1].length <= headingLevel) {
-      endIdx = i;
-      break;
+export type AmbiguousHeadingMatch = {
+  startIdx: number;
+  preview: string;
+};
+
+// Thrown by editNoteSection (and applySectionEdit) when the requested heading
+// matches more than one section. Carries enough information for the agent to
+// pick a unique anchor and retry via vault_edit. Mirrors the resolveNoteReference
+// "surface candidates, don't pick" pattern already used for ambiguous note titles.
+export class AmbiguousHeadingError extends Error {
+  readonly heading: string;
+  readonly relativePath: string;
+  readonly matches: AmbiguousHeadingMatch[];
+
+  constructor(opts: {
+    relativePath: string;
+    heading: string;
+    matches: AmbiguousHeadingMatch[];
+  }) {
+    const candidates = opts.matches
+      .map((m, i) => `  ${i + 1}. line ${m.startIdx + 1} — ${m.preview}`)
+      .join('\n');
+    super(
+      `Heading "${opts.heading}" matches ${opts.matches.length} sections in ${opts.relativePath}:\n${candidates}\n` +
+        `vault_edit_section can't safely guess which one to edit. Use vault_edit with a find-anchored ` +
+        `replace on text unique to the target section, or vault_update for the whole note.`,
+    );
+    this.name = 'AmbiguousHeadingError';
+    this.heading = opts.heading;
+    this.relativePath = opts.relativePath;
+    this.matches = opts.matches;
+  }
+}
+
+function previewMatch(lines: string[], startIdx: number, endIdx: number): string {
+  const headingLine = lines[startIdx].trim();
+  for (let j = startIdx + 1; j < endIdx; j++) {
+    const body = lines[j].trim();
+    if (body) {
+      const snippet = body.length > 80 ? `${body.slice(0, 80)}…` : body;
+      return `${headingLine} / ${snippet}`;
     }
   }
-
-  return { startIdx, endIdx };
+  return headingLine;
 }
 
 // Read a single heading section from a note (the heading line through the next
 // same-or-higher-level heading). Heading match is case-insensitive, without the # prefix.
+// If the heading appears more than once in the note, returns every matching section
+// joined with `<!-- match N of M (line X) -->` labels — non-destructive, so the agent
+// gets to see all the candidates rather than silently being handed the first one.
 export async function readNoteSection(relativePath: string, heading: string): Promise<string> {
   const content = await readNote(relativePath);
   const lines = content.split('\n');
-  const bounds = findSectionBounds(lines, heading);
-  if (!bounds) {
+  const matches = findAllSectionBounds(lines, heading);
+  if (matches.length === 0) {
     throw new Error(`Heading "${heading}" not found in ${relativePath}`);
   }
-  return lines.slice(bounds.startIdx, bounds.endIdx).join('\n');
+  if (matches.length === 1) {
+    const { startIdx, endIdx } = matches[0];
+    return lines.slice(startIdx, endIdx).join('\n');
+  }
+  return matches
+    .map((m, i) => {
+      const section = lines.slice(m.startIdx, m.endIdx).join('\n');
+      return `<!-- match ${i + 1} of ${matches.length} (line ${m.startIdx + 1}) -->\n${section}`;
+    })
+    .join('\n\n');
 }
 
 // --- Section editing ---------------------------------------------------------
@@ -748,12 +802,22 @@ function applySectionEdit(
   relativePath: string,
 ): string {
   const lines = existing.split('\n');
-  const bounds = findSectionBounds(lines, heading);
-  if (!bounds) {
+  const matches = findAllSectionBounds(lines, heading);
+  if (matches.length === 0) {
     throw new Error(`Heading "${heading}" not found in ${relativePath}`);
   }
+  if (matches.length > 1) {
+    throw new AmbiguousHeadingError({
+      relativePath,
+      heading,
+      matches: matches.map((m) => ({
+        startIdx: m.startIdx,
+        preview: previewMatch(lines, m.startIdx, m.endIdx),
+      })),
+    });
+  }
 
-  const { startIdx, endIdx } = bounds;
+  const { startIdx, endIdx } = matches[0];
   const before = lines.slice(0, startIdx);
   const headingLine = lines[startIdx];
   const body = lines.slice(startIdx + 1, endIdx);
