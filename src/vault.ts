@@ -323,11 +323,113 @@ export async function setFrontmatterProperty(relativePath: string, name: string,
   // between reading the body and writing the updated frontmatter (Race A).
   await withPathLock(absPath, async () => {
     const content = await readNote(relativePath);
-    const { body } = splitFrontmatter(content);
-    const frontmatter = parseFrontmatter(content) ?? {};
-    frontmatter[name] = value;
-    await writeNote(relativePath, serializeFrontmatter(frontmatter, body));
+    const coerced = coerceFrontmatterValue(value);
+    const updated = setFrontmatterKey(content, name, coerced);
+    await writeNote(relativePath, updated);
   });
+}
+
+// If a client serialized an array or object as a JSON string before sending (because
+// the MCP tool's input schema didn't pin the shape), parse it back so YAML emits a
+// proper sequence/map instead of folding the long quoted string. Plain strings that
+// happen to look bracket-ish but aren't valid JSON pass through as literals — a
+// property value of `[draft]` is legitimate text.
+function coerceFrontmatterValue(value: unknown): unknown {
+  if (typeof value !== 'string') return value;
+  const trimmed = value.trim();
+  const looksLikeJson =
+    (trimmed.startsWith('[') && trimmed.endsWith(']')) ||
+    (trimmed.startsWith('{') && trimmed.endsWith('}'));
+  if (!looksLikeJson) return value;
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (Array.isArray(parsed) || (typeof parsed === 'object' && parsed !== null)) {
+      return parsed;
+    }
+  } catch {
+    // Not JSON after all — keep as the literal string the caller sent.
+  }
+  return value;
+}
+
+// Textual single-key edit on the frontmatter block. Splices over just the target
+// key's lines and leaves every other byte intact — so untouched dates, quoting
+// styles, key order, comments, and blank lines all survive a one-property write.
+// For JSON-shaped frontmatter (the `---\n{ ... }\n---` form) we fall back to
+// parse-and-reserialize, matching Obsidian's own "JSON read, YAML write" behavior
+// documented at https://help.obsidian.md/properties#JSON+properties.
+function setFrontmatterKey(content: string, key: string, value: unknown): string {
+  const { frontmatter, body } = splitFrontmatter(content);
+  const rendered = stringifyYaml({ [key]: value }, { lineWidth: 0, noRefs: true })
+    .replace(/\n+$/, '');
+
+  if (frontmatter === null) {
+    return `---\n${rendered}\n---\n${content}`;
+  }
+
+  if (isJsonFrontmatter(frontmatter)) {
+    const data = parseFrontmatter(content) ?? {};
+    data[key] = value;
+    return serializeFrontmatter(data, body);
+  }
+
+  const fmLines = frontmatter.split('\n');
+  const region = findFrontmatterKeyRegion(fmLines, key);
+  const renderedLines = rendered.split('\n');
+
+  let nextLines: string[];
+  if (region) {
+    nextLines = [
+      ...fmLines.slice(0, region.start),
+      ...renderedLines,
+      ...fmLines.slice(region.end + 1),
+    ];
+  } else {
+    let tail = fmLines.length;
+    while (tail > 0 && fmLines[tail - 1] === '') tail--;
+    nextLines = [...fmLines.slice(0, tail), ...renderedLines, ...fmLines.slice(tail)];
+  }
+
+  return `---\n${nextLines.join('\n')}\n---\n${body}`;
+}
+
+function isJsonFrontmatter(frontmatter: string): boolean {
+  return frontmatter.trimStart().startsWith('{');
+}
+
+// A top-level key line in the frontmatter block has no leading whitespace, isn't
+// a comment, and matches `name:` (with the name allowed to contain spaces). The
+// key's region extends through any indented continuation lines (list items,
+// block scalars, nested maps). Blank lines and comments terminate the region
+// without being claimed by it — they belong between keys, not inside one.
+function findFrontmatterKeyRegion(
+  lines: string[],
+  key: string,
+): { start: number; end: number } | null {
+  for (let i = 0; i < lines.length; i++) {
+    if (parseTopLevelKey(lines[i]) !== key) continue;
+    let end = i;
+    for (let j = i + 1; j < lines.length; j++) {
+      if (/^[ \t]/.test(lines[j])) {
+        end = j;
+        continue;
+      }
+      break;
+    }
+    return { start: i, end };
+  }
+  return null;
+}
+
+function parseTopLevelKey(line: string): string | null {
+  if (line.length === 0 || /^[\s#]/.test(line)) return null;
+  const m = line.match(/^([^:]+?)\s*:(\s|$)/);
+  if (!m) return null;
+  const raw = m[1];
+  if ((raw.startsWith('"') && raw.endsWith('"')) || (raw.startsWith("'") && raw.endsWith("'"))) {
+    return raw.slice(1, -1);
+  }
+  return raw;
 }
 
 // Locked like the other writers: O_APPEND is atomic against other appends, but NOT against
@@ -564,51 +666,105 @@ export async function getNoteOutline(relativePath: string): Promise<string[]> {
 
 // --- Section reading ---------------------------------------------------------
 
-// Locate a heading section by case-insensitive heading text. Returns the
-// startIdx (heading line) and endIdx (first line of the next same-or-higher
-// heading, or lines.length). Returns null when the heading is missing.
-function findSectionBounds(
+// Locate every section whose heading matches the target text (case-insensitive).
+// Returns each match's startIdx (heading line) and endIdx (first line of the next
+// same-or-higher heading, or lines.length). Returns an empty array if no heading
+// matches. Callers decide what to do with multiple matches — reads can present all
+// of them; writes refuse to guess.
+function findAllSectionBounds(
   lines: string[],
   heading: string,
-): { startIdx: number; endIdx: number } | null {
+): Array<{ startIdx: number; endIdx: number }> {
   const normalizedTarget = heading.toLowerCase().trim();
-
-  let startIdx = -1;
-  let headingLevel = 0;
+  const results: Array<{ startIdx: number; endIdx: number }> = [];
 
   for (let i = 0; i < lines.length; i++) {
     const match = lines[i].match(/^(#{1,6})\s+(.+)/);
-    if (match && match[2].trim().toLowerCase() === normalizedTarget) {
-      startIdx = i;
-      headingLevel = match[1].length;
-      break;
+    if (!match || match[2].trim().toLowerCase() !== normalizedTarget) continue;
+    const headingLevel = match[1].length;
+
+    let endIdx = lines.length;
+    for (let j = i + 1; j < lines.length; j++) {
+      const next = lines[j].match(/^(#{1,6})\s/);
+      if (next && next[1].length <= headingLevel) {
+        endIdx = j;
+        break;
+      }
     }
+    results.push({ startIdx: i, endIdx });
   }
 
-  if (startIdx === -1) return null;
+  return results;
+}
 
-  let endIdx = lines.length;
-  for (let i = startIdx + 1; i < lines.length; i++) {
-    const match = lines[i].match(/^(#{1,6})\s/);
-    if (match && match[1].length <= headingLevel) {
-      endIdx = i;
-      break;
+export type AmbiguousHeadingMatch = {
+  startIdx: number;
+  preview: string;
+};
+
+// Thrown by editNoteSection (and applySectionEdit) when the requested heading
+// matches more than one section. Carries enough information for the agent to
+// pick a unique anchor and retry via vault_edit. Mirrors the resolveNoteReference
+// "surface candidates, don't pick" pattern already used for ambiguous note titles.
+export class AmbiguousHeadingError extends Error {
+  readonly heading: string;
+  readonly relativePath: string;
+  readonly matches: AmbiguousHeadingMatch[];
+
+  constructor(opts: {
+    relativePath: string;
+    heading: string;
+    matches: AmbiguousHeadingMatch[];
+  }) {
+    const candidates = opts.matches
+      .map((m, i) => `  ${i + 1}. line ${m.startIdx + 1} — ${m.preview}`)
+      .join('\n');
+    super(
+      `Heading "${opts.heading}" matches ${opts.matches.length} sections in ${opts.relativePath}:\n${candidates}\n` +
+        `vault_edit_section can't safely guess which one to edit. Use vault_edit with a find-anchored ` +
+        `replace on text unique to the target section, or vault_update for the whole note.`,
+    );
+    this.name = 'AmbiguousHeadingError';
+    this.heading = opts.heading;
+    this.relativePath = opts.relativePath;
+    this.matches = opts.matches;
+  }
+}
+
+function previewMatch(lines: string[], startIdx: number, endIdx: number): string {
+  const headingLine = lines[startIdx].trim();
+  for (let j = startIdx + 1; j < endIdx; j++) {
+    const body = lines[j].trim();
+    if (body) {
+      const snippet = body.length > 80 ? `${body.slice(0, 80)}…` : body;
+      return `${headingLine} / ${snippet}`;
     }
   }
-
-  return { startIdx, endIdx };
+  return headingLine;
 }
 
 // Read a single heading section from a note (the heading line through the next
 // same-or-higher-level heading). Heading match is case-insensitive, without the # prefix.
+// If the heading appears more than once in the note, returns every matching section
+// joined with `<!-- match N of M (line X) -->` labels — non-destructive, so the agent
+// gets to see all the candidates rather than silently being handed the first one.
 export async function readNoteSection(relativePath: string, heading: string): Promise<string> {
   const content = await readNote(relativePath);
   const lines = content.split('\n');
-  const bounds = findSectionBounds(lines, heading);
-  if (!bounds) {
+  const matches = findAllSectionBounds(lines, heading);
+  if (matches.length === 0) {
     throw new Error(`Heading "${heading}" not found in ${relativePath}`);
   }
-  return lines.slice(bounds.startIdx, bounds.endIdx).join('\n');
+  if (matches.length === 1) {
+    const { startIdx, endIdx } = matches[0];
+    return lines.slice(startIdx, endIdx).join('\n');
+  }
+  return matches
+    .map((m, i) => {
+      const section = lines.slice(m.startIdx, m.endIdx).join('\n');
+      return `<!-- match ${i + 1} of ${matches.length} (line ${m.startIdx + 1}) -->\n${section}`;
+    })
+    .join('\n\n');
 }
 
 // --- Section editing ---------------------------------------------------------
@@ -646,12 +802,22 @@ function applySectionEdit(
   relativePath: string,
 ): string {
   const lines = existing.split('\n');
-  const bounds = findSectionBounds(lines, heading);
-  if (!bounds) {
+  const matches = findAllSectionBounds(lines, heading);
+  if (matches.length === 0) {
     throw new Error(`Heading "${heading}" not found in ${relativePath}`);
   }
+  if (matches.length > 1) {
+    throw new AmbiguousHeadingError({
+      relativePath,
+      heading,
+      matches: matches.map((m) => ({
+        startIdx: m.startIdx,
+        preview: previewMatch(lines, m.startIdx, m.endIdx),
+      })),
+    });
+  }
 
-  const { startIdx, endIdx } = bounds;
+  const { startIdx, endIdx } = matches[0];
   const before = lines.slice(0, startIdx);
   const headingLine = lines[startIdx];
   const body = lines.slice(startIdx + 1, endIdx);

@@ -155,6 +155,84 @@ describe('editNoteSection', () => {
     expect(updated).toBe(SAMPLE);
   });
 
+  test('throws AmbiguousHeadingError when the heading matches more than one section', async () => {
+    // Two `### Problem` subheadings under different parents — the exact failure mode
+    // observed when editing dense, cross-referenced specs from the claude.ai side.
+    const dupe = [
+      '## Fix 1',
+      '',
+      '### Problem',
+      'first body',
+      '',
+      '## Fix 2',
+      '',
+      '### Problem',
+      'second body',
+      '',
+    ].join('\n');
+    await seed('dupe.md', dupe);
+
+    let caught: unknown = null;
+    try {
+      await vault.editNoteSection('dupe.md', 'Problem', 'replace', 'new body');
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(vault.AmbiguousHeadingError);
+    const err = caught as InstanceType<typeof vault.AmbiguousHeadingError>;
+    expect(err.heading).toBe('Problem');
+    expect(err.matches.length).toBe(2);
+    expect(err.matches[0].preview).toContain('first body');
+    expect(err.matches[1].preview).toContain('second body');
+    // The file must not have been touched.
+    const after = await read('dupe.md');
+    expect(after).toBe(dupe);
+  });
+
+  test('error message points the caller at vault_edit as the safe alternative', async () => {
+    const dupe = ['# A', '', '# A', '', ''].join('\n');
+    await seed('dupe2.md', dupe);
+    try {
+      await vault.editNoteSection('dupe2.md', 'A', 'append', 'x');
+      throw new Error('expected throw');
+    } catch (err) {
+      expect((err as Error).message).toMatch(/vault_edit/);
+      expect((err as Error).message).toMatch(/find-anchored/);
+    }
+  });
+});
+
+describe('readNoteSection — duplicate headings', () => {
+  test('returns all matching sections labelled when the heading matches more than once', async () => {
+    const dupe = [
+      '## Fix 1',
+      '',
+      '### Problem',
+      'first body',
+      '',
+      '## Fix 2',
+      '',
+      '### Problem',
+      'second body',
+      '',
+    ].join('\n');
+    await seed('dupe-read.md', dupe);
+    const result = await vault.readNoteSection('dupe-read.md', 'Problem');
+    expect(result).toContain('match 1 of 2');
+    expect(result).toContain('match 2 of 2');
+    expect(result).toContain('first body');
+    expect(result).toContain('second body');
+  });
+
+  test('single match returns the section verbatim (no label wrapper)', async () => {
+    // Regression guard: don't wrap unambiguous reads.
+    const section = await vault.readNoteSection('note.md', 'Bravo');
+    expect(section).toBe(['# Bravo', 'bravo body', ''].join('\n'));
+    expect(section).not.toContain('match 1 of');
+  });
+});
+
+describe('editNoteSection — read-only and missing-heading guard', () => {
   test('respects VAULT_READ_ONLY by refusing to write', async () => {
     process.env.VAULT_READ_ONLY = 'true';
     try {
