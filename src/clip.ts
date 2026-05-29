@@ -6,6 +6,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import * as path from "node:path";
 import * as fs from "node:fs/promises";
+import * as vault from "./vault.js";
 import { registerLogged } from "./register-logged.js";
 
 // Local interface declarations for web-clipper-headless. The package's own .ts source isn't
@@ -153,9 +154,16 @@ export async function registerClipTool(server: McpServer, vaultRoot: string): Pr
           .describe(
             "Corrective values patched onto defuddle's variables before template compilation. Keys are bare variable names like `content`, `title`, `author`. Defuddle still runs for everything not overridden; trigger matching is unaffected. Use this when a sibling tool produced cleaner body text than defuddle can extract from a JS-rendered page."
           ),
+        save: z
+          .boolean()
+          .optional()
+          .default(false)
+          .describe(
+            "If true, write the finished note straight into the vault at suggested_path and return just the path instead of the full note body — avoids round-tripping a long article through the caller. Only acts when the note is fully rendered (no unresolved slots); fails if a note already exists at that path."
+          ),
       }),
     },
-    async ({ url, template_name, use_server_interpreter, slot_overrides, variable_overrides }) => {
+    async ({ url, template_name, use_server_interpreter, slot_overrides, variable_overrides, save }) => {
       const settingsPath = await resolveSettingsPath(vaultRoot);
       if (!settingsPath) {
         return errorResponse(
@@ -177,6 +185,29 @@ export async function registerClipTool(server: McpServer, vaultRoot: string): Pr
           const suggested = result.template.path
             ? path.posix.join(result.template.path, result.filename + ".md")
             : result.filename + ".md";
+
+          if (save) {
+            try {
+              await vault.createNote(suggested, result.fullContent);
+            } catch (err) {
+              if (err instanceof vault.NoteExistsError) {
+                return errorResponse(
+                  `File already exists at ${suggested}. Clip without save, then write via vault_update to replace it.`
+                );
+              }
+              throw err;
+            }
+            const savedPayload = {
+              status: "saved",
+              saved_path: suggested,
+              filename: result.filename,
+              template_used: result.template.name,
+              matched_by: result.matchedBy,
+            };
+            return {
+              content: [{ type: "text" as const, text: JSON.stringify(savedPayload, null, 2) }],
+            };
+          }
 
           const payload = {
             status: "rendered",

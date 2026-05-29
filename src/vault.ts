@@ -229,6 +229,27 @@ export async function writeNote(relativePath: string, content: string): Promise<
   invalidateResolverCache();
 }
 
+// Thrown by createNote when a note already exists at the target path. Typed so the tool layer
+// can turn it into a friendly isError result with caller-appropriate guidance.
+export class NoteExistsError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'NoteExistsError';
+  }
+}
+
+// Write a new note, refusing to overwrite one that already exists. Single source of truth for
+// the "create, don't clobber" guard shared by vault_create and the clip save-path.
+export async function createNote(relativePath: string, content: string): Promise<void> {
+  try {
+    await readNote(relativePath);
+  } catch {
+    await writeNote(relativePath, content);
+    return;
+  }
+  throw new NoteExistsError(`File already exists at ${relativePath}`);
+}
+
 // --- Concurrent-edit safety: optimistic versioning ---------------------------
 //
 // Two sessions can edit the same note in overlapping requests. `vault_read` hands back a

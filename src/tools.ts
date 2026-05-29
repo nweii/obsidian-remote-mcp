@@ -377,12 +377,13 @@ export async function registerTools(server: McpServer) {
     },
     async ({ path, content }) => {
       try {
-        await vault.readNote(path);
-        return { content: [{ type: "text", text: `Error: file already exists at ${path}. To replace it, use vault_update; to modify part of it, use vault_edit.` }], isError: true };
-      } catch {
-        // File does not exist — safe to create
+        await vault.createNote(path, content);
+      } catch (err) {
+        if (err instanceof vault.NoteExistsError) {
+          return { content: [{ type: "text", text: `Error: file already exists at ${path}. To replace it, use vault_update; to modify part of it, use vault_edit.` }], isError: true };
+        }
+        throw err;
       }
-      await vault.writeNote(path, content);
       return { content: [{ type: "text", text: `Created ${path}` }] };
     },
   );
