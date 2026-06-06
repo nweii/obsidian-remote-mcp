@@ -3,5 +3,6 @@ dist/
 .env
 *.env
 .DS_Store
+@eaDir/
 tokens.json*
 logs/
