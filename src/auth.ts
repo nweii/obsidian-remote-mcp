@@ -74,6 +74,7 @@ const DEFAULT_ALLOWED_REDIRECT_URIS = [
   'https://claude.ai/api/mcp/auth_callback',           // Claude.ai / Anthropic
   'https://chatgpt.com/connector_platform_oauth_redirect', // ChatGPT connectors (OpenAI)
   'cursor://anysphere.cursor-mcp/oauth/callback',      // Cursor
+  'https://poke.com/api/v1/mcp/callback',              // Poke
 ];
 
 function getAllowedRedirectUris(): string[] {
