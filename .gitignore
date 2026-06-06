@@ -3,5 +3,5 @@ dist/
 .env
 *.env
 .DS_Store
-tokens.json
+tokens.json*
 logs/

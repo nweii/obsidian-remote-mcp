@@ -68,10 +68,18 @@ function getClientSecret(): string | undefined {
   return secret ? secret : undefined;
 }
 
+// Verified OAuth callback URIs for common MCP clients. Used when
+// MCP_ALLOWED_REDIRECT_URIS is unset. Setting that env var replaces this list.
+const DEFAULT_ALLOWED_REDIRECT_URIS = [
+  'https://claude.ai/api/mcp/auth_callback',           // Claude.ai / Anthropic
+  'https://chatgpt.com/connector_platform_oauth_redirect', // ChatGPT connectors (OpenAI)
+  'cursor://anysphere.cursor-mcp/oauth/callback',      // Cursor
+];
+
 function getAllowedRedirectUris(): string[] {
   const env = process.env.MCP_ALLOWED_REDIRECT_URIS;
   if (env) return env.split(',').map(u => u.trim());
-  return ['https://claude.ai/api/mcp/auth_callback'];
+  return DEFAULT_ALLOWED_REDIRECT_URIS;
 }
 
 function pruneExpired() {

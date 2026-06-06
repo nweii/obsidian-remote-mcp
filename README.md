@@ -120,7 +120,7 @@ Set these on the server process (Compose `environment:`, Portainer, shell `expor
 MCP_CLIENT_ID=your-client-id
 MCP_CLIENT_SECRET=your-client-secret   # optional
 MCP_BASE_URL=https://mcp.example.com
-MCP_ALLOWED_REDIRECT_URIS=https://claude.ai/api/mcp/auth_callback # optional
+MCP_ALLOWED_REDIRECT_URIS=https://claude.ai/api/mcp/auth_callback # optional; overrides the built-in defaults
 VAULT_PATH=/path/to/your/vault         # optional if obsidian.json is available
 OBSIDIAN_VAULT_ID=personal             # optional when obsidian.json contains multiple vaults
 VAULT_DISPLAY_NAME=Personal            # optional; defaults to the vault directory name
@@ -143,7 +143,7 @@ Every `POST /mcp` request must send `Authorization: Bearer …`. You can offer *
 
 For clients where the user can open a browser. The server uses **OAuth 2.1**: approve on `/authorize`, exchange the short-lived code at `POST /oauth/token`, then send the issued access token in `Authorization` on `/mcp`.
 
-**Server:** **`MCP_CLIENT_ID`** is required. **`MCP_CLIENT_SECRET`** is optional; if you set it on the server, configure the same value in each OAuth client so they send it at `POST /oauth/token`. If you leave it unset, that step does not use a shared secret—use HTTPS and limit who can reach `/authorize`. **`MCP_BASE_URL`** must match the public site origin (no `/mcp`). **`MCP_ALLOWED_REDIRECT_URIS`** is an optional comma-separated list; Claude’s callback is allowed by default.
+**Server:** **`MCP_CLIENT_ID`** is required. **`MCP_CLIENT_SECRET`** is optional; if you set it on the server, configure the same value in each OAuth client so they send it at `POST /oauth/token`. If you leave it unset, that step does not use a shared secret—use HTTPS and limit who can reach `/authorize`. **`MCP_BASE_URL`** must match the public site origin (no `/mcp`). **`MCP_ALLOWED_REDIRECT_URIS`** is an optional comma-separated list of allowed OAuth callback URIs. When unset, the server allows the callbacks for Claude.ai (`https://claude.ai/api/mcp/auth_callback`), ChatGPT connectors (`https://chatgpt.com/connector_platform_oauth_redirect`), and Cursor (`cursor://anysphere.cursor-mcp/oauth/callback`) out of the box. Setting the env var replaces that default list, so include every callback you want to keep.
 
 **Persisted sign-in:** **`TOKEN_STORE_PATH`** (default `./tokens.json`) stores OAuth-issued tokens after login so clients survive server restarts.
 
@@ -165,7 +165,7 @@ Cursor `mcp.json`:
 }
 ```
 
-Cursor uses the redirect URI **`cursor://anysphere.cursor-mcp/oauth/callback`**. Add it to **`MCP_ALLOWED_REDIRECT_URIS`** on the server (comma-separated alongside any other clients, e.g. Claude’s callback).
+Cursor uses the redirect URI **`cursor://anysphere.cursor-mcp/oauth/callback`**, which is in the built-in default allowlist. If you set **`MCP_ALLOWED_REDIRECT_URIS`** yourself, include this URI so Cursor can still complete OAuth.
 
 #### Fixed bearer (non-browser)
 
