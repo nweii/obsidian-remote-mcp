@@ -4,32 +4,19 @@ A self-hosted [MCP](https://modelcontextprotocol.io) server for headless Obsidia
 
 ## Features
 
-This is meant for home servers, NAS boxes, VPSes, and other setups where your vault lives on disk and you want to expose it through a remote MCP endpoint for apps like Claude.ai.
+This is meant for home servers, NAS boxes, VPSes, and other setups where your vault lives on disk and you want to expose it through a remote MCP endpoint for apps like Claude.ai, ChatGPT, and Cursor.
 
-- OAuth (browser sign-in) or a fixed bearer token, depending on what the client supports.
+- OAuth (browser sign-in) or an API key (fixed bearer token), depending on what the client supports.
 - `vault_context` serves your vault guide note (defaults to `AGENTS.md`) plus a shallow folder tree so agents can see your vault structure.
 - Daily notes from a path template you configure.
 - Create, edit, update, and trash notes; wikilinks and YAML frontmatter work as usual.
-- Edit just one section under a heading, without replacing the whole note.
+- Token-efficient partial access: read or edit one section under a heading, work with individual frontmatter properties, and list headings before reading. The [tools table](#tools) has the full set.
 - Full-note updates can check the version you last read, so another agent's edit is not overwritten by accident.
-- Set or read individual frontmatter properties.
-- Read one section under a heading, or list headings first, instead of pulling the whole note every time.
 - Search by filename or regex in note text; content search can be scoped to a folder.
 - Block paths with `.mcpignore`; set `VAULT_READ_ONLY` to turn off writes.
 - Optional JSONL logs of tool calls (note bodies redacted) if you want to review what agents did.
 
-## Security and scope
-
-Built-in safeguards:
-
-- **OAuth 2.1 + PKCE** with optional `MCP_CLIENT_SECRET` on token exchange
-- **Fixed bearer token** (`MCP_STATIC_BEARER_TOKEN`) for clients that skip browser auth
-- **CORS allowlisting** (`CORS_ALLOWED_ORIGINS`) for browser-based clients
-- **Vault path sandboxing** — all paths validated against the vault root
-- **`.mcpignore`** to block specific paths from MCP access
-- **`VAULT_READ_ONLY`** mode to prevent all writes
-
-## What it includes
+## Tools
 
 The server currently exposes these tools:
 
@@ -51,30 +38,45 @@ The server currently exposes these tools:
 | `vault_search_content` | Regex search in note bodies; optional `folder` to scope large vaults |
 | `vault_daily_note` | Read or create a daily note using a configurable path template |
 
+## Security and scope
+
+Built-in safeguards:
+
+- **OAuth 2.1 + PKCE** with optional `MCP_CLIENT_SECRET` on token exchange
+- **API key** (`MCP_STATIC_BEARER_TOKEN`) for clients that take a fixed credential instead of browser auth
+- **CORS allowlisting** (`CORS_ALLOWED_ORIGINS`) for browser-based clients
+- **Vault path sandboxing** — all paths validated against the vault root
+- **`.mcpignore`** to block specific paths from MCP access
+- **`VAULT_READ_ONLY`** mode to prevent all writes
+
 ## Quick start
 
-**Runtime.** The server is TypeScript on [Bun](https://bun.sh). There is no separate build step for normal use: Bun runs `src/server.ts` directly. Install dependencies with `bun install` (Express, the MCP SDK, and a few libraries—see `package.json`).
+Getting from a vault on disk to an AI client reading it takes three steps:
 
-**Vault on disk.** Point the server at your vault root with `VAULT_PATH`, or leave it unset and use Obsidian’s `obsidian.json` discovery (details under **Vault path** below).
+1. **Run the server** — locally with Bun, or in Docker.
+2. **Expose it over HTTPS** — remote clients and OAuth both require it.
+3. **Connect a client** — with browser OAuth or an API key. Per-client steps are under [Client setup guides](#client-setup-guides).
+
+### 1. Run the server
+
+The server is TypeScript on [Bun](https://bun.sh) — no build step; Bun runs `src/server.ts` directly.
+
+**Directly:**
 
 ```bash
 git clone https://github.com/nweii/obsidian-remote-mcp.git
 cd obsidian-remote-mcp
 bun install
 export VAULT_PATH=/absolute/path/to/your/vault
-export MCP_CLIENT_ID=dev
+export MCP_CLIENT_ID=my-vault-mcp
 bun run src/server.ts
 ```
 
-`bun start` runs the same entrypoint (`package.json` maps it to `bun run src/server.ts`).
+`MCP_CLIENT_ID` is a name you make up — there is no registration step. OAuth clients will present this same ID back to the server, so pick something you can paste into a client config later. It is required even if you only plan to use an API key.
 
-The process listens on port `3456` by default. The MCP endpoint is `POST /mcp` on that port; OAuth metadata is served under `/.well-known/oauth-authorization-server`.
+The process listens on port `3456` by default. The MCP endpoint is `POST /mcp`; OAuth metadata is served under `/.well-known/oauth-authorization-server`. `bun start` runs the same entrypoint.
 
-To make the server reachable from the internet (required by Claude.ai and other remote clients), see **Deployment** below.
-
-## Deployment
-
-### Docker
+**Docker:**
 
 Save this as `docker-compose.yml` in the cloned repo directory:
 
@@ -106,11 +108,144 @@ docker compose up -d      # start in background
 docker compose logs -f    # watch output
 ```
 
-### HTTPS and `MCP_BASE_URL`
+### 2. Expose it over HTTPS
 
 Remote MCP and OAuth require **HTTPS**. Use a reverse proxy (Caddy, nginx, Cloudflare Tunnel, etc.) to handle TLS in front of the app and expose a public URL like `https://mcp.example.com`. Set **`MCP_BASE_URL`** on the server to that origin **without** the `/mcp` path — it must match what users see in the browser bar.
 
 If you use Cloudflare Zero Trust, a practical pattern is to put the identity gate **only** on `/authorize`, so users log in to approve access while `/.well-known/*`, `/oauth/token`, and `/mcp` stay reachable for the protocol.
+
+### 3. Connect a client
+
+Every client needs two things: your MCP URL (`https://mcp.example.com/mcp` — base URL plus `/mcp`) and one of the two credentials:
+
+| Auth | When | Server setup |
+|------|------|--------------|
+| **OAuth** (browser sign-in) | The client walks you through a sign-in flow (Claude.ai, Cursor, ChatGPT, Poke via Kitchen) | `MCP_CLIENT_ID`, optionally `MCP_CLIENT_SECRET` |
+| **API key** (fixed bearer token) | The client's setup form has an "API key" field, or it can't open a browser (Poke, scripts, `mcp-remote`) | `MCP_STATIC_BEARER_TOKEN` set to a long random string |
+
+Details for each mechanism are under [Authentication](#authentication).
+
+## Client setup guides
+
+### Claude.ai
+
+Available on paid plans, as a custom connector. Use your base URL with `/mcp` included. Under advanced settings, set OAuth client ID to your **`MCP_CLIENT_ID`**, and OAuth client secret to your **`MCP_CLIENT_SECRET`** if you've configured one for your server. On the server, set **`MCP_BASE_URL`** to the same origin as the connector URL, without `/mcp`.
+
+Claude's OAuth callback is in the server's default redirect allowlist, so no further configuration is needed.
+
+### Cursor
+
+Cursor supports both auth styles in `mcp.json`. Pick one — do not set both `auth` and `headers` on the same entry.
+
+OAuth:
+
+```json
+{
+  "mcpServers": {
+    "obsidian-vault": {
+      "url": "https://your-host/mcp",
+      "auth": {
+        "CLIENT_ID": "your-mcp-client-id",
+        "CLIENT_SECRET": "your-mcp-client-secret (optional)"
+      }
+    }
+  }
+}
+```
+
+API key:
+
+```json
+{
+  "mcpServers": {
+    "obsidian-vault": {
+      "url": "https://your-host/mcp",
+      "headers": {
+        "Authorization": "Bearer YOUR_MCP_STATIC_BEARER_TOKEN"
+      }
+    }
+  }
+}
+```
+
+Cursor's OAuth redirect URI (`cursor://anysphere.cursor-mcp/oauth/callback`) is in the default allowlist. If you set **`MCP_ALLOWED_REDIRECT_URIS`** yourself, include it so Cursor can still complete OAuth.
+
+### ChatGPT
+
+Add the server as a connector with your MCP URL and OAuth credentials. ChatGPT's legacy fixed callback (`https://chatgpt.com/connector_platform_oauth_redirect`) is in the default allowlist. Newer connectors may present a per-app callback URL (`https://chatgpt.com/connector/oauth/…`) during setup — if OAuth fails with `redirect_uri not allowed`, add the URL ChatGPT shows you to **`MCP_ALLOWED_REDIRECT_URIS`**.
+
+### Poke
+
+[Poke](https://poke.com) supports both auth styles:
+
+- **API key (simpler).** Set `MCP_STATIC_BEARER_TOKEN` on the server. At [poke.com/integrations/new](https://poke.com/integrations/new), enter your MCP URL and paste the same token into the **API Key** field. Poke sends it as `Authorization: Bearer …`, which is exactly what the server expects.
+- **OAuth (via Kitchen).** Poke's standard OAuth path assumes dynamic client registration, which this server [does not support](#oauth-browser-sign-in). Use Poke's fixed-credentials flow instead: at [poke.com/kitchen](https://poke.com/kitchen), create a template with your MCP URL, **`MCP_CLIENT_ID`**, and **`MCP_CLIENT_SECRET`**, then a recipe that includes it. Leave **scopes** blank (the server ignores them). Poke's callback (`https://poke.com/api/v1/mcp/callback`) is in the default redirect allowlist.
+
+### Scripts and headless clients
+
+For anything that just sends HTTP headers, use the API key. Antigravity `mcp_config.json`:
+
+```json
+"obsidian-vault": {
+  "serverUrl": "https://your-host/mcp",
+  "headers": {
+    "Authorization": "Bearer YOUR_MCP_STATIC_BEARER_TOKEN"
+  }
+}
+```
+
+Bridging over stdio with **`mcp-remote`**:
+
+```json
+"obsidian-vault": {
+  "command": "bunx",
+  "args": ["-y", "mcp-remote", "https://your-host/mcp", "--transport", "http-only", "--header", "Authorization: Bearer YOUR_MCP_STATIC_BEARER_TOKEN"]
+}
+```
+
+## Server configuration
+
+### Authentication
+
+Every `POST /mcp` request must send `Authorization: Bearer …`. You can offer **OAuth**, an **API key**, or **both**; each client then uses whichever path it supports.
+
+#### OAuth (browser sign-in)
+
+For clients where the user can open a browser. The server uses **OAuth 2.1**: approve on `/authorize`, exchange the short-lived code at `POST /oauth/token`, then send the issued access token in `Authorization` on `/mcp`.
+
+The server does **not** support dynamic client registration (DCR). You configure one fixed client ID, and clients present that same ID — there is no `/register` endpoint. Clients that expect DCR need their manual-credentials path (for example, Poke's Kitchen templates).
+
+The relevant variables:
+
+- **`MCP_CLIENT_ID`** (required) — the one client ID the server accepts.
+- **`MCP_CLIENT_SECRET`** (optional) — if set, every OAuth client must send the same value at `POST /oauth/token`. If unset, token exchange relies on PKCE alone — use HTTPS and limit who can reach `/authorize`.
+- **`MCP_BASE_URL`** — must match the public site origin (no `/mcp`).
+- **`MCP_ALLOWED_REDIRECT_URIS`** (optional) — comma-separated allowlist of OAuth callback URIs. When unset, the server allows the callbacks for Claude.ai (`https://claude.ai/api/mcp/auth_callback`), ChatGPT connectors (`https://chatgpt.com/connector_platform_oauth_redirect`), Cursor (`cursor://anysphere.cursor-mcp/oauth/callback`), and Poke (`https://poke.com/api/v1/mcp/callback`) out of the box. Setting the env var **replaces** that default list, so include every callback you want to keep.
+- **`TOKEN_STORE_PATH`** (default `./tokens.json`) — stores OAuth-issued tokens after login so clients survive server restarts.
+
+#### API key (static bearer token)
+
+When a client's setup form asks for an API key (Poke, and most hosted MCP integrations), use `MCP_STATIC_BEARER_TOKEN`. It also covers scripts and clients that cannot open a browser.
+
+Set **`MCP_STATIC_BEARER_TOKEN`** on the server to a long random string, and give the client the same value. The client sends it as `Authorization: Bearer …` on every `/mcp` request; the server compares it directly, skipping `/authorize`, `POST /oauth/token`, and `TOKEN_STORE_PATH` for that client. It works alongside OAuth — setting it does not disable the browser flow for other clients.
+
+The trade-off versus OAuth: the token is long-lived and held by the client service, so rotate it (change the env var and update the client) if you ever suspect exposure.
+
+```bash
+# generate one
+openssl rand -base64 48
+```
+
+#### CORS
+
+`CORS_ALLOWED_ORIGINS` limits which **browser origins** may call the API from JavaScript. It is separate from OAuth and from `MCP_STATIC_BEARER_TOKEN`, and irrelevant to server-side clients like Poke. Default is `*` (allow all). To restrict:
+
+```env
+CORS_ALLOWED_ORIGINS=https://claude.ai
+CORS_ALLOWED_ORIGINS=https://claude.ai,http://localhost:3000
+```
+
+When set, only listed origins get a reflected `Access-Control-Allow-Origin`; other browser preflights fail.
 
 ### Environment variables
 
@@ -128,98 +263,12 @@ VAULT_CONTEXT_PATH=AGENTS.md           # optional; defaults to AGENTS.md, then C
 DAILY_NOTE_PATH_TEMPLATE=Daily/{YYYY}-{MM}-{DD}.md
 CORS_ALLOWED_ORIGINS=https://claude.ai # optional; defaults to *
 TOKEN_STORE_PATH=./tokens.json         # optional
-MCP_STATIC_BEARER_TOKEN=               # optional; fixed Bearer for /mcp (e.g. mcp-remote + Antigravity)
+MCP_STATIC_BEARER_TOKEN=               # optional; API key for /mcp (see Authentication)
 VAULT_READ_ONLY=true                   # optional
 PORT=3456
 ```
 
-`VAULT_PATH`, `VAULT_CONTEXT_PATH`, and `DAILY_NOTE_PATH_TEMPLATE` are also documented under **Vault path**, **Vault context note**, and **Daily note paths** later in this readme.
-
-### Authenticating to `/mcp`
-
-Every `POST /mcp` request must send `Authorization: Bearer …`. You can offer **OAuth**, **fixed bearer**, or **both**; each client then uses whichever path it supports.
-
-#### OAuth (browser)
-
-For clients where the user can open a browser. The server uses **OAuth 2.1**: approve on `/authorize`, exchange the short-lived code at `POST /oauth/token`, then send the issued access token in `Authorization` on `/mcp`.
-
-**Server:** **`MCP_CLIENT_ID`** is required. **`MCP_CLIENT_SECRET`** is optional; if you set it on the server, configure the same value in each OAuth client so they send it at `POST /oauth/token`. If you leave it unset, that step does not use a shared secret—use HTTPS and limit who can reach `/authorize`. **`MCP_BASE_URL`** must match the public site origin (no `/mcp`). **`MCP_ALLOWED_REDIRECT_URIS`** is an optional comma-separated list of allowed OAuth callback URIs. When unset, the server allows the callbacks for Claude.ai (`https://claude.ai/api/mcp/auth_callback`), ChatGPT connectors (`https://chatgpt.com/connector_platform_oauth_redirect`), Cursor (`cursor://anysphere.cursor-mcp/oauth/callback`), and Poke (`https://poke.com/api/v1/mcp/callback`) out of the box. Setting the env var replaces that default list, so include every callback you want to keep.
-
-**Persisted sign-in:** **`TOKEN_STORE_PATH`** (default `./tokens.json`) stores OAuth-issued tokens after login so clients survive server restarts.
-
-**Add as a remote MCP connector to Claude** (paid plans only): Use your base URL with `/mcp` included. Under advanced settings, set OAuth client ID to your **`MCP_CLIENT_ID`**, optionally OAuth client secret to your **`MCP_CLIENT_SECRET`** (required at token exchange if the server has a secret configured). On the server, set **`MCP_BASE_URL`** to the same origin as the connector URL, without `/mcp`.
-
-Cursor `mcp.json`:
-
-```json
-{
-  "mcpServers": {
-    "obsidian-vault": {
-      "url": "https://your-host/mcp",
-      "auth": {
-        "CLIENT_ID": "your-mcp-client-id",
-        "CLIENT_SECRET": "your-mcp-client-secret (optional)"
-      }
-    }
-  }
-}
-```
-
-Cursor uses the redirect URI **`cursor://anysphere.cursor-mcp/oauth/callback`**, which is in the built-in default allowlist. If you set **`MCP_ALLOWED_REDIRECT_URIS`** yourself, include this URI so Cursor can still complete OAuth.
-
-#### Fixed bearer (non-browser)
-
-For scripts, Antigravity + `mcp-remote`, or any client that cannot run the browser flow. Do not set both **`auth`** and **`headers`** on the same mcp.json entry—pick OAuth or fixed bearer.
-
-Set **`MCP_STATIC_BEARER_TOKEN`** on the server; the client sends that exact string as `Authorization: Bearer …` on every `/mcp` request. This skips `/authorize`, `POST /oauth/token`, **`TOKEN_STORE_PATH`** for that client.
-
-Antigravity `mcp_config.json`:
-
-```json
-"obsidian-vault": {
-  "serverUrl": "https://your-host/mcp",
-  "headers": {
-    "Authorization": "Bearer YOUR_MCP_STATIC_BEARER_TOKEN"
-  }
-}
-```
-
-Cursor `mcp.json`:
-
-```json
-{
-  "mcpServers": {
-    "obsidian-vault": {
-      "url": "https://your-host/mcp",
-      "headers": {
-        "Authorization": "Bearer YOUR_MCP_STATIC_BEARER_TOKEN"
-      }
-    }
-  }
-}
-```
-
-Bridging over stdio with **`mcp-remote`**:
-
-```json
-"obsidian-vault": {
-  "command": "bunx",
-  "args": ["-y", "mcp-remote", "https://your-host/mcp", "--transport", "http-only", "--header", "Authorization: Bearer YOUR_MCP_STATIC_BEARER_TOKEN"]
-}
-```
-
-### CORS
-
-`CORS_ALLOWED_ORIGINS` limits which **browser origins** may call the API from JavaScript. It is separate from OAuth and from `MCP_STATIC_BEARER_TOKEN`. Default is `*` (allow all). To restrict:
-
-```env
-CORS_ALLOWED_ORIGINS=https://claude.ai
-CORS_ALLOWED_ORIGINS=https://claude.ai,http://localhost:3000
-```
-
-When set, only listed origins get a reflected `Access-Control-Allow-Origin`; other browser preflights fail.
-
-## Vault path
+### Vault path
 
 The server resolves the vault root in this order:
 
@@ -230,7 +279,7 @@ If `obsidian.json` contains multiple vaults, set `OBSIDIAN_VAULT_ID` to the vaul
 
 The display name used in the OAuth approval page defaults to the resolved vault directory name. You can override that with `VAULT_DISPLAY_NAME`.
 
-### Headless / no Obsidian installed
+#### Headless / no Obsidian installed
 
 Most users should just set `VAULT_PATH` and skip this. If you prefer the automatic discovery path on a machine without Obsidian, create the config file yourself:
 
@@ -252,7 +301,7 @@ mkdir -p ~/.config/obsidian
 
 With multiple vaults, add more entries and set `OBSIDIAN_VAULT_ID` to the one you want. Use absolute paths — `~` is not expanded inside `obsidian.json`.
 
-## Vault context note
+### Vault context note
 
 `vault_context` is meant to help agents learn your vault structure before they start writing. By default it looks for `AGENTS.md` or `CLAUDE.md`.
 
@@ -260,7 +309,7 @@ If your vault uses a different bootstrap file, set `VAULT_CONTEXT_PATH` to the r
 
 If you do not want to maintain one, the server still works without it.
 
-## Daily note paths
+### Daily note paths
 
 `vault_daily_note` uses `DAILY_NOTE_PATH_TEMPLATE`, which defaults to:
 
