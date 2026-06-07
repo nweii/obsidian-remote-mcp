@@ -6,3 +6,5 @@ dist/
 @eaDir/
 tokens.json*
 logs/
+# Local Claude Code config and worktrees
+.claude/
