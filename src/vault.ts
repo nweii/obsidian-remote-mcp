@@ -1114,6 +1114,166 @@ export async function getBacklinks(relativePath: string, limit = 20): Promise<st
   return results.map(r => r.path).filter(p => p !== relativePath);
 }
 
+// --- Tags --------------------------------------------------------------------
+
+// A tag and how many notes (and total occurrences) carry it. `tag` is the
+// first-seen casing; aggregation is case-insensitive, so two notes writing
+// `#Project` and `#project` collapse to one entry under the casing seen first.
+export interface TagCount {
+  tag: string;
+  noteCount: number;
+  occurrences: number;
+}
+
+// Frontmatter `tags` accepts a YAML array (["a", "b"]) or a comma-delimited
+// string ("a, b"). Other shapes (a single bare scalar) are treated as one tag.
+// A leading `#` is stripped so `#a` and `a` count the same. Empty entries drop.
+function extractFrontmatterTags(frontmatter: Record<string, unknown> | null): string[] {
+  const raw = frontmatter?.tags;
+  if (raw === undefined || raw === null) return [];
+  let parts: string[];
+  if (Array.isArray(raw)) {
+    parts = raw.map(v => String(v));
+  } else if (typeof raw === 'string') {
+    parts = raw.split(',');
+  } else {
+    parts = [String(raw)];
+  }
+  return parts
+    .map(p => p.trim().replace(/^#/, ''))
+    .filter(p => p.length > 0);
+}
+
+// Strip the regions where a `#` can't start a tag: fenced code blocks (``` or
+// ~~~) and inline code spans (backtick runs). Replaced with spaces so column
+// positions and line counts are preserved and the inline scanner sees no tags
+// inside them.
+function blankCodeRegions(body: string): string {
+  let out = body.replace(/^(```+|~~~+)[^\n]*\n[\s\S]*?^\1[^\n]*$/gm, m =>
+    m.replace(/[^\n]/g, ' '),
+  );
+  out = out.replace(/`+[^`\n]*`+/g, m => m.replace(/[^\n]/g, ' '));
+  return out;
+}
+
+// Inline `#tag` per Obsidian's rules. A tag is a `#` that is at the start of a
+// line or preceded by whitespace (so URL fragments like `example.com#frag` and
+// `# headings` don't count — a heading's `#` is followed by a space, never a
+// tag char), followed by one or more tag characters. Tag bodies allow letters,
+// digits, `_`, `-`, and `/` for nesting; a purely numeric tag (`#123`) is not a
+// tag in Obsidian, so at least one non-digit is required.
+const INLINE_TAG_REGEX = /(?:^|\s)#([\p{L}\p{N}_\-/]+)/gu;
+
+function extractInlineTags(body: string): string[] {
+  const cleaned = blankCodeRegions(body);
+  const tags: string[] = [];
+  for (const match of cleaned.matchAll(INLINE_TAG_REGEX)) {
+    const tag = match[1].replace(/\/+$/, '');
+    if (tag.length === 0) continue;
+    if (!/[^\d/]/.test(tag)) continue; // all digits/slashes — not a tag
+    tags.push(tag);
+  }
+  return tags;
+}
+
+// All tags in one note: frontmatter `tags` plus inline `#tag`. Each distinct
+// tag (case-insensitive) is counted once for note-presence and once per raw
+// occurrence. Returns the raw (display-cased) tag strings so the caller can
+// aggregate first-seen casing across notes.
+function collectNoteTags(content: string): string[] {
+  const frontmatter = parseFrontmatter(content);
+  const { body } = splitFrontmatter(content);
+  return [...extractFrontmatterTags(frontmatter), ...extractInlineTags(body)];
+}
+
+export interface TagScanOptions {
+  folder?: string; // relative path to scope the scan; defaults to vault root
+}
+
+// Internal accumulator entry: first-seen display casing, distinct-note count,
+// and total occurrences. Keyed by lowercased tag for case-insensitive merge.
+interface TagAggregate {
+  display: string;
+  notePaths: string[];
+  occurrences: number;
+}
+
+// Single pass over the vault (or a folder), reading each note once and
+// aggregating tag counts in memory. Returns the per-tag aggregate keyed by
+// lowercased tag. Reuses the searchContent traversal pattern: skips dotfiles,
+// honours .mcpignore (via resolveSafePath on the scoped root and isIgnored on
+// each entry), and only reads .md files.
+async function scanTags(options: TagScanOptions = {}): Promise<Map<string, TagAggregate>> {
+  const { folder } = options;
+  const root = folder ? resolveSafePath(folder) : VAULT_ROOT;
+  const aggregates = new Map<string, TagAggregate>();
+
+  async function walk(dir: string) {
+    const entries = await fs.readdir(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.name.startsWith('.')) continue;
+      const fullPath = path.join(dir, entry.name);
+      if (isIgnored(fullPath)) continue;
+      if (entry.isDirectory()) {
+        await walk(fullPath);
+        continue;
+      }
+      if (!entry.name.endsWith('.md')) continue;
+      let content: string;
+      try {
+        content = await fs.readFile(fullPath, 'utf-8');
+      } catch {
+        continue; // skip unreadable files (e.g. permission denied)
+      }
+      const rel = path.relative(VAULT_ROOT, fullPath);
+      // Per-note dedupe so one note carrying `#a` twice counts as one note for
+      // noteCount but two for occurrences. Keyed by lowercased tag.
+      const seenInNote = new Set<string>();
+      for (const tag of collectNoteTags(content)) {
+        const key = tag.toLowerCase();
+        let agg = aggregates.get(key);
+        if (!agg) {
+          agg = { display: tag, notePaths: [], occurrences: 0 };
+          aggregates.set(key, agg);
+        }
+        agg.occurrences++;
+        if (!seenInNote.has(key)) {
+          seenInNote.add(key);
+          agg.notePaths.push(rel);
+        }
+      }
+    }
+  }
+
+  await walk(root);
+  return aggregates;
+}
+
+// All tags in the vault (or a folder), sorted by note count descending then
+// tag name. Counts are case-insensitive; the displayed tag is the first-seen
+// casing.
+export async function getAllTags(options: TagScanOptions = {}): Promise<TagCount[]> {
+  const aggregates = await scanTags(options);
+  const counts: TagCount[] = [];
+  for (const agg of aggregates.values()) {
+    counts.push({ tag: agg.display, noteCount: agg.notePaths.length, occurrences: agg.occurrences });
+  }
+  counts.sort((a, b) => {
+    if (b.noteCount !== a.noteCount) return b.noteCount - a.noteCount;
+    return a.tag.localeCompare(b.tag, undefined, { sensitivity: 'base' });
+  });
+  return counts;
+}
+
+// Note paths carrying a specific tag (case-insensitive, exact match — querying
+// `parent` does not match `parent/child`). A leading `#` on the query is
+// ignored. Paths are returned in walk order (sorted by directory read).
+export async function getNotesByTag(tag: string, options: TagScanOptions = {}): Promise<string[]> {
+  const key = tag.trim().replace(/^#/, '').toLowerCase();
+  const aggregates = await scanTags(options);
+  return aggregates.get(key)?.notePaths ?? [];
+}
+
 // --- Reference rewriting on move/rename --------------------------------------
 //
 // When moveFile relocates or renames a file, links pointing at it go stale. This pass scans

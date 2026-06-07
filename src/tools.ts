@@ -1,4 +1,4 @@
-// ABOUTME: Registers all vault tools on an McpServer - context, read (full/list), outline, read section, frontmatter, links, writes, move/rename, title search, content search, daily note, clip URL, feedback.
+// ABOUTME: Registers all vault tools on an McpServer - context, read (full/list), outline, read section, frontmatter, links, writes, move/rename, title search, content search, tags, daily note, clip URL, feedback.
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import * as vault from "./vault.js";
@@ -688,6 +688,47 @@ export async function registerTools(server: McpServer) {
           {
             type: "text",
             text: hitLimit ? `${text}\n\n(limit of ${limit} reached — use folder to narrow the search)` : text,
+          },
+        ],
+      };
+    },
+  );
+
+  registerLogged(server,
+    "vault_tags",
+    {
+      title: "List vault tags or notes by tag",
+      description:
+        "Without a tag, list every tag in the vault with note counts, sorted by count descending (capped by limit, with a truncation warning when the cap is hit). With a tag, return the paths of notes carrying it. Counts both frontmatter `tags` (YAML array or comma string) and inline `#tag`, including nested tags like `parent/child`. Matching is case-insensitive and displays first-seen casing; nested tags are exact — querying `parent` does not match `parent/child`. Use folder to scope large vaults.",
+      inputSchema: z.object({
+        tag: z.string().optional().describe('A tag to look up (with or without leading #). Omit to list all tags with counts.'),
+        folder: z.string().optional().describe('Limit the scan to this subfolder (e.g. "02-Notes").'),
+        limit: z.number().optional().default(100).describe("When listing all tags: max tags to return (default 100, 0 = no limit)."),
+      }),
+    },
+    async ({ tag, folder, limit }) => {
+      if (tag !== undefined && tag.trim().length > 0) {
+        const paths = await vault.getNotesByTag(tag, { folder });
+        if (paths.length === 0) {
+          return { content: [{ type: "text", text: `No notes found with tag "${tag.trim().replace(/^#/, "")}".` }] };
+        }
+        return { content: [{ type: "text", text: paths.join("\n") }] };
+      }
+      const tags = await vault.getAllTags({ folder });
+      if (tags.length === 0) {
+        return { content: [{ type: "text", text: "No tags found." }] };
+      }
+      const capped = limit > 0 ? tags.slice(0, limit) : tags;
+      const lines = capped.map((t) => `${t.tag}\t${t.noteCount}`);
+      const text = lines.join("\n");
+      const truncated = limit > 0 && tags.length > limit;
+      return {
+        content: [
+          {
+            type: "text",
+            text: truncated
+              ? `${text}\n\n(showing top ${limit} of ${tags.length} tags — increase limit or pass a folder to narrow)`
+              : text,
           },
         ],
       };
