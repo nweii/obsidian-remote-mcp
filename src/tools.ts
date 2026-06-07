@@ -1,4 +1,4 @@
-// ABOUTME: Registers all vault tools on an McpServer - context, read (full/list), outline, read section, frontmatter, links, writes, move/rename, title search, content search, tags, periodic note, clip URL, feedback.
+// ABOUTME: Registers all vault tools on an McpServer - context, read (full/list), outline, read section, read attachment, frontmatter, links, writes, move/rename, title search, content search, tags, periodic note, clip URL, feedback.
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import * as vault from "./vault.js";
@@ -359,6 +359,63 @@ export async function registerTools(server: McpServer) {
         const warning = buildResolveWarning(out.ref, path);
         const text = warning ? `${warning}\n\n${message}${hint}` : `${message}${hint}`;
         return { content: [{ type: "text", text }], isError: true };
+      }
+    },
+  );
+
+  registerLogged(server,
+    "vault_read_attachment",
+    {
+      title: "Read vault attachment",
+      description:
+        "Read a binary attachment from the vault by vault-relative path (e.g. \"Attachments/diagram.png\"). Image types (png, jpg, gif, webp) come back as an image content block clients can render; other types (pdf and the like) come back as base64 with mime type and size. Files over the size cap are rejected — pass stat_only first to check size and mime without pulling the payload. Read-only: uploading attachments is out of scope.",
+      inputSchema: z.object({
+        path: z.string().describe("Vault-relative path to the attachment (with extension)"),
+        stat_only: z
+          .boolean()
+          .optional()
+          .default(false)
+          .describe("Return only size and mime type, without reading the file's bytes."),
+      }),
+    },
+    async ({ path, stat_only }) => {
+      try {
+        const att = await vault.readAttachment(path, stat_only);
+        const sizeKb = (att.bytes / 1024).toFixed(1);
+        if (stat_only) {
+          return {
+            content: [
+              { type: "text", text: `${path}\nmime: ${att.mimeType}\nsize: ${att.bytes} bytes (${sizeKb} KB)` },
+            ],
+          };
+        }
+        if (att.isImage) {
+          // Image content block so clients render the attachment. The base64 payload lives only
+          // in the result, never in the args the logger records, so it doesn't land in the log.
+          return {
+            content: [{ type: "image", data: att.data!, mimeType: att.mimeType }],
+          };
+        }
+        // Non-image: hand back the base64 plus mime/size so the agent knows what it got.
+        return {
+          content: [
+            { type: "text", text: `${path}\nmime: ${att.mimeType}\nsize: ${att.bytes} bytes (${sizeKb} KB)` },
+            { type: "text", text: att.data! },
+          ],
+        };
+      } catch (e) {
+        const code = (e as NodeJS.ErrnoException)?.code;
+        const message = e instanceof Error ? e.message : String(e);
+        if (
+          e instanceof vault.VaultPolicyError ||
+          e instanceof vault.AttachmentTooLargeError ||
+          code === "EISDIR" ||
+          code === "ENOENT"
+        ) {
+          const text = code === "ENOENT" ? `Attachment not found: ${path}` : message;
+          return { content: [{ type: "text", text }], isError: true };
+        }
+        throw e;
       }
     },
   );

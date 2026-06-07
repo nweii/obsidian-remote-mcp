@@ -5,8 +5,12 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { logToolCall } from "./log.js";
 
+export type ToolContent =
+  | { type: "text"; text: string }
+  | { type: "image"; data: string; mimeType: string };
+
 export type ToolResult = {
-  content: Array<{ type: "text"; text: string }>;
+  content: ToolContent[];
   isError?: boolean;
 };
 

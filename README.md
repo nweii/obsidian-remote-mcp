@@ -26,6 +26,7 @@ The server currently exposes these tools:
 | `vault_read` | Full note text (`mode` full, default) with a version for safe updates, or list one folder level (`mode` `list`; `path` `""` = vault root) |
 | `vault_outline` | All `#` headings in a note (one per line); use before `vault_read_section` |
 | `vault_read_section` | Body under a single heading (`heading` = text without `#`, case-insensitive) |
+| `vault_read_attachment` | Read a binary attachment by path; images return a renderable image block, other types base64 plus mime/size; `stat_only` checks size first (read-only) |
 | `vault_frontmatter` | Read YAML frontmatter from a note; optional `property` for a single key |
 | `vault_links` | Read outgoing wikilinks and optional backlinks |
 | `vault_create` | Create a new note |
@@ -297,6 +298,7 @@ TOKEN_STORE_PATH=./tokens.json         # optional
 MCP_STATIC_BEARER_TOKEN=               # optional; API key for /mcp (see Authentication)
 HEALTH_TOKEN=                          # optional; enables GET /health (see Health endpoint)
 VAULT_READ_ONLY=true                   # optional
+VAULT_ATTACHMENT_MAX_BYTES=10485760    # optional; vault_read_attachment size cap, defaults to 10 MB
 PORT=3456
 ```
 

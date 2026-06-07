@@ -1131,6 +1131,77 @@ describe('Title resolution via tool round-trips', () => {
     }
   });
 
+  test('vault_read_attachment returns an image content block for a png', async () => {
+    // A minimal but valid 1x1 PNG.
+    const png = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+      'base64',
+    );
+    const dir = path.join(vaultPath, 'AttachRoundtrip');
+    await mkdir(dir, { recursive: true });
+    const file = path.join(dir, 'pixel.png');
+    await writeFile(file, png);
+
+    const app = createApp();
+    const { base, close } = await listen(app);
+    try {
+      const token = seedTestToken();
+      const result = await callTool(base, token, 'vault_read_attachment', {
+        path: 'AttachRoundtrip/pixel.png',
+      });
+      expect(result.isError).toBeFalsy();
+      const block = result.content?.[0] as { type: string; data?: string; mimeType?: string };
+      expect(block.type).toBe('image');
+      expect(block.mimeType).toBe('image/png');
+      expect(block.data).toBe(png.toString('base64'));
+    } finally {
+      await close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('vault_read_attachment stat_only returns size and mime without the payload', async () => {
+    const png = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+      'base64',
+    );
+    const dir = path.join(vaultPath, 'AttachStat');
+    await mkdir(dir, { recursive: true });
+    await writeFile(path.join(dir, 'pixel.png'), png);
+
+    const app = createApp();
+    const { base, close } = await listen(app);
+    try {
+      const token = seedTestToken();
+      const result = await callTool(base, token, 'vault_read_attachment', {
+        path: 'AttachStat/pixel.png',
+        stat_only: true,
+      });
+      expect(result.isError).toBeFalsy();
+      const texts = result.content?.map(c => c.text) ?? [];
+      expect(texts.join('\n')).toContain('mime: image/png');
+      expect(texts.join('\n')).toContain(`size: ${png.length} bytes`);
+      // No image/base64 block when stat_only.
+      expect(result.content?.some(c => (c as { type: string }).type === 'image')).toBeFalsy();
+    } finally {
+      await close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('vault_read_attachment returns isError for a path outside the vault', async () => {
+    const app = createApp();
+    const { base, close } = await listen(app);
+    try {
+      const token = seedTestToken();
+      const result = await callTool(base, token, 'vault_read_attachment', { path: '../escape.png' });
+      expect(result.isError).toBe(true);
+      const texts = result.content?.map(c => c.text) ?? [];
+      expect(texts.join('\n')).toMatch(/Path escapes vault root/);
+    } finally {
+      await close();
+    }
+  });
 });
 
 describe('Health /health', () => {
