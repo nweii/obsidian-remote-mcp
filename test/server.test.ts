@@ -273,14 +273,75 @@ describe('Vault-derived defaults', () => {
 
   test('uses DAILY_NOTE_PATH_TEMPLATE tokens', () => {
     process.env.DAILY_NOTE_PATH_TEMPLATE = 'Daily/{YYYY}/{MM}/{DD}-{dddd}.md';
-    expect(vault.getDailyNotePath(new Date('2026-03-26T12:00:00Z'))).toBe('Daily/2026/03/26-Thursday.md');
+    expect(vault.getPeriodicNotePath('daily', new Date(2026, 2, 26))).toBe('Daily/2026/03/26-Thursday.md');
     delete process.env.DAILY_NOTE_PATH_TEMPLATE;
   });
 
   test('supports expanded daily note template tokens', () => {
     process.env.DAILY_NOTE_PATH_TEMPLATE = 'Journal/{YY}/{MMM}/{M}-{D}-{dd}.md';
-    expect(vault.getDailyNotePath(new Date('2026-03-26T12:00:00Z'))).toBe('Journal/26/Mar/3-26-Th.md');
+    expect(vault.getPeriodicNotePath('daily', new Date(2026, 2, 26))).toBe('Journal/26/Mar/3-26-Th.md');
     delete process.env.DAILY_NOTE_PATH_TEMPLATE;
+  });
+
+  test('daily cadence uses the built-in default template when unset', () => {
+    expect(vault.getPeriodicNotePath('daily', new Date(2026, 2, 26))).toBe('Daily/2026-03-26.md');
+  });
+
+  test('non-daily cadences have no template until configured', () => {
+    expect(vault.getPeriodicNotePath('weekly', new Date(2026, 2, 26))).toBeNull();
+    expect(vault.getPeriodicNotePath('monthly', new Date(2026, 2, 26))).toBeNull();
+    expect(vault.getPeriodicNotePath('quarterly', new Date(2026, 2, 26))).toBeNull();
+    expect(vault.getPeriodicNotePath('yearly', new Date(2026, 2, 26))).toBeNull();
+  });
+
+  test('getPeriodicNoteTemplateEnvVar names each cadence env var', () => {
+    expect(vault.getPeriodicNoteTemplateEnvVar('daily')).toBe('DAILY_NOTE_PATH_TEMPLATE');
+    expect(vault.getPeriodicNoteTemplateEnvVar('weekly')).toBe('WEEKLY_NOTE_PATH_TEMPLATE');
+    expect(vault.getPeriodicNoteTemplateEnvVar('monthly')).toBe('MONTHLY_NOTE_PATH_TEMPLATE');
+    expect(vault.getPeriodicNoteTemplateEnvVar('quarterly')).toBe('QUARTERLY_NOTE_PATH_TEMPLATE');
+    expect(vault.getPeriodicNoteTemplateEnvVar('yearly')).toBe('YEARLY_NOTE_PATH_TEMPLATE');
+  });
+
+  test('weekly cadence buckets any weekday into the same ISO week path', () => {
+    process.env.WEEKLY_NOTE_PATH_TEMPLATE = 'Weekly/{GGGG}-W{WW}.md';
+    // 2026-03-23 (Mon) through 2026-03-29 (Sun) are all ISO week 13 of 2026.
+    expect(vault.getPeriodicNotePath('weekly', new Date(2026, 2, 23))).toBe('Weekly/2026-W13.md');
+    expect(vault.getPeriodicNotePath('weekly', new Date(2026, 2, 26))).toBe('Weekly/2026-W13.md');
+    expect(vault.getPeriodicNotePath('weekly', new Date(2026, 2, 29))).toBe('Weekly/2026-W13.md');
+    delete process.env.WEEKLY_NOTE_PATH_TEMPLATE;
+  });
+
+  test('weekly cadence uses ISO week-year at the New Year boundary', () => {
+    process.env.WEEKLY_NOTE_PATH_TEMPLATE = 'Weekly/{GGGG}-W{WW}.md';
+    // 2025-12-29 (Mon) is in ISO week 1 of week-year 2026, not 2025.
+    expect(vault.getPeriodicNotePath('weekly', new Date(2025, 11, 29))).toBe('Weekly/2026-W01.md');
+    // Pairing the calendar-year token here would wrongly say 2025.
+    process.env.WEEKLY_NOTE_PATH_TEMPLATE = 'Weekly/{YYYY}-W{WW}.md';
+    expect(vault.getPeriodicNotePath('weekly', new Date(2025, 11, 29))).toBe('Weekly/2025-W01.md');
+    delete process.env.WEEKLY_NOTE_PATH_TEMPLATE;
+  });
+
+  test('monthly cadence buckets any day into the first of the month', () => {
+    process.env.MONTHLY_NOTE_PATH_TEMPLATE = 'Monthly/{YYYY}-{MM}.md';
+    expect(vault.getPeriodicNotePath('monthly', new Date(2026, 2, 1))).toBe('Monthly/2026-03.md');
+    expect(vault.getPeriodicNotePath('monthly', new Date(2026, 2, 26))).toBe('Monthly/2026-03.md');
+    delete process.env.MONTHLY_NOTE_PATH_TEMPLATE;
+  });
+
+  test('quarterly cadence buckets any date into its quarter number', () => {
+    process.env.QUARTERLY_NOTE_PATH_TEMPLATE = 'Quarterly/{YYYY}-Q{Q}.md';
+    expect(vault.getPeriodicNotePath('quarterly', new Date(2026, 0, 15))).toBe('Quarterly/2026-Q1.md');
+    expect(vault.getPeriodicNotePath('quarterly', new Date(2026, 2, 26))).toBe('Quarterly/2026-Q1.md');
+    expect(vault.getPeriodicNotePath('quarterly', new Date(2026, 3, 1))).toBe('Quarterly/2026-Q2.md');
+    expect(vault.getPeriodicNotePath('quarterly', new Date(2026, 11, 31))).toBe('Quarterly/2026-Q4.md');
+    delete process.env.QUARTERLY_NOTE_PATH_TEMPLATE;
+  });
+
+  test('yearly cadence buckets any date into its year', () => {
+    process.env.YEARLY_NOTE_PATH_TEMPLATE = 'Yearly/{YYYY}.md';
+    expect(vault.getPeriodicNotePath('yearly', new Date(2026, 0, 1))).toBe('Yearly/2026.md');
+    expect(vault.getPeriodicNotePath('yearly', new Date(2026, 11, 31))).toBe('Yearly/2026.md');
+    delete process.env.YEARLY_NOTE_PATH_TEMPLATE;
   });
 
   test('supports zero as no limit for title search', async () => {
@@ -1022,6 +1083,54 @@ describe('Title resolution via tool round-trips', () => {
     }
   });
 
+  test('vault_move defaults to a dry run that moves nothing and rewrites nothing', async () => {
+    const dir = path.join(vaultPath, 'MoveDryRun');
+    await mkdir(dir, { recursive: true });
+    await writeFile(path.join(dir, 'Target.md'), 'x\n', 'utf-8');
+    await writeFile(path.join(dir, 'ref.md'), 'see [[Target]] here\n', 'utf-8');
+    vault.invalidateResolverCache();
+
+    const app = createApp();
+    const { base, close } = await listen(app);
+    try {
+      const token = seedTestToken();
+      const result = await callTool(base, token, 'vault_move', {
+        source: 'MoveDryRun/Target.md',
+        destination: 'MoveDryRun/Renamed.md',
+      });
+      expect(result.content?.map(c => c.text).join('\n')).toContain('Dry run');
+      expect(await readFile(path.join(dir, 'Target.md'), 'utf-8')).toBe('x\n'); // not moved
+      expect(await readFile(path.join(dir, 'ref.md'), 'utf-8')).toBe('see [[Target]] here\n'); // not rewritten
+    } finally {
+      await close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('vault_move with dry_run false moves the file and rewrites a referring link', async () => {
+    const dir = path.join(vaultPath, 'MoveWrite');
+    await mkdir(dir, { recursive: true });
+    await writeFile(path.join(dir, 'Subject.md'), 'x\n', 'utf-8');
+    await writeFile(path.join(dir, 'ref.md'), 'see [[Subject]] here\n', 'utf-8');
+    vault.invalidateResolverCache();
+
+    const app = createApp();
+    const { base, close } = await listen(app);
+    try {
+      const token = seedTestToken();
+      const result = await callTool(base, token, 'vault_move', {
+        source: 'MoveWrite/Subject.md',
+        destination: 'MoveWrite/Renamed.md',
+        dry_run: false,
+      });
+      expect(result.content?.map(c => c.text).join('\n')).toContain('MoveWrite/ref.md');
+      expect(await readFile(path.join(dir, 'ref.md'), 'utf-8')).toBe('see [[Renamed]] here\n');
+    } finally {
+      await close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   test('vault_read_attachment returns an image content block for a png', async () => {
     // A minimal but valid 1x1 PNG.
     const png = Buffer.from(
@@ -1093,5 +1202,101 @@ describe('Title resolution via tool round-trips', () => {
       await close();
     }
   });
+});
 
+describe('Health /health', () => {
+  async function withHealthToken(value: string | undefined, fn: () => Promise<void>) {
+    const prev = process.env.HEALTH_TOKEN;
+    if (value === undefined) delete process.env.HEALTH_TOKEN;
+    else process.env.HEALTH_TOKEN = value;
+    try {
+      await fn();
+    } finally {
+      if (prev === undefined) delete process.env.HEALTH_TOKEN;
+      else process.env.HEALTH_TOKEN = prev;
+    }
+  }
+
+  test('returns 404 when HEALTH_TOKEN is unset (default-closed)', async () => {
+    await withHealthToken(undefined, async () => {
+      const app = createApp();
+      const { base, close } = await listen(app);
+      try {
+        const res = await fetch(`${base}/health`);
+        expect(res.status).toBe(404);
+      } finally {
+        await close();
+      }
+    });
+  });
+
+  test('returns 401 when the token is missing', async () => {
+    await withHealthToken('health-test-secret', async () => {
+      const app = createApp();
+      const { base, close } = await listen(app);
+      try {
+        const res = await fetch(`${base}/health`);
+        expect(res.status).toBe(401);
+      } finally {
+        await close();
+      }
+    });
+  });
+
+  test('returns 401 when the token is wrong', async () => {
+    await withHealthToken('health-test-secret', async () => {
+      const app = createApp();
+      const { base, close } = await listen(app);
+      try {
+        const res = await fetch(`${base}/health`, {
+          headers: { Authorization: 'Bearer not-the-health-secret' },
+        });
+        expect(res.status).toBe(401);
+      } finally {
+        await close();
+      }
+    });
+  });
+
+  test('returns 200 and { ok, version, uptime_seconds } with the correct token', async () => {
+    await withHealthToken('health-test-secret', async () => {
+      const app = createApp();
+      const { base, close } = await listen(app);
+      try {
+        const res = await fetch(`${base}/health`, {
+          headers: { Authorization: 'Bearer health-test-secret' },
+        });
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as { ok: boolean; version: string; uptime_seconds: number };
+        expect(body.ok).toBe(true);
+        expect(typeof body.version).toBe('string');
+        expect(body.version.length).toBeGreaterThan(0);
+        expect(typeof body.uptime_seconds).toBe('number');
+        // Nothing else in the response: no vault name, paths, or counts.
+        expect(Object.keys(body).sort()).toEqual(['ok', 'uptime_seconds', 'version']);
+      } finally {
+        await close();
+      }
+    });
+  });
+
+  test('returns 503 with ok: false when the vault root is unreadable', async () => {
+    await withHealthToken('health-test-secret', async () => {
+      const app = createApp();
+      const { base, close } = await listen(app);
+      // Remove the vault root so the per-request stat fails, then restore it.
+      await rm(vaultPath, { recursive: true, force: true });
+      try {
+        const res = await fetch(`${base}/health`, {
+          headers: { Authorization: 'Bearer health-test-secret' },
+        });
+        expect(res.status).toBe(503);
+        const body = (await res.json()) as { ok: boolean };
+        expect(body.ok).toBe(false);
+      } finally {
+        await mkdir(vaultPath, { recursive: true });
+        await close();
+      }
+    });
+  });
 });

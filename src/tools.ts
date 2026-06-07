@@ -1,4 +1,4 @@
-// ABOUTME: Registers all vault tools on an McpServer - context, read (full/list), outline, read section, frontmatter, links, writes, title search, content search, daily note, clip URL, feedback.
+// ABOUTME: Registers all vault tools on an McpServer - context, read (full/list), outline, read section, read attachment, frontmatter, links, writes, move/rename, title search, content search, tags, periodic note, clip URL, feedback.
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import * as vault from "./vault.js";
@@ -104,6 +104,78 @@ async function resolveForWrite(input: string): Promise<string> {
     if (!isNotFound) throw e;
     return input;
   }
+}
+
+// vault_move takes explicit vault-relative paths, not bare titles — a move is a mutation and
+// title resolution adds an ambiguity layer exactly where it isn't wanted. A bare title has no
+// file extension; an explicit path always points at a file with one (e.g. `Notes/Foo.md`,
+// `attachments/img.png`). Returns the rejection text if the input looks like a bare title,
+// or null if it's an acceptable path.
+function rejectBareTitle(input: string): string | null {
+  const base = input.split("/").pop() ?? input;
+  if (base.includes(".")) return null;
+  return `Error: "${input}" looks like a bare title, not a vault-relative path. vault_move needs explicit paths with extensions (e.g. "Notes/Foo.md"); call vault_search_title to find the path first.`;
+}
+
+// The .base flags and skipped-bare-link warnings shared by the dry-run plan and the write report.
+// Both forms need to surface these the same way, so they live in one helper.
+function formatMoveCaveats(
+  baseFilesToReview: string[],
+  skippedLinks: vault.SkippedLink[],
+): string {
+  const lines: string[] = [];
+  if (baseFilesToReview.length > 0) {
+    lines.push("", "Base files to review by hand (never auto-edited):");
+    for (const p of baseFilesToReview) lines.push(`- \`${p}\``);
+  }
+  if (skippedLinks.length > 0) {
+    lines.push("", "Skipped ambiguous bare-name links (resolve by hand):");
+    for (const s of skippedLinks) lines.push(`- \`${s.path}\`: ${s.link} — ${s.reason}`);
+  }
+  return lines.join("\n");
+}
+
+// Render the dry-run plan: the move, every file's rewrites, and the caveats. The plan ends with
+// an explicit "nothing was written" line and how to apply it, so an agent knows the next step.
+function formatMovePlan(plan: vault.RewritePlan): string {
+  const kind = plan.isRename ? "rename" : "move";
+  const lines: string[] = [`Dry run — planned ${kind} of \`${plan.from}\` to \`${plan.to}\`. Nothing was written.`];
+
+  if (plan.files.length === 0) {
+    lines.push("", "No links to rewrite.");
+  } else {
+    const total = plan.files.reduce((n, f) => n + f.rewrites.length, 0);
+    lines.push("", `Would rewrite ${total} link(s) across ${plan.files.length} file(s):`);
+    for (const file of plan.files) {
+      lines.push(`- \`${file.path}\``);
+      for (const r of file.rewrites) lines.push(`    ${r.before} → ${r.after}`);
+    }
+  }
+
+  lines.push(formatMoveCaveats(plan.baseFilesToReview, plan.skippedLinks));
+  lines.push("", "To apply, call vault_move again with dry_run: false.");
+  return lines.join("\n").replace(/\n{3,}/g, "\n\n");
+}
+
+// Render the write-mode report: the move plus the files modified, any per-file rewrite failures
+// (the move already landed, so these are stale links to fix by hand), and the same caveats.
+function formatMoveReport(result: vault.RewriteResult): string {
+  const lines: string[] = [`Moved \`${result.from}\` to \`${result.to}\`.`];
+
+  if (result.modified.length === 0) {
+    lines.push("", "No files needed link rewrites.");
+  } else {
+    lines.push("", `Rewrote links in ${result.modified.length} file(s):`);
+    for (const p of result.modified) lines.push(`- \`${p}\``);
+  }
+
+  if (result.failures.length > 0) {
+    lines.push("", "Failed to rewrite (links left stale — fix by hand):");
+    for (const f of result.failures) lines.push(`- \`${f.path}\`: ${f.error}`);
+  }
+
+  lines.push(formatMoveCaveats(result.baseFilesToReview, result.skippedLinks));
+  return lines.join("\n").replace(/\n{3,}/g, "\n\n");
 }
 
 async function titleSearchToolResult(title: string, exact: boolean, limit: number) {
@@ -582,6 +654,58 @@ export async function registerTools(server: McpServer) {
   );
 
   registerLogged(server,
+    "vault_move",
+    {
+      title: "Move or rename a vault file",
+      description:
+        "Move or rename a file within the vault and rewrite the wikilinks that point at it. source and destination are explicit vault-relative paths (with extension) — bare titles are not resolved; call vault_search_title first to find the path. Works on any file type (notes, canvases, bases, attachments). Creates missing parent folders and fails if a file already exists at the destination. dry_run defaults to true: it shows the full rewrite plan and writes nothing. Pass dry_run: false to move the file and apply the rewrites. A pure move (same name, new folder) leaves bare [[Name]] links alone; a rename rewrites every form. .base files are never edited, only flagged for review.",
+      inputSchema: z.object({
+        source: z.string().describe("Explicit vault-relative path of the file to move (with extension)"),
+        destination: z.string().describe("Explicit vault-relative path to move the file to (with extension)"),
+        dry_run: z.boolean().optional().default(true).describe("If true (default), return the rewrite plan and write nothing. Pass false to move the file and rewrite links."),
+      }),
+    },
+    async ({ source, destination, dry_run }) => {
+      const bareTitle = rejectBareTitle(source) ?? rejectBareTitle(destination);
+      if (bareTitle) {
+        return { content: [{ type: "text", text: bareTitle }], isError: true };
+      }
+
+      // Dry run: plan only, write nothing — not even the move. The plan reports every file it
+      // would touch, .base files to review, and ambiguous links it would skip.
+      if (dry_run) {
+        try {
+          const plan = await vault.planReferenceRewrite(source, destination);
+          return { content: [{ type: "text", text: formatMovePlan(plan) }] };
+        } catch (e) {
+          if (e instanceof vault.VaultPolicyError) {
+            return { content: [{ type: "text", text: e.message }], isError: true };
+          }
+          throw e;
+        }
+      }
+
+      // Write mode: plan, move the file (the near-infallible step), then apply the rewrites (the
+      // many-failure-point step). Planning before the move means link matching sees the file at its
+      // old path; the rewrite recomputes against current text under each file's lock.
+      try {
+        const plan = await vault.planReferenceRewrite(source, destination);
+        await vault.moveFile(source, destination);
+        const result = await vault.applyReferenceRewrite(plan);
+        return { content: [{ type: "text", text: formatMoveReport(result) }] };
+      } catch (e) {
+        if (e instanceof vault.NoteExistsError) {
+          return { content: [{ type: "text", text: `Error: file already exists at ${destination}. Choose a different destination or trash the existing file first.` }], isError: true };
+        }
+        if (e instanceof vault.VaultPolicyError) {
+          return { content: [{ type: "text", text: e.message }], isError: true };
+        }
+        throw e;
+      }
+    },
+  );
+
+  registerLogged(server,
     "vault_search_title",
     {
       title: "Search vault by note title",
@@ -628,17 +752,59 @@ export async function registerTools(server: McpServer) {
   );
 
   registerLogged(server,
-    "vault_daily_note",
+    "vault_tags",
     {
-      title: "Get or create daily note",
-      description: `Get or create a daily note using the configured path template (${vault.getDailyNoteTemplate()}). Defaults to today.`,
+      title: "List vault tags or notes by tag",
+      description:
+        "Without a tag, list every tag in the vault with note counts, sorted by count descending (capped by limit, with a truncation warning when the cap is hit). With a tag, return the paths of notes carrying it. Counts both frontmatter `tags` (YAML array or comma string) and inline `#tag`, including nested tags like `parent/child`. Matching is case-insensitive and displays first-seen casing; nested tags are exact — querying `parent` does not match `parent/child`. Use folder to scope large vaults.",
       inputSchema: z.object({
-        date: z.string().optional().describe("Date in YYYY-MM-DD format (defaults to today)"),
-        create_if_missing: z.boolean().optional().default(true).describe("Create the note if it does not exist (default true)"),
-        template: z.string().optional().describe("Content to use when creating a new daily note"),
+        tag: z.string().optional().describe('A tag to look up (with or without leading #). Omit to list all tags with counts.'),
+        folder: z.string().optional().describe('Limit the scan to this subfolder (e.g. "02-Notes").'),
+        limit: z.number().optional().default(100).describe("When listing all tags: max tags to return (default 100, 0 = no limit)."),
       }),
     },
-    async ({ date, create_if_missing, template }) => {
+    async ({ tag, folder, limit }) => {
+      if (tag !== undefined && tag.trim().length > 0) {
+        const paths = await vault.getNotesByTag(tag, { folder });
+        if (paths.length === 0) {
+          return { content: [{ type: "text", text: `No notes found with tag "${tag.trim().replace(/^#/, "")}".` }] };
+        }
+        return { content: [{ type: "text", text: paths.join("\n") }] };
+      }
+      const tags = await vault.getAllTags({ folder });
+      if (tags.length === 0) {
+        return { content: [{ type: "text", text: "No tags found." }] };
+      }
+      const capped = limit > 0 ? tags.slice(0, limit) : tags;
+      const lines = capped.map((t) => `${t.tag}\t${t.noteCount}`);
+      const text = lines.join("\n");
+      const truncated = limit > 0 && tags.length > limit;
+      return {
+        content: [
+          {
+            type: "text",
+            text: truncated
+              ? `${text}\n\n(showing top ${limit} of ${tags.length} tags — increase limit or pass a folder to narrow)`
+              : text,
+          },
+        ],
+      };
+    },
+  );
+
+  registerLogged(server,
+    "vault_periodic_note",
+    {
+      title: "Get or create periodic note",
+      description: `Get or create a daily, weekly, monthly, quarterly, or yearly note using the cadence's configured path template. The optional date is bucketed into the week, month, quarter, or year that contains it. Defaults to today.`,
+      inputSchema: z.object({
+        period: z.enum(["daily", "weekly", "monthly", "quarterly", "yearly"]).describe("Which cadence of note to get or create"),
+        date: z.string().optional().describe("Date in YYYY-MM-DD format, bucketed into its containing period (defaults to today)"),
+        create_if_missing: z.boolean().optional().default(true).describe("Create the note if it does not exist (default true)"),
+        template: z.string().optional().describe("Content to use when creating a new note"),
+      }),
+    },
+    async ({ period, date, create_if_missing, template }) => {
       let parsed: Date | undefined;
       if (date !== undefined) {
         const p = parseLocalYmd(date);
@@ -650,7 +816,14 @@ export async function registerTools(server: McpServer) {
         }
         parsed = p;
       }
-      const notePath = vault.getDailyNotePath(parsed);
+      const notePath = vault.getPeriodicNotePath(period, parsed);
+      if (notePath === null) {
+        const envVar = vault.getPeriodicNoteTemplateEnvVar(period);
+        return {
+          content: [{ type: "text", text: `Error: no ${period} note template configured. Set the ${envVar} environment variable.` }],
+          isError: true,
+        };
+      }
       const dateStr = date ?? localYmd(new Date());
 
       try {
@@ -658,7 +831,7 @@ export async function registerTools(server: McpServer) {
         return { content: [{ type: "text", text: `Path: ${notePath}\n\n${content}` }] };
       } catch {
         if (!create_if_missing) {
-          return { content: [{ type: "text", text: `No daily note found at ${notePath}` }] };
+          return { content: [{ type: "text", text: `No ${period} note found at ${notePath}` }] };
         }
         const noteContent = template ?? `# ${dateStr}\n\n`;
         await vault.writeNote(notePath, noteContent);

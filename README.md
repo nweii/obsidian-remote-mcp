@@ -8,7 +8,7 @@ This is meant for home servers, NAS boxes, VPSes, and other setups where your va
 
 - OAuth (browser sign-in) or an API key (fixed bearer token), depending on what the client supports.
 - `vault_context` serves your vault guide note (defaults to `AGENTS.md`) plus a shallow folder tree so agents can see your vault structure.
-- Daily notes from a path template you configure.
+- Periodic notes (daily, weekly, monthly, quarterly, yearly) from path templates you configure.
 - Create, edit, update, and trash notes; wikilinks and YAML frontmatter work as usual.
 - Token-efficient partial access: read or edit one section under a heading, work with individual frontmatter properties, and list headings before reading. The [tools table](#tools) has the full set.
 - Full-note updates can check the version you last read, so another agent's edit is not overwritten by accident.
@@ -35,9 +35,11 @@ The server currently exposes these tools:
 | `vault_edit` | Append, prepend, or replace exact text within a note |
 | `vault_edit_section` | Append, prepend, or replace the body under one heading |
 | `vault_trash` | Move a note to `.trash` |
+| `vault_move` | Move or rename any vault file by explicit path and rewrite the wikilinks that point at it; defaults to a dry run that shows the plan and writes nothing |
 | `vault_search_title` | Find notes by filename (partial or exact); returns paths for `vault_read` |
 | `vault_search_content` | Regex search in note bodies; optional `folder` to scope large vaults |
-| `vault_daily_note` | Read or create a daily note using a configurable path template |
+| `vault_tags` | List all tags with note counts, or note paths for one `tag`; counts frontmatter and inline `#tag` |
+| `vault_periodic_note` | Read or create a daily, weekly, monthly, quarterly, or yearly note using a per-cadence path template |
 
 ## Security and scope
 
@@ -248,6 +250,31 @@ CORS_ALLOWED_ORIGINS=https://claude.ai,http://localhost:3000
 
 When set, only listed origins get a reflected `Access-Control-Allow-Origin`; other browser preflights fail.
 
+### Health endpoint
+
+`GET /health` is a liveness probe for uptime monitors. It is **default-closed**: with `HEALTH_TOKEN` unset the route returns 404, so a fresh deploy exposes nothing. Set **`HEALTH_TOKEN`** to a long random string to turn it on, and the monitor must send that value as `Authorization: Bearer …`. A wrong or missing token returns 401.
+
+It is a separate secret from `MCP_CLIENT_SECRET` and `MCP_STATIC_BEARER_TOKEN`, so you can rotate it without touching any OAuth client config, and the credential pasted into a third-party monitor grants no vault access — leaking it reveals nothing but the response below.
+
+Each request stats the vault root once, which catches the case where the process is up but the volume mount is broken (a realistic NAS failure). The response is:
+
+```json
+{ "ok": true, "version": "1.0.0", "uptime_seconds": 1234.5 }
+```
+
+- `ok` — `true`, or `false` with HTTP **503** when the vault stat fails, so monitors can alert on the status code alone.
+- `version` — from `package.json`, to confirm a deploy landed.
+- `uptime_seconds` — process uptime; a green monitor with constantly resetting uptime means the container is crash-looping.
+
+Nothing else is returned — no vault name, paths, or counts.
+
+```bash
+# generate a token
+openssl rand -base64 48
+```
+
+Sample Uptime Kuma monitor: type **HTTP(s)**, URL `https://mcp.example.com/health`, accepted status codes `200`, and under HTTP Options add a header `Authorization: Bearer YOUR_HEALTH_TOKEN`.
+
 ### Environment variables
 
 Set these on the server process (Compose `environment:`, Portainer, shell `export`, etc.):
@@ -262,9 +289,14 @@ OBSIDIAN_VAULT_ID=personal             # optional when obsidian.json contains mu
 VAULT_DISPLAY_NAME=Personal            # optional; defaults to the vault directory name
 VAULT_CONTEXT_PATH=AGENTS.md           # optional; defaults to AGENTS.md, then CLAUDE.md
 DAILY_NOTE_PATH_TEMPLATE=Daily/{YYYY}-{MM}-{DD}.md
+WEEKLY_NOTE_PATH_TEMPLATE=Weekly/{GGGG}-W{WW}.md       # optional; opt-in cadence
+MONTHLY_NOTE_PATH_TEMPLATE=Monthly/{YYYY}-{MM}.md      # optional; opt-in cadence
+QUARTERLY_NOTE_PATH_TEMPLATE=Quarterly/{YYYY}-Q{Q}.md  # optional; opt-in cadence
+YEARLY_NOTE_PATH_TEMPLATE=Yearly/{YYYY}.md             # optional; opt-in cadence
 CORS_ALLOWED_ORIGINS=https://claude.ai # optional; defaults to *
 TOKEN_STORE_PATH=./tokens.json         # optional
 MCP_STATIC_BEARER_TOKEN=               # optional; API key for /mcp (see Authentication)
+HEALTH_TOKEN=                          # optional; enables GET /health (see Health endpoint)
 VAULT_READ_ONLY=true                   # optional
 VAULT_ATTACHMENT_MAX_BYTES=10485760    # optional; vault_read_attachment size cap, defaults to 10 MB
 PORT=3456
@@ -311,20 +343,36 @@ If your vault uses a different bootstrap file, set `VAULT_CONTEXT_PATH` to the r
 
 If you do not want to maintain one, the server still works without it.
 
-### Daily note paths
+### Periodic note paths
 
-`vault_daily_note` uses `DAILY_NOTE_PATH_TEMPLATE`, which defaults to:
+`vault_periodic_note` reads or creates a note for one of five cadences — `daily`, `weekly`, `monthly`, `quarterly`, `yearly`. It replaces the earlier `vault_daily_note` tool; clients pick up the new tool on their next tool-list refresh, and `period: daily` behaves exactly as the old daily tool did. The tool takes an optional `date` (`YYYY-MM-DD`), which is bucketed into the week, month, quarter, or year that contains it, so any day in a period maps to the same note.
+
+Each cadence has its own opt-in path template env var:
+
+| Cadence | Env var |
+|---------|---------|
+| `daily` | `DAILY_NOTE_PATH_TEMPLATE` |
+| `weekly` | `WEEKLY_NOTE_PATH_TEMPLATE` |
+| `monthly` | `MONTHLY_NOTE_PATH_TEMPLATE` |
+| `quarterly` | `QUARTERLY_NOTE_PATH_TEMPLATE` |
+| `yearly` | `YEARLY_NOTE_PATH_TEMPLATE` |
+
+Only the daily cadence has a built-in default:
 
 ```text
 Daily/{YYYY}-{MM}-{DD}.md
 ```
 
-This is only a convenience tool. Many vaults use different daily note layouts, so you will likely want to override it.
+The other four are opt-in — calling a cadence with no template configured returns an error naming the env var to set. These are convenience templates; many vaults use different layouts, so you will likely want to override them.
 
 Supported tokens:
 
-- `{YYYY}`: 4-digit year
-- `{YY}`: 2-digit year
+- `{YYYY}`: 4-digit calendar year
+- `{YY}`: 2-digit calendar year
+- `{GGGG}`: 4-digit ISO week-year (use with `{WW}`, not `{YYYY}`)
+- `{GG}`: 2-digit ISO week-year
+- `{WW}`: 2-digit ISO week number (weeks start Monday; week 1 contains the first Thursday)
+- `{Q}`: quarter number (`1`–`4`)
 - `{MM}`: 2-digit month
 - `{M}`: month without zero padding
 - `{DD}`: 2-digit day
@@ -335,12 +383,17 @@ Supported tokens:
 - `{ddd}`: short weekday name like `Mon`
 - `{dddd}`: full weekday name like `Monday`
 
+The ISO week-year (`{GGGG}`) differs from the calendar year (`{YYYY}`) around New Year — for example `2025-12-29` falls in ISO week 1 of 2026. Pair `{WW}` with `{GGGG}` so the year matches the week; pairing it with `{YYYY}` produces wrong paths at that boundary.
+
 Examples:
 
 ```env
 DAILY_NOTE_PATH_TEMPLATE=Daily/{YYYY}/{YYYY}-{MM}-{DD}.md
-DAILY_NOTE_PATH_TEMPLATE=Journal/{YYYY}-{MM}-{DD}-{dddd}.md
 DAILY_NOTE_PATH_TEMPLATE=Journal/{YYYY}/{MMM}/{D}-{ddd}.md
+WEEKLY_NOTE_PATH_TEMPLATE=Weekly/{GGGG}-W{WW}.md
+MONTHLY_NOTE_PATH_TEMPLATE=Monthly/{YYYY}-{MM}.md
+QUARTERLY_NOTE_PATH_TEMPLATE=Quarterly/{YYYY}-Q{Q}.md
+YEARLY_NOTE_PATH_TEMPLATE=Yearly/{YYYY}.md
 ```
 
 ## Notes
@@ -355,8 +408,12 @@ DAILY_NOTE_PATH_TEMPLATE=Journal/{YYYY}/{MMM}/{D}-{ddd}.md
 - `.mcpignore` in the vault root can block paths from all MCP access.
 - `VAULT_READ_ONLY=true` blocks all write operations.
 - `vault_search_title` defaults to `limit=50`; `vault_search_content` defaults to `limit=20`. Limits are adjustable; `0` means no limit.
+- `vault_tags` defaults to `limit=100` when listing all tags; passing a `tag` returns the matching note paths without a limit. Counts are case-insensitive (displayed in first-seen casing) and nested tags match exactly — `parent` does not include `parent/child`.
 - `vault_frontmatter` and `vault_set_frontmatter_property` let agents work with frontmatter properties without reading or rewriting the whole note body.
 - `vault_read` returns a version block. Pass it to `vault_update` as `base_version` if you want stale full-note updates to fail instead of overwriting another edit.
+- `vault_move` takes explicit vault-relative paths (with extension) for both source and destination — bare titles are rejected, since a move is a mutation and title resolution adds ambiguity exactly where it isn't wanted. Use `vault_search_title` first to find the path. It also rewrites the wikilinks that point at the moved file, across note bodies and frontmatter (string and array values) and `.canvas` node paths.
+- `vault_move` rewrites conservatively. `dry_run` defaults to `true`: the call returns the full plan — every file and the rewrites it would make, plus `.base` files to review and any ambiguous links it would skip — and writes nothing, not even the move. Pass `dry_run: false` to move the file (first) and apply the rewrites (after). All wikilink forms are handled — `[[Note]]`, `[[folder/Note]]`, `[[Note#Heading]]`, `[[Note#^block]]`, `[[Note|alias]]`, embeds `![[Note]]`, links carrying an explicit extension, and combinations — with the alias, heading, and block parts preserved.
+- A pure move (same filename, new folder) leaves bare `[[Name]]` links alone, since Obsidian still resolves them by filename; only path-form links are repointed. A rename rewrites every form. If another file shares the old basename, bare-name links are ambiguous and skipped with a warning rather than guessed. Wikilinks inside fenced code blocks and inline code are left untouched. `.base` files are never edited — any that mention the old name or path are reported for manual attention, because rewriting strings inside Base formulas is too risky. `.mcpignore`d notes are neither scanned nor modified.
 
 ## Tests
 
