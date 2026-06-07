@@ -248,6 +248,31 @@ CORS_ALLOWED_ORIGINS=https://claude.ai,http://localhost:3000
 
 When set, only listed origins get a reflected `Access-Control-Allow-Origin`; other browser preflights fail.
 
+### Health endpoint
+
+`GET /health` is a liveness probe for uptime monitors. It is **default-closed**: with `HEALTH_TOKEN` unset the route returns 404, so a fresh deploy exposes nothing. Set **`HEALTH_TOKEN`** to a long random string to turn it on, and the monitor must send that value as `Authorization: Bearer …`. A wrong or missing token returns 401.
+
+It is a separate secret from `MCP_CLIENT_SECRET` and `MCP_STATIC_BEARER_TOKEN`, so you can rotate it without touching any OAuth client config, and the credential pasted into a third-party monitor grants no vault access — leaking it reveals nothing but the response below.
+
+Each request stats the vault root once, which catches the case where the process is up but the volume mount is broken (a realistic NAS failure). The response is:
+
+```json
+{ "ok": true, "version": "1.0.0", "uptime_seconds": 1234.5 }
+```
+
+- `ok` — `true`, or `false` with HTTP **503** when the vault stat fails, so monitors can alert on the status code alone.
+- `version` — from `package.json`, to confirm a deploy landed.
+- `uptime_seconds` — process uptime; a green monitor with constantly resetting uptime means the container is crash-looping.
+
+Nothing else is returned — no vault name, paths, or counts.
+
+```bash
+# generate a token
+openssl rand -base64 48
+```
+
+Sample Uptime Kuma monitor: type **HTTP(s)**, URL `https://mcp.example.com/health`, accepted status codes `200`, and under HTTP Options add a header `Authorization: Bearer YOUR_HEALTH_TOKEN`.
+
 ### Environment variables
 
 Set these on the server process (Compose `environment:`, Portainer, shell `export`, etc.):
@@ -265,6 +290,7 @@ DAILY_NOTE_PATH_TEMPLATE=Daily/{YYYY}-{MM}-{DD}.md
 CORS_ALLOWED_ORIGINS=https://claude.ai # optional; defaults to *
 TOKEN_STORE_PATH=./tokens.json         # optional
 MCP_STATIC_BEARER_TOKEN=               # optional; API key for /mcp (see Authentication)
+HEALTH_TOKEN=                          # optional; enables GET /health (see Health endpoint)
 VAULT_READ_ONLY=true                   # optional
 PORT=3456
 ```
