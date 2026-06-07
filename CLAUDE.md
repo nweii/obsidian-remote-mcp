@@ -21,7 +21,7 @@ src/
   app.ts      — createApp() — Express routes (OAuth + MCP)
   auth.ts     — OAuth discovery, token issuance, optional client-secret validation, and Bearer validation middleware
   vault.ts    — Vault filesystem operations, frontmatter helpers, vault discovery, and config-derived defaults
-  tools.ts    — MCP tool definitions (context, read, outline, read section, frontmatter, links, create/update/edit/edit section/trash, set frontmatter, search title, search content, tags, periodic note, feedback)
+  tools.ts    — MCP tool definitions (context, read, outline, read section, read attachment, frontmatter, links, create/update/edit/edit section/trash, set frontmatter, move/rename, search title, search content, tags, periodic note, clip URL, feedback)
   lock.ts     — Per-path async mutex; serializes read-modify-write so concurrent edits to one note can't interleave
   log.ts      — Append-only JSONL logger for tool calls and agent feedback (LOG_DIR, default ./logs)
 test/
@@ -51,13 +51,19 @@ MCP endpoint: `POST /mcp` (requires Bearer token)
 | `OBSIDIAN_VAULT_ID` | when multiple vaults | Which `vaults` entry in `obsidian.json` to use (matches id case-insensitively) |
 | `VAULT_DISPLAY_NAME` | no | Optional label shown on the OAuth approval page. Defaults to the resolved vault directory name. |
 | `VAULT_CONTEXT_PATH` | no | Relative path for the note returned by `vault_context`. Defaults to `AGENTS.md`, then `CLAUDE.md`. |
-| `DAILY_NOTE_PATH_TEMPLATE` | no | Daily note path template. Defaults to `Daily/{YYYY}-{MM}-{DD}.md`. |
+| `DAILY_NOTE_PATH_TEMPLATE` | no | Daily-cadence path template for `vault_periodic_note`. Defaults to `Daily/{YYYY}-{MM}-{DD}.md`. |
+| `WEEKLY_NOTE_PATH_TEMPLATE` | no | Weekly-cadence path template. Opt-in; `period: weekly` errors until set. |
+| `MONTHLY_NOTE_PATH_TEMPLATE` | no | Monthly-cadence path template. Opt-in; `period: monthly` errors until set. |
+| `QUARTERLY_NOTE_PATH_TEMPLATE` | no | Quarterly-cadence path template. Opt-in; `period: quarterly` errors until set. |
+| `YEARLY_NOTE_PATH_TEMPLATE` | no | Yearly-cadence path template. Opt-in; `period: yearly` errors until set. |
+| `VAULT_ATTACHMENT_MAX_BYTES` | no | Max bytes `vault_read_attachment` will read before rejecting. Defaults to `10485760` (10 MB). |
 | `CORS_ALLOWED_ORIGINS` | no | Comma-separated browser origin allowlist. Defaults to `*`. |
 | `TOKEN_STORE_PATH` | no | Path to the persisted bearer token store. Defaults to `./tokens.json`. |
 | `LOG_ENABLED` | no | Set to `false` to disable tool-call logging and skip registering `vault_feedback`. Defaults to `true`. |
 | `LOG_DIR` | no | Directory for JSONL logs (`tool-calls.jsonl`, `feedback.jsonl`). Defaults to `./logs`. Created on first write. Skipped when `VAULT_MCP_TEST=1` or `LOG_ENABLED=false`. |
 | `MCP_STATIC_BEARER_TOKEN` | no | Optional fixed secret: requests to `/mcp` with `Authorization: Bearer <same value>` are allowed (for clients that cannot use browser OAuth). Long random string; use HTTPS. Works alongside normal OAuth tokens. |
-| `VAULT_READ_ONLY` | no | Set to `true` to block all write operations (create, update, edit, trash) |
+| `VAULT_READ_ONLY` | no | Set to `true` to block all write operations (create, update, edit, move, trash) |
+| `HEALTH_TOKEN` | no | Dedicated bearer for `GET /health`. Default-closed: unset → the route 404s. Sent as `Authorization: Bearer`; separate from the OAuth and static-bearer secrets. |
 | `PORT` | no | HTTP port (default: `3456`) |
 
 ## Claude.ai custom connector (plain checklist)
