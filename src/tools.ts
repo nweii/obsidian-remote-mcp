@@ -1,4 +1,4 @@
-// ABOUTME: Registers all vault tools on an McpServer - context, read (full/list), outline, read section, frontmatter, links, writes, title search, content search, daily note, clip URL, feedback.
+// ABOUTME: Registers all vault tools on an McpServer - context, read (full/list), outline, read section, frontmatter, links, writes, move/rename, title search, content search, daily note, clip URL, feedback.
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import * as vault from "./vault.js";
@@ -104,6 +104,17 @@ async function resolveForWrite(input: string): Promise<string> {
     if (!isNotFound) throw e;
     return input;
   }
+}
+
+// vault_move takes explicit vault-relative paths, not bare titles — a move is a mutation and
+// title resolution adds an ambiguity layer exactly where it isn't wanted. A bare title has no
+// file extension; an explicit path always points at a file with one (e.g. `Notes/Foo.md`,
+// `attachments/img.png`). Returns the rejection text if the input looks like a bare title,
+// or null if it's an acceptable path.
+function rejectBareTitle(input: string): string | null {
+  const base = input.split("/").pop() ?? input;
+  if (base.includes(".")) return null;
+  return `Error: "${input}" looks like a bare title, not a vault-relative path. vault_move needs explicit paths with extensions (e.g. "Notes/Foo.md"); call vault_search_title to find the path first.`;
 }
 
 async function titleSearchToolResult(title: string, exact: boolean, limit: number) {
@@ -521,6 +532,34 @@ export async function registerTools(server: McpServer) {
     async ({ path }) => {
       await vault.trashNote(path);
       return { content: [{ type: "text", text: `Moved ${path} to .trash` }] };
+    },
+  );
+
+  registerLogged(server,
+    "vault_move",
+    {
+      title: "Move or rename a vault file",
+      description:
+        "Move or rename a file within the vault. source and destination are explicit vault-relative paths (with extension) — bare titles are not resolved; call vault_search_title first to find the path. Works on any file type (notes, canvases, bases, attachments). Creates missing parent folders and fails if a file already exists at the destination. Does not rewrite links pointing at the file.",
+      inputSchema: z.object({
+        source: z.string().describe("Explicit vault-relative path of the file to move (with extension)"),
+        destination: z.string().describe("Explicit vault-relative path to move the file to (with extension)"),
+      }),
+    },
+    async ({ source, destination }) => {
+      const bareTitle = rejectBareTitle(source) ?? rejectBareTitle(destination);
+      if (bareTitle) {
+        return { content: [{ type: "text", text: bareTitle }], isError: true };
+      }
+      try {
+        const result = await vault.moveFile(source, destination);
+        return { content: [{ type: "text", text: `Moved ${result.from} to ${result.to}` }] };
+      } catch (e) {
+        if (e instanceof vault.NoteExistsError) {
+          return { content: [{ type: "text", text: `Error: file already exists at ${destination}. Choose a different destination or trash the existing file first.` }], isError: true };
+        }
+        throw e;
+      }
     },
   );
 

@@ -506,6 +506,45 @@ export async function trashNote(relativePath: string): Promise<void> {
   invalidateResolverCache();
 }
 
+export interface MoveResult {
+  from: string; // vault-relative source path
+  to: string;   // vault-relative destination path
+}
+
+// Move or rename a file within the vault. source and destination are explicit vault-relative
+// paths — bare titles are not resolved here, since a move is a mutation and title ambiguity is
+// exactly what we don't want at the destination. Works on any file type (notes, canvases, bases,
+// attachments); the rename mechanics are identical. Creates missing parent folders and refuses
+// to overwrite an existing destination. Honors .mcpignore and read-only mode on both paths via
+// resolveSafePath/assertWritable, and serializes through the same per-path locks as other writes.
+// Returns the from/to paths so a later link-rewriting pass can act on them.
+export async function moveFile(source: string, destination: string): Promise<MoveResult> {
+  assertWritable();
+  const fromAbs = resolveSafePath(source);
+  const toAbs = resolveSafePath(destination);
+
+  // Source and destination resolving to the same file is a no-op move; treat it as a collision
+  // rather than deadlocking on the same lock key below or silently doing nothing.
+  if (fromAbs === toAbs) {
+    throw new NoteExistsError(`File already exists at ${destination}`);
+  }
+
+  // Lock both paths so a concurrent write to either can't interleave with the rename. Take them
+  // in sorted order so two moves touching the same pair can't deadlock by acquiring in opposite order.
+  const [firstLock, secondLock] = [fromAbs, toAbs].sort();
+  return withPathLock(firstLock, () =>
+    withPathLock(secondLock, async () => {
+      if (pathExists(toAbs)) {
+        throw new NoteExistsError(`File already exists at ${destination}`);
+      }
+      await fs.mkdir(path.dirname(toAbs), { recursive: true });
+      await fs.rename(fromAbs, toAbs);
+      invalidateResolverCache();
+      return { from: source, to: destination };
+    }),
+  );
+}
+
 export interface SearchResult {
   path: string;
   matches: string[];
