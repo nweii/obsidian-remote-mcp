@@ -2,6 +2,8 @@
 import express from 'express';
 import type { Request, Response, NextFunction } from 'express';
 import type { Express } from 'express';
+import { stat } from 'fs/promises';
+import { timingSafeEqual } from 'crypto';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import {
@@ -12,7 +14,9 @@ import {
   tokenHandler,
   authMiddleware,
 } from './auth.js';
+import { getVaultRoot } from './vault.js';
 import { registerTools } from './tools.js';
+import pkg from '../package.json' with { type: 'json' };
 
 function ts(): string {
   return new Date().toISOString();
@@ -57,6 +61,46 @@ function setCorsHeaders(req: Request, res: Response): boolean {
   return true;
 }
 
+// Dedicated bearer for the /health endpoint. Default-closed: when unset the route 404s, so the
+// secret pasted into an uptime monitor grants nothing and rotates without touching OAuth config.
+function getHealthToken(): string | undefined {
+  const t = process.env.HEALTH_TOKEN?.trim();
+  return t ? t : undefined;
+}
+
+function healthTokenMatches(token: string, expected: string): boolean {
+  const a = Buffer.from(token, 'utf8');
+  const b = Buffer.from(expected, 'utf8');
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
+}
+
+async function healthHandler(req: Request, res: Response) {
+  const expected = getHealthToken();
+  if (!expected) {
+    res.status(404).end();
+    return;
+  }
+
+  const authHeader = req.headers.authorization;
+  const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : '';
+  if (!token || !healthTokenMatches(token, expected)) {
+    res.status(401).json({ error: 'unauthorized' });
+    return;
+  }
+
+  // One stat of the vault root catches the realistic NAS failure where the process is up but
+  // the volume mount is broken. On failure: ok: false + 503 so monitors alert on status code alone.
+  try {
+    await stat(getVaultRoot());
+  } catch {
+    res.status(503).json({ ok: false, version: pkg.version, uptime_seconds: process.uptime() });
+    return;
+  }
+
+  res.json({ ok: true, version: pkg.version, uptime_seconds: process.uptime() });
+}
+
 export function createApp(): Express {
   const app = express();
 
@@ -73,6 +117,9 @@ export function createApp(): Express {
   app.use(express.json());
   app.use(express.urlencoded({ extended: true }));
   app.use(requestLogger);
+
+  // Liveness probe — gated by its own HEALTH_TOKEN, not the OAuth middleware.
+  app.get('/health', healthHandler);
 
   // OAuth discovery (unauthenticated — clients need these to initiate auth)
   app.get('/.well-known/oauth-protected-resource', protectedResourceHandler);
