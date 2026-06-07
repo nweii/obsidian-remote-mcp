@@ -21,7 +21,7 @@ src/
   app.ts      — createApp() — Express routes (OAuth + MCP)
   auth.ts     — OAuth discovery, token issuance, optional client-secret validation, and Bearer validation middleware
   vault.ts    — Vault filesystem operations, frontmatter helpers, vault discovery, and config-derived defaults
-  tools.ts    — MCP tool definitions (context, read, outline, read section, frontmatter, links, create/update/edit/edit section/trash, set frontmatter, search title, search content, tags, daily note, feedback)
+  tools.ts    — MCP tool definitions (context, read, outline, read section, frontmatter, links, create/update/edit/edit section/trash, set frontmatter, search title, search content, tags, periodic note, feedback)
   lock.ts     — Per-path async mutex; serializes read-modify-write so concurrent edits to one note can't interleave
   log.ts      — Append-only JSONL logger for tool calls and agent feedback (LOG_DIR, default ./logs)
 test/
@@ -80,7 +80,7 @@ MCP endpoint: `POST /mcp` (requires Bearer token)
 - The OAuth approval page uses `VAULT_DISPLAY_NAME` when set, otherwise the resolved vault directory name.
 - Allowed OAuth redirect targets come from `MCP_ALLOWED_REDIRECT_URIS`, defaulting to Claude's callback URI.
 - `vault_context` reads `VAULT_CONTEXT_PATH` when set, otherwise falls back to `AGENTS.md` and then `CLAUDE.md` if present. It also appends a folder-only tree of the vault (default depth 3, configurable per call via `max_depth`; pass 0 to skip). The tree honours `.mcpignore` and skips dotfiles. Subtrees at each level are walked in parallel, and the whole tree is bounded by a 1.5s timeout — if it can't finish in time the context note is returned without the tree.
-- `vault_daily_note` uses `DAILY_NOTE_PATH_TEMPLATE`, with supported tokens `{YYYY}`, `{YY}`, `{MM}`, `{M}`, `{DD}`, `{D}`, `{MMM}`, `{MMMM}`, `{dd}`, `{ddd}`, and `{dddd}`.
+- `vault_periodic_note` reads or creates a note for a `period` (`daily`, `weekly`, `monthly`, `quarterly`, `yearly`), each driven by its own path template env var (`DAILY_NOTE_PATH_TEMPLATE`, `WEEKLY_NOTE_PATH_TEMPLATE`, and so on). Supported tokens `{YYYY}`, `{YY}`, `{GGGG}`, `{GG}`, `{WW}`, `{Q}`, `{MM}`, `{M}`, `{DD}`, `{D}`, `{MMM}`, `{MMMM}`, `{dd}`, `{ddd}`, and `{dddd}`. Only `daily` has a built-in default; other cadences return an error naming their env var until it is set.
 - CORS defaults to `*`, but `CORS_ALLOWED_ORIGINS` can restrict browser access to specific origins like `https://claude.ai`.
 - All vault paths are validated against the resolved vault root to prevent directory traversal.
 - Place a `.mcpignore` file in the vault root to block specific paths from MCP access. One relative path pattern per line; lines starting with `#` are comments. Trailing slashes are stripped — `03-Records/Journaling` blocks that folder and everything inside it.

@@ -273,14 +273,75 @@ describe('Vault-derived defaults', () => {
 
   test('uses DAILY_NOTE_PATH_TEMPLATE tokens', () => {
     process.env.DAILY_NOTE_PATH_TEMPLATE = 'Daily/{YYYY}/{MM}/{DD}-{dddd}.md';
-    expect(vault.getDailyNotePath(new Date('2026-03-26T12:00:00Z'))).toBe('Daily/2026/03/26-Thursday.md');
+    expect(vault.getPeriodicNotePath('daily', new Date(2026, 2, 26))).toBe('Daily/2026/03/26-Thursday.md');
     delete process.env.DAILY_NOTE_PATH_TEMPLATE;
   });
 
   test('supports expanded daily note template tokens', () => {
     process.env.DAILY_NOTE_PATH_TEMPLATE = 'Journal/{YY}/{MMM}/{M}-{D}-{dd}.md';
-    expect(vault.getDailyNotePath(new Date('2026-03-26T12:00:00Z'))).toBe('Journal/26/Mar/3-26-Th.md');
+    expect(vault.getPeriodicNotePath('daily', new Date(2026, 2, 26))).toBe('Journal/26/Mar/3-26-Th.md');
     delete process.env.DAILY_NOTE_PATH_TEMPLATE;
+  });
+
+  test('daily cadence uses the built-in default template when unset', () => {
+    expect(vault.getPeriodicNotePath('daily', new Date(2026, 2, 26))).toBe('Daily/2026-03-26.md');
+  });
+
+  test('non-daily cadences have no template until configured', () => {
+    expect(vault.getPeriodicNotePath('weekly', new Date(2026, 2, 26))).toBeNull();
+    expect(vault.getPeriodicNotePath('monthly', new Date(2026, 2, 26))).toBeNull();
+    expect(vault.getPeriodicNotePath('quarterly', new Date(2026, 2, 26))).toBeNull();
+    expect(vault.getPeriodicNotePath('yearly', new Date(2026, 2, 26))).toBeNull();
+  });
+
+  test('getPeriodicNoteTemplateEnvVar names each cadence env var', () => {
+    expect(vault.getPeriodicNoteTemplateEnvVar('daily')).toBe('DAILY_NOTE_PATH_TEMPLATE');
+    expect(vault.getPeriodicNoteTemplateEnvVar('weekly')).toBe('WEEKLY_NOTE_PATH_TEMPLATE');
+    expect(vault.getPeriodicNoteTemplateEnvVar('monthly')).toBe('MONTHLY_NOTE_PATH_TEMPLATE');
+    expect(vault.getPeriodicNoteTemplateEnvVar('quarterly')).toBe('QUARTERLY_NOTE_PATH_TEMPLATE');
+    expect(vault.getPeriodicNoteTemplateEnvVar('yearly')).toBe('YEARLY_NOTE_PATH_TEMPLATE');
+  });
+
+  test('weekly cadence buckets any weekday into the same ISO week path', () => {
+    process.env.WEEKLY_NOTE_PATH_TEMPLATE = 'Weekly/{GGGG}-W{WW}.md';
+    // 2026-03-23 (Mon) through 2026-03-29 (Sun) are all ISO week 13 of 2026.
+    expect(vault.getPeriodicNotePath('weekly', new Date(2026, 2, 23))).toBe('Weekly/2026-W13.md');
+    expect(vault.getPeriodicNotePath('weekly', new Date(2026, 2, 26))).toBe('Weekly/2026-W13.md');
+    expect(vault.getPeriodicNotePath('weekly', new Date(2026, 2, 29))).toBe('Weekly/2026-W13.md');
+    delete process.env.WEEKLY_NOTE_PATH_TEMPLATE;
+  });
+
+  test('weekly cadence uses ISO week-year at the New Year boundary', () => {
+    process.env.WEEKLY_NOTE_PATH_TEMPLATE = 'Weekly/{GGGG}-W{WW}.md';
+    // 2025-12-29 (Mon) is in ISO week 1 of week-year 2026, not 2025.
+    expect(vault.getPeriodicNotePath('weekly', new Date(2025, 11, 29))).toBe('Weekly/2026-W01.md');
+    // Pairing the calendar-year token here would wrongly say 2025.
+    process.env.WEEKLY_NOTE_PATH_TEMPLATE = 'Weekly/{YYYY}-W{WW}.md';
+    expect(vault.getPeriodicNotePath('weekly', new Date(2025, 11, 29))).toBe('Weekly/2025-W01.md');
+    delete process.env.WEEKLY_NOTE_PATH_TEMPLATE;
+  });
+
+  test('monthly cadence buckets any day into the first of the month', () => {
+    process.env.MONTHLY_NOTE_PATH_TEMPLATE = 'Monthly/{YYYY}-{MM}.md';
+    expect(vault.getPeriodicNotePath('monthly', new Date(2026, 2, 1))).toBe('Monthly/2026-03.md');
+    expect(vault.getPeriodicNotePath('monthly', new Date(2026, 2, 26))).toBe('Monthly/2026-03.md');
+    delete process.env.MONTHLY_NOTE_PATH_TEMPLATE;
+  });
+
+  test('quarterly cadence buckets any date into its quarter number', () => {
+    process.env.QUARTERLY_NOTE_PATH_TEMPLATE = 'Quarterly/{YYYY}-Q{Q}.md';
+    expect(vault.getPeriodicNotePath('quarterly', new Date(2026, 0, 15))).toBe('Quarterly/2026-Q1.md');
+    expect(vault.getPeriodicNotePath('quarterly', new Date(2026, 2, 26))).toBe('Quarterly/2026-Q1.md');
+    expect(vault.getPeriodicNotePath('quarterly', new Date(2026, 3, 1))).toBe('Quarterly/2026-Q2.md');
+    expect(vault.getPeriodicNotePath('quarterly', new Date(2026, 11, 31))).toBe('Quarterly/2026-Q4.md');
+    delete process.env.QUARTERLY_NOTE_PATH_TEMPLATE;
+  });
+
+  test('yearly cadence buckets any date into its year', () => {
+    process.env.YEARLY_NOTE_PATH_TEMPLATE = 'Yearly/{YYYY}.md';
+    expect(vault.getPeriodicNotePath('yearly', new Date(2026, 0, 1))).toBe('Yearly/2026.md');
+    expect(vault.getPeriodicNotePath('yearly', new Date(2026, 11, 31))).toBe('Yearly/2026.md');
+    delete process.env.YEARLY_NOTE_PATH_TEMPLATE;
   });
 
   test('supports zero as no limit for title search', async () => {

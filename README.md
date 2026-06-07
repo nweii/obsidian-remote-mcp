@@ -8,7 +8,7 @@ This is meant for home servers, NAS boxes, VPSes, and other setups where your va
 
 - OAuth (browser sign-in) or an API key (fixed bearer token), depending on what the client supports.
 - `vault_context` serves your vault guide note (defaults to `AGENTS.md`) plus a shallow folder tree so agents can see your vault structure.
-- Daily notes from a path template you configure.
+- Periodic notes (daily, weekly, monthly, quarterly, yearly) from path templates you configure.
 - Create, edit, update, and trash notes; wikilinks and YAML frontmatter work as usual.
 - Token-efficient partial access: read or edit one section under a heading, work with individual frontmatter properties, and list headings before reading. The [tools table](#tools) has the full set.
 - Full-note updates can check the version you last read, so another agent's edit is not overwritten by accident.
@@ -38,7 +38,7 @@ The server currently exposes these tools:
 | `vault_search_title` | Find notes by filename (partial or exact); returns paths for `vault_read` |
 | `vault_search_content` | Regex search in note bodies; optional `folder` to scope large vaults |
 | `vault_tags` | List all tags with note counts, or note paths for one `tag`; counts frontmatter and inline `#tag` |
-| `vault_daily_note` | Read or create a daily note using a configurable path template |
+| `vault_periodic_note` | Read or create a daily, weekly, monthly, quarterly, or yearly note using a per-cadence path template |
 
 ## Security and scope
 
@@ -288,6 +288,10 @@ OBSIDIAN_VAULT_ID=personal             # optional when obsidian.json contains mu
 VAULT_DISPLAY_NAME=Personal            # optional; defaults to the vault directory name
 VAULT_CONTEXT_PATH=AGENTS.md           # optional; defaults to AGENTS.md, then CLAUDE.md
 DAILY_NOTE_PATH_TEMPLATE=Daily/{YYYY}-{MM}-{DD}.md
+WEEKLY_NOTE_PATH_TEMPLATE=Weekly/{GGGG}-W{WW}.md       # optional; opt-in cadence
+MONTHLY_NOTE_PATH_TEMPLATE=Monthly/{YYYY}-{MM}.md      # optional; opt-in cadence
+QUARTERLY_NOTE_PATH_TEMPLATE=Quarterly/{YYYY}-Q{Q}.md  # optional; opt-in cadence
+YEARLY_NOTE_PATH_TEMPLATE=Yearly/{YYYY}.md             # optional; opt-in cadence
 CORS_ALLOWED_ORIGINS=https://claude.ai # optional; defaults to *
 TOKEN_STORE_PATH=./tokens.json         # optional
 MCP_STATIC_BEARER_TOKEN=               # optional; API key for /mcp (see Authentication)
@@ -337,20 +341,36 @@ If your vault uses a different bootstrap file, set `VAULT_CONTEXT_PATH` to the r
 
 If you do not want to maintain one, the server still works without it.
 
-### Daily note paths
+### Periodic note paths
 
-`vault_daily_note` uses `DAILY_NOTE_PATH_TEMPLATE`, which defaults to:
+`vault_periodic_note` reads or creates a note for one of five cadences — `daily`, `weekly`, `monthly`, `quarterly`, `yearly`. It replaces the earlier `vault_daily_note` tool; clients pick up the new tool on their next tool-list refresh, and `period: daily` behaves exactly as the old daily tool did. The tool takes an optional `date` (`YYYY-MM-DD`), which is bucketed into the week, month, quarter, or year that contains it, so any day in a period maps to the same note.
+
+Each cadence has its own opt-in path template env var:
+
+| Cadence | Env var |
+|---------|---------|
+| `daily` | `DAILY_NOTE_PATH_TEMPLATE` |
+| `weekly` | `WEEKLY_NOTE_PATH_TEMPLATE` |
+| `monthly` | `MONTHLY_NOTE_PATH_TEMPLATE` |
+| `quarterly` | `QUARTERLY_NOTE_PATH_TEMPLATE` |
+| `yearly` | `YEARLY_NOTE_PATH_TEMPLATE` |
+
+Only the daily cadence has a built-in default:
 
 ```text
 Daily/{YYYY}-{MM}-{DD}.md
 ```
 
-This is only a convenience tool. Many vaults use different daily note layouts, so you will likely want to override it.
+The other four are opt-in — calling a cadence with no template configured returns an error naming the env var to set. These are convenience templates; many vaults use different layouts, so you will likely want to override them.
 
 Supported tokens:
 
-- `{YYYY}`: 4-digit year
-- `{YY}`: 2-digit year
+- `{YYYY}`: 4-digit calendar year
+- `{YY}`: 2-digit calendar year
+- `{GGGG}`: 4-digit ISO week-year (use with `{WW}`, not `{YYYY}`)
+- `{GG}`: 2-digit ISO week-year
+- `{WW}`: 2-digit ISO week number (weeks start Monday; week 1 contains the first Thursday)
+- `{Q}`: quarter number (`1`–`4`)
 - `{MM}`: 2-digit month
 - `{M}`: month without zero padding
 - `{DD}`: 2-digit day
@@ -361,12 +381,17 @@ Supported tokens:
 - `{ddd}`: short weekday name like `Mon`
 - `{dddd}`: full weekday name like `Monday`
 
+The ISO week-year (`{GGGG}`) differs from the calendar year (`{YYYY}`) around New Year — for example `2025-12-29` falls in ISO week 1 of 2026. Pair `{WW}` with `{GGGG}` so the year matches the week; pairing it with `{YYYY}` produces wrong paths at that boundary.
+
 Examples:
 
 ```env
 DAILY_NOTE_PATH_TEMPLATE=Daily/{YYYY}/{YYYY}-{MM}-{DD}.md
-DAILY_NOTE_PATH_TEMPLATE=Journal/{YYYY}-{MM}-{DD}-{dddd}.md
 DAILY_NOTE_PATH_TEMPLATE=Journal/{YYYY}/{MMM}/{D}-{ddd}.md
+WEEKLY_NOTE_PATH_TEMPLATE=Weekly/{GGGG}-W{WW}.md
+MONTHLY_NOTE_PATH_TEMPLATE=Monthly/{YYYY}-{MM}.md
+QUARTERLY_NOTE_PATH_TEMPLATE=Quarterly/{YYYY}-Q{Q}.md
+YEARLY_NOTE_PATH_TEMPLATE=Yearly/{YYYY}.md
 ```
 
 ## Notes
