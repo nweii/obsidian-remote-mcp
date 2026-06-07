@@ -224,6 +224,27 @@ describe('non-markdown target with extension', () => {
   });
 });
 
+describe('missing source', () => {
+  test('planning rejects with a clean vault-relative error instead of an empty plan', async () => {
+    await expect(
+      vault.planReferenceRewrite(`${dir}/${name}.md`, `${dir}/Renamed.md`),
+    ).rejects.toThrow(`No file found at "${dir}/${name}.md".`);
+  });
+});
+
+describe('write report accuracy', () => {
+  test('a file whose link disappeared between plan and apply is not reported as modified', async () => {
+    await seed(`${dir}/${name}.md`, 'x\n');
+    await seed(`${dir}/ref.md`, `see [[${name}]] here\n`);
+    const plan = await vault.planReferenceRewrite(`${dir}/${name}.md`, `${dir}/Renamed.md`);
+    await seed(`${dir}/ref.md`, 'link removed by a concurrent edit\n');
+    await vault.moveFile(`${dir}/${name}.md`, `${dir}/Renamed.md`);
+    const result = await vault.applyReferenceRewrite(plan);
+    expect(result.modified).toEqual([]);
+    expect(result.failures).toEqual([]);
+  });
+});
+
 describe('dry run', () => {
   test('returns the plan of files it would rewrite', async () => {
     await seed(`${dir}/${name}.md`, 'x\n');

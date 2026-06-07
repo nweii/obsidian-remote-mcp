@@ -1410,8 +1410,14 @@ async function hasBasenameCollision(oldRel: string): Promise<boolean> {
 // what it would change, writing nothing. Both dry-run and the write pass start here.
 export async function planReferenceRewrite(from: string, to: string): Promise<RewritePlan> {
   // Honor .mcpignore / escape policy on both endpoints, matching moveFile's preflight.
-  resolveSafePath(from);
+  const fromAbs = resolveSafePath(from);
   resolveSafePath(to);
+
+  // A typo'd source would otherwise produce a plausible-looking empty plan. Fail the way
+  // moveFile does, with the vault-relative path.
+  if (!pathExists(fromAbs)) {
+    throw new Error(`No file found at "${from}".`);
+  }
 
   const oldName = linkNameForFile(from);
   const newName = linkNameForFile(to);
@@ -1473,12 +1479,18 @@ export async function applyReferenceRewrite(plan: RewritePlan): Promise<RewriteR
   for (const file of plan.files) {
     const absPath = resolveSafePath(file.path);
     try {
+      let written = false;
       await withPathLock(absPath, async () => {
         const content = await fs.readFile(absPath, 'utf-8');
         const next = recomputeFileContent(file.path, content, plan);
-        if (next !== null) await fs.writeFile(absPath, next, 'utf-8');
+        if (next !== null) {
+          await fs.writeFile(absPath, next, 'utf-8');
+          written = true;
+        }
       });
-      modified.push(file.path);
+      // The recompute can find nothing to change (e.g. a concurrent edit already removed the
+      // link); only files actually written belong in `modified`.
+      if (written) modified.push(file.path);
     } catch (e) {
       failures.push({ path: file.path, error: e instanceof Error ? e.message : String(e) });
     }
