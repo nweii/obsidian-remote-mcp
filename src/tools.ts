@@ -1,4 +1,4 @@
-// ABOUTME: Registers all vault tools on an McpServer - context, read (full/list), outline, read section, frontmatter, links, writes, title search, content search, daily note, clip URL, feedback.
+// ABOUTME: Registers all vault tools on an McpServer - context, read (full/list), outline, read section, frontmatter, links, writes, title search, content search, periodic note, clip URL, feedback.
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import * as vault from "./vault.js";
@@ -571,17 +571,18 @@ export async function registerTools(server: McpServer) {
   );
 
   registerLogged(server,
-    "vault_daily_note",
+    "vault_periodic_note",
     {
-      title: "Get or create daily note",
-      description: `Get or create a daily note using the configured path template (${vault.getDailyNoteTemplate()}). Defaults to today.`,
+      title: "Get or create periodic note",
+      description: `Get or create a daily, weekly, monthly, quarterly, or yearly note using the cadence's configured path template. The optional date is bucketed into the week, month, quarter, or year that contains it. Defaults to today.`,
       inputSchema: z.object({
-        date: z.string().optional().describe("Date in YYYY-MM-DD format (defaults to today)"),
+        period: z.enum(["daily", "weekly", "monthly", "quarterly", "yearly"]).describe("Which cadence of note to get or create"),
+        date: z.string().optional().describe("Date in YYYY-MM-DD format, bucketed into its containing period (defaults to today)"),
         create_if_missing: z.boolean().optional().default(true).describe("Create the note if it does not exist (default true)"),
-        template: z.string().optional().describe("Content to use when creating a new daily note"),
+        template: z.string().optional().describe("Content to use when creating a new note"),
       }),
     },
-    async ({ date, create_if_missing, template }) => {
+    async ({ period, date, create_if_missing, template }) => {
       let parsed: Date | undefined;
       if (date !== undefined) {
         const p = parseLocalYmd(date);
@@ -593,7 +594,14 @@ export async function registerTools(server: McpServer) {
         }
         parsed = p;
       }
-      const notePath = vault.getDailyNotePath(parsed);
+      const notePath = vault.getPeriodicNotePath(period, parsed);
+      if (notePath === null) {
+        const envVar = vault.getPeriodicNoteTemplateEnvVar(period);
+        return {
+          content: [{ type: "text", text: `Error: no ${period} note template configured. Set the ${envVar} environment variable.` }],
+          isError: true,
+        };
+      }
       const dateStr = date ?? localYmd(new Date());
 
       try {
@@ -601,7 +609,7 @@ export async function registerTools(server: McpServer) {
         return { content: [{ type: "text", text: `Path: ${notePath}\n\n${content}` }] };
       } catch {
         if (!create_if_missing) {
-          return { content: [{ type: "text", text: `No daily note found at ${notePath}` }] };
+          return { content: [{ type: "text", text: `No ${period} note found at ${notePath}` }] };
         }
         const noteContent = template ?? `# ${dateStr}\n\n`;
         await vault.writeNote(notePath, noteContent);
