@@ -1022,4 +1022,149 @@ describe('Title resolution via tool round-trips', () => {
     }
   });
 
+  test('vault_move defaults to a dry run that moves nothing and rewrites nothing', async () => {
+    const dir = path.join(vaultPath, 'MoveDryRun');
+    await mkdir(dir, { recursive: true });
+    await writeFile(path.join(dir, 'Target.md'), 'x\n', 'utf-8');
+    await writeFile(path.join(dir, 'ref.md'), 'see [[Target]] here\n', 'utf-8');
+    vault.invalidateResolverCache();
+
+    const app = createApp();
+    const { base, close } = await listen(app);
+    try {
+      const token = seedTestToken();
+      const result = await callTool(base, token, 'vault_move', {
+        source: 'MoveDryRun/Target.md',
+        destination: 'MoveDryRun/Renamed.md',
+      });
+      expect(result.content?.map(c => c.text).join('\n')).toContain('Dry run');
+      expect(await readFile(path.join(dir, 'Target.md'), 'utf-8')).toBe('x\n'); // not moved
+      expect(await readFile(path.join(dir, 'ref.md'), 'utf-8')).toBe('see [[Target]] here\n'); // not rewritten
+    } finally {
+      await close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('vault_move with dry_run false moves the file and rewrites a referring link', async () => {
+    const dir = path.join(vaultPath, 'MoveWrite');
+    await mkdir(dir, { recursive: true });
+    await writeFile(path.join(dir, 'Subject.md'), 'x\n', 'utf-8');
+    await writeFile(path.join(dir, 'ref.md'), 'see [[Subject]] here\n', 'utf-8');
+    vault.invalidateResolverCache();
+
+    const app = createApp();
+    const { base, close } = await listen(app);
+    try {
+      const token = seedTestToken();
+      const result = await callTool(base, token, 'vault_move', {
+        source: 'MoveWrite/Subject.md',
+        destination: 'MoveWrite/Renamed.md',
+        dry_run: false,
+      });
+      expect(result.content?.map(c => c.text).join('\n')).toContain('MoveWrite/ref.md');
+      expect(await readFile(path.join(dir, 'ref.md'), 'utf-8')).toBe('see [[Renamed]] here\n');
+    } finally {
+      await close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+});
+
+describe('Health /health', () => {
+  async function withHealthToken(value: string | undefined, fn: () => Promise<void>) {
+    const prev = process.env.HEALTH_TOKEN;
+    if (value === undefined) delete process.env.HEALTH_TOKEN;
+    else process.env.HEALTH_TOKEN = value;
+    try {
+      await fn();
+    } finally {
+      if (prev === undefined) delete process.env.HEALTH_TOKEN;
+      else process.env.HEALTH_TOKEN = prev;
+    }
+  }
+
+  test('returns 404 when HEALTH_TOKEN is unset (default-closed)', async () => {
+    await withHealthToken(undefined, async () => {
+      const app = createApp();
+      const { base, close } = await listen(app);
+      try {
+        const res = await fetch(`${base}/health`);
+        expect(res.status).toBe(404);
+      } finally {
+        await close();
+      }
+    });
+  });
+
+  test('returns 401 when the token is missing', async () => {
+    await withHealthToken('health-test-secret', async () => {
+      const app = createApp();
+      const { base, close } = await listen(app);
+      try {
+        const res = await fetch(`${base}/health`);
+        expect(res.status).toBe(401);
+      } finally {
+        await close();
+      }
+    });
+  });
+
+  test('returns 401 when the token is wrong', async () => {
+    await withHealthToken('health-test-secret', async () => {
+      const app = createApp();
+      const { base, close } = await listen(app);
+      try {
+        const res = await fetch(`${base}/health`, {
+          headers: { Authorization: 'Bearer not-the-health-secret' },
+        });
+        expect(res.status).toBe(401);
+      } finally {
+        await close();
+      }
+    });
+  });
+
+  test('returns 200 and { ok, version, uptime_seconds } with the correct token', async () => {
+    await withHealthToken('health-test-secret', async () => {
+      const app = createApp();
+      const { base, close } = await listen(app);
+      try {
+        const res = await fetch(`${base}/health`, {
+          headers: { Authorization: 'Bearer health-test-secret' },
+        });
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as { ok: boolean; version: string; uptime_seconds: number };
+        expect(body.ok).toBe(true);
+        expect(typeof body.version).toBe('string');
+        expect(body.version.length).toBeGreaterThan(0);
+        expect(typeof body.uptime_seconds).toBe('number');
+        // Nothing else in the response: no vault name, paths, or counts.
+        expect(Object.keys(body).sort()).toEqual(['ok', 'uptime_seconds', 'version']);
+      } finally {
+        await close();
+      }
+    });
+  });
+
+  test('returns 503 with ok: false when the vault root is unreadable', async () => {
+    await withHealthToken('health-test-secret', async () => {
+      const app = createApp();
+      const { base, close } = await listen(app);
+      // Remove the vault root so the per-request stat fails, then restore it.
+      await rm(vaultPath, { recursive: true, force: true });
+      try {
+        const res = await fetch(`${base}/health`, {
+          headers: { Authorization: 'Bearer health-test-secret' },
+        });
+        expect(res.status).toBe(503);
+        const body = (await res.json()) as { ok: boolean };
+        expect(body.ok).toBe(false);
+      } finally {
+        await mkdir(vaultPath, { recursive: true });
+        await close();
+      }
+    });
+  });
 });

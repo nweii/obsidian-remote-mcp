@@ -34,6 +34,7 @@ The server currently exposes these tools:
 | `vault_edit` | Append, prepend, or replace exact text within a note |
 | `vault_edit_section` | Append, prepend, or replace the body under one heading |
 | `vault_trash` | Move a note to `.trash` |
+| `vault_move` | Move or rename any vault file by explicit path and rewrite the wikilinks that point at it; defaults to a dry run that shows the plan and writes nothing |
 | `vault_search_title` | Find notes by filename (partial or exact); returns paths for `vault_read` |
 | `vault_search_content` | Regex search in note bodies; optional `folder` to scope large vaults |
 | `vault_tags` | List all tags with note counts, or note paths for one `tag`; counts frontmatter and inline `#tag` |
@@ -248,6 +249,31 @@ CORS_ALLOWED_ORIGINS=https://claude.ai,http://localhost:3000
 
 When set, only listed origins get a reflected `Access-Control-Allow-Origin`; other browser preflights fail.
 
+### Health endpoint
+
+`GET /health` is a liveness probe for uptime monitors. It is **default-closed**: with `HEALTH_TOKEN` unset the route returns 404, so a fresh deploy exposes nothing. Set **`HEALTH_TOKEN`** to a long random string to turn it on, and the monitor must send that value as `Authorization: Bearer …`. A wrong or missing token returns 401.
+
+It is a separate secret from `MCP_CLIENT_SECRET` and `MCP_STATIC_BEARER_TOKEN`, so you can rotate it without touching any OAuth client config, and the credential pasted into a third-party monitor grants no vault access — leaking it reveals nothing but the response below.
+
+Each request stats the vault root once, which catches the case where the process is up but the volume mount is broken (a realistic NAS failure). The response is:
+
+```json
+{ "ok": true, "version": "1.0.0", "uptime_seconds": 1234.5 }
+```
+
+- `ok` — `true`, or `false` with HTTP **503** when the vault stat fails, so monitors can alert on the status code alone.
+- `version` — from `package.json`, to confirm a deploy landed.
+- `uptime_seconds` — process uptime; a green monitor with constantly resetting uptime means the container is crash-looping.
+
+Nothing else is returned — no vault name, paths, or counts.
+
+```bash
+# generate a token
+openssl rand -base64 48
+```
+
+Sample Uptime Kuma monitor: type **HTTP(s)**, URL `https://mcp.example.com/health`, accepted status codes `200`, and under HTTP Options add a header `Authorization: Bearer YOUR_HEALTH_TOKEN`.
+
 ### Environment variables
 
 Set these on the server process (Compose `environment:`, Portainer, shell `export`, etc.):
@@ -265,6 +291,7 @@ DAILY_NOTE_PATH_TEMPLATE=Daily/{YYYY}-{MM}-{DD}.md
 CORS_ALLOWED_ORIGINS=https://claude.ai # optional; defaults to *
 TOKEN_STORE_PATH=./tokens.json         # optional
 MCP_STATIC_BEARER_TOKEN=               # optional; API key for /mcp (see Authentication)
+HEALTH_TOKEN=                          # optional; enables GET /health (see Health endpoint)
 VAULT_READ_ONLY=true                   # optional
 PORT=3456
 ```
@@ -357,6 +384,9 @@ DAILY_NOTE_PATH_TEMPLATE=Journal/{YYYY}/{MMM}/{D}-{ddd}.md
 - `vault_tags` defaults to `limit=100` when listing all tags; passing a `tag` returns the matching note paths without a limit. Counts are case-insensitive (displayed in first-seen casing) and nested tags match exactly — `parent` does not include `parent/child`.
 - `vault_frontmatter` and `vault_set_frontmatter_property` let agents work with frontmatter properties without reading or rewriting the whole note body.
 - `vault_read` returns a version block. Pass it to `vault_update` as `base_version` if you want stale full-note updates to fail instead of overwriting another edit.
+- `vault_move` takes explicit vault-relative paths (with extension) for both source and destination — bare titles are rejected, since a move is a mutation and title resolution adds ambiguity exactly where it isn't wanted. Use `vault_search_title` first to find the path. It also rewrites the wikilinks that point at the moved file, across note bodies and frontmatter (string and array values) and `.canvas` node paths.
+- `vault_move` rewrites conservatively. `dry_run` defaults to `true`: the call returns the full plan — every file and the rewrites it would make, plus `.base` files to review and any ambiguous links it would skip — and writes nothing, not even the move. Pass `dry_run: false` to move the file (first) and apply the rewrites (after). All wikilink forms are handled — `[[Note]]`, `[[folder/Note]]`, `[[Note#Heading]]`, `[[Note#^block]]`, `[[Note|alias]]`, embeds `![[Note]]`, links carrying an explicit extension, and combinations — with the alias, heading, and block parts preserved.
+- A pure move (same filename, new folder) leaves bare `[[Name]]` links alone, since Obsidian still resolves them by filename; only path-form links are repointed. A rename rewrites every form. If another file shares the old basename, bare-name links are ambiguous and skipped with a warning rather than guessed. Wikilinks inside fenced code blocks and inline code are left untouched. `.base` files are never edited — any that mention the old name or path are reported for manual attention, because rewriting strings inside Base formulas is too risky. `.mcpignore`d notes are neither scanned nor modified.
 
 ## Tests
 
