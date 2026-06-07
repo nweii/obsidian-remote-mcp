@@ -1022,6 +1022,54 @@ describe('Title resolution via tool round-trips', () => {
     }
   });
 
+  test('vault_move defaults to a dry run that moves nothing and rewrites nothing', async () => {
+    const dir = path.join(vaultPath, 'MoveDryRun');
+    await mkdir(dir, { recursive: true });
+    await writeFile(path.join(dir, 'Target.md'), 'x\n', 'utf-8');
+    await writeFile(path.join(dir, 'ref.md'), 'see [[Target]] here\n', 'utf-8');
+    vault.invalidateResolverCache();
+
+    const app = createApp();
+    const { base, close } = await listen(app);
+    try {
+      const token = seedTestToken();
+      const result = await callTool(base, token, 'vault_move', {
+        source: 'MoveDryRun/Target.md',
+        destination: 'MoveDryRun/Renamed.md',
+      });
+      expect(result.content?.map(c => c.text).join('\n')).toContain('Dry run');
+      expect(await readFile(path.join(dir, 'Target.md'), 'utf-8')).toBe('x\n'); // not moved
+      expect(await readFile(path.join(dir, 'ref.md'), 'utf-8')).toBe('see [[Target]] here\n'); // not rewritten
+    } finally {
+      await close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('vault_move with dry_run false moves the file and rewrites a referring link', async () => {
+    const dir = path.join(vaultPath, 'MoveWrite');
+    await mkdir(dir, { recursive: true });
+    await writeFile(path.join(dir, 'Subject.md'), 'x\n', 'utf-8');
+    await writeFile(path.join(dir, 'ref.md'), 'see [[Subject]] here\n', 'utf-8');
+    vault.invalidateResolverCache();
+
+    const app = createApp();
+    const { base, close } = await listen(app);
+    try {
+      const token = seedTestToken();
+      const result = await callTool(base, token, 'vault_move', {
+        source: 'MoveWrite/Subject.md',
+        destination: 'MoveWrite/Renamed.md',
+        dry_run: false,
+      });
+      expect(result.content?.map(c => c.text).join('\n')).toContain('MoveWrite/ref.md');
+      expect(await readFile(path.join(dir, 'ref.md'), 'utf-8')).toBe('see [[Renamed]] here\n');
+    } finally {
+      await close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
 });
 
 describe('Health /health', () => {

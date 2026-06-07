@@ -1114,6 +1114,421 @@ export async function getBacklinks(relativePath: string, limit = 20): Promise<st
   return results.map(r => r.path).filter(p => p !== relativePath);
 }
 
+// --- Reference rewriting on move/rename --------------------------------------
+//
+// When moveFile relocates or renames a file, links pointing at it go stale. This pass scans
+// the vault and reports (dry run) or applies (write) the rewrites, matching conservatively:
+// it never guesses an ambiguous bare-name link, never touches text inside code, and never
+// modifies .base files (it only flags ones that mention the old name/path for manual review).
+
+// One edit to one file: the exact link text before and after the rewrite.
+export interface LinkRewrite {
+  before: string;
+  after: string;
+}
+
+// A file with at least one planned/applied rewrite, and the edits it gets.
+export interface FileRewrite {
+  path: string; // vault-relative
+  rewrites: LinkRewrite[];
+}
+
+// A bare-name link left untouched because the old basename is ambiguous (shared by another file).
+export interface SkippedLink {
+  path: string; // vault-relative file containing the link
+  link: string; // the link text that was skipped
+  reason: string;
+}
+
+export interface RewritePlan {
+  from: string; // vault-relative source path
+  to: string;   // vault-relative destination path
+  isRename: boolean; // true when the basename changed (vs. a pure move to a new folder)
+  basenameCollision: boolean; // another file shares the old basename, so bare links are ambiguous
+  files: FileRewrite[];     // .md and .canvas files with rewrites to make
+  baseFilesToReview: string[]; // .base files mentioning the old name/path — never auto-edited
+  skippedLinks: SkippedLink[]; // bare-name links left alone due to a basename collision
+}
+
+// The result of a write-mode move+rewrite. `modified` lists files actually written; `failures`
+// lists files whose rewrite threw mid-pass (the move already succeeded, so these are stale links
+// fixable by hand) alongside the others that did get written.
+export interface RewriteResult {
+  from: string;
+  to: string;
+  modified: string[];
+  baseFilesToReview: string[];
+  skippedLinks: SkippedLink[];
+  failures: { path: string; error: string }[];
+}
+
+// The link "name" as it appears inside [[...]] for a given vault file: the title (no .md) for a
+// note, or the full filename (with extension) for anything else (canvas, base, attachment).
+function linkNameForFile(relPath: string): string {
+  const base = path.basename(relPath);
+  return /\.md$/i.test(base) ? base.slice(0, -3) : base;
+}
+
+// The link "path target" as it appears inside [[folder/...]] for a given vault file: the
+// vault-relative path with the .md extension dropped for notes, kept for everything else.
+function linkPathForFile(relPath: string): string {
+  return /\.md$/i.test(relPath) ? relPath.slice(0, -3) : relPath;
+}
+
+// Parse one wikilink's inner text (between [[ and ]]) into its target, heading, and alias parts.
+// Obsidian orders them target#heading|alias; the heading may be a #^block ref. Any part may be
+// absent. The pieces other than target survive a rewrite verbatim.
+function parseWikilinkParts(inner: string): { target: string; rest: string } {
+  const pipe = inner.indexOf('|');
+  const hash = inner.indexOf('#');
+  let cut = inner.length;
+  if (hash !== -1) cut = Math.min(cut, hash);
+  if (pipe !== -1) cut = Math.min(cut, pipe);
+  return { target: inner.slice(0, cut), rest: inner.slice(cut) };
+}
+
+// Does this link target point at the file we moved? Returns how it matched so the rewriter
+// knows whether a basename collision makes it ambiguous.
+//   - 'path' : an explicit folder/Name target whose path equals the old file's path
+//   - 'bare' : a bare Name target whose name equals the old file's name
+//   - null   : no match
+function classifyLinkTarget(
+  target: string,
+  oldName: string,
+  oldPathTarget: string,
+): 'path' | 'bare' | null {
+  const trimmed = target.trim();
+  if (trimmed === '') return null;
+  const normalize = (s: string) => (/\.md$/i.test(s) ? s.slice(0, -3) : s).toLowerCase();
+  const isPathForm = trimmed.includes('/');
+  if (isPathForm) {
+    return normalize(trimmed) === normalize(oldPathTarget) ? 'path' : null;
+  }
+  return normalize(trimmed) === normalize(oldName) ? 'bare' : null;
+}
+
+// Byte ranges of fenced code blocks (``` or ~~~) and inline code spans (`...`) in a markdown
+// body. Wikilinks falling inside any of these are left untouched.
+function codeRanges(body: string): { start: number; end: number }[] {
+  const ranges: { start: number; end: number }[] = [];
+  const fence = /^([ \t]*)(`{3,}|~{3,})[^\n]*\n[\s\S]*?(?:^[ \t]*\2[^\n]*$|$)/gm;
+  let m: RegExpExecArray | null;
+  while ((m = fence.exec(body)) !== null) {
+    ranges.push({ start: m.index, end: m.index + m[0].length });
+  }
+  const inline = /`+[^`\n]*`+/g;
+  while ((m = inline.exec(body)) !== null) {
+    const start = m.index;
+    const end = start + m[0].length;
+    // Skip inline spans already covered by a fenced block.
+    if (ranges.some(r => start >= r.start && start < r.end)) continue;
+    ranges.push({ start, end });
+  }
+  return ranges;
+}
+
+function isInsideCode(index: number, ranges: { start: number; end: number }[]): boolean {
+  return ranges.some(r => index >= r.start && index < r.end);
+}
+
+// Rewrite wikilinks in a chunk of text (a note body or its frontmatter block). `skipCode`
+// excludes links inside code regions — true for bodies, false for frontmatter (which has none).
+// `allowBare` is false when a basename collision makes bare-name links ambiguous: those are
+// collected into `skipped` instead of rewritten. Returns the new text and the list of rewrites.
+function rewriteWikilinksInText(
+  text: string,
+  opts: {
+    oldName: string;
+    newName: string;
+    oldPathTarget: string;
+    newPathTarget: string;
+    isRename: boolean;
+    allowBare: boolean;
+    skipCode: boolean;
+  },
+): { text: string; rewrites: LinkRewrite[]; skipped: string[] } {
+  const ranges = opts.skipCode ? codeRanges(text) : [];
+  const rewrites: LinkRewrite[] = [];
+  const skipped: string[] = [];
+  const wikilink = /(!?)\[\[([^\[\]\n]+?)\]\]/g;
+
+  const next = text.replace(wikilink, (whole, bang: string, inner: string, offset: number) => {
+    if (opts.skipCode && isInsideCode(offset, ranges)) return whole;
+    const { target, rest } = parseWikilinkParts(inner);
+    const kind = classifyLinkTarget(target, opts.oldName, opts.oldPathTarget);
+    if (!kind) return whole;
+
+    // A pure move keeps the basename, so bare links still resolve — only path-form links move.
+    if (kind === 'bare' && !opts.isRename) return whole;
+
+    // Ambiguous bare link under a basename collision: never guess, report it instead.
+    if (kind === 'bare' && !opts.allowBare) {
+      skipped.push(whole);
+      return whole;
+    }
+
+    const newTarget = kind === 'path' ? opts.newPathTarget : opts.newName;
+    const replacement = `${bang}[[${newTarget}${rest}]]`;
+    if (replacement !== whole) rewrites.push({ before: whole, after: replacement });
+    return replacement;
+  });
+
+  return { text: next, rewrites, skipped };
+}
+
+// Plan the rewrites for a .md note: scan body (code-aware) and frontmatter (whole-block) for
+// links to the moved file. Returns the rewrites and any skipped bare links; null content means
+// no changes.
+function planMarkdownRewrites(
+  content: string,
+  opts: {
+    oldName: string;
+    newName: string;
+    oldPathTarget: string;
+    newPathTarget: string;
+    isRename: boolean;
+    allowBare: boolean;
+  },
+): { content: string | null; rewrites: LinkRewrite[]; skipped: string[] } {
+  const { frontmatter, body } = splitFrontmatter(content);
+
+  const bodyPass = rewriteWikilinksInText(body, { ...opts, skipCode: true });
+  let nextFrontmatter = frontmatter;
+  let fmRewrites: LinkRewrite[] = [];
+  let fmSkipped: string[] = [];
+  if (frontmatter !== null) {
+    const fmPass = rewriteWikilinksInText(frontmatter, { ...opts, skipCode: false });
+    nextFrontmatter = fmPass.text;
+    fmRewrites = fmPass.rewrites;
+    fmSkipped = fmPass.skipped;
+  }
+
+  const rewrites = [...fmRewrites, ...bodyPass.rewrites];
+  const skipped = [...fmSkipped, ...bodyPass.skipped];
+  if (rewrites.length === 0) {
+    return { content: null, rewrites, skipped };
+  }
+
+  const nextContent =
+    nextFrontmatter !== null ? `---\n${nextFrontmatter}\n---\n${bodyPass.text}` : bodyPass.text;
+  return { content: nextContent, rewrites, skipped };
+}
+
+// Detect the indentation a JSON file was written with (spaces per level), or null if it's
+// minified. Used to re-serialize a .canvas file close to its original shape.
+function detectJsonIndent(text: string): number | null {
+  const m = text.match(/\n([ \t]+)\S/);
+  if (!m) return null;
+  const indent = m[1];
+  if (indent.includes('\t')) return null; // tab-indented; JSON.stringify(...,'\t') handled separately
+  return indent.length;
+}
+
+// Plan the rewrites for a .canvas file: its JSON nodes store literal "file" paths that break on
+// any move. Rewrite each "file" equal to the old path; preserve indentation and trailing newline
+// as closely as practical. Returns null content when nothing matched.
+function planCanvasRewrites(
+  content: string,
+  oldPath: string,
+  newPath: string,
+): { content: string | null; rewrites: LinkRewrite[] } {
+  let data: unknown;
+  try {
+    data = JSON.parse(content);
+  } catch {
+    return { content: null, rewrites: [] };
+  }
+  const rewrites: LinkRewrite[] = [];
+  const oldLower = oldPath.toLowerCase();
+
+  const visit = (node: unknown) => {
+    if (Array.isArray(node)) {
+      node.forEach(visit);
+      return;
+    }
+    if (!node || typeof node !== 'object') return;
+    const obj = node as Record<string, unknown>;
+    if (typeof obj.file === 'string' && obj.file.toLowerCase() === oldLower) {
+      rewrites.push({ before: obj.file, after: newPath });
+      obj.file = newPath;
+    }
+    for (const value of Object.values(obj)) visit(value);
+  };
+  visit(data);
+
+  if (rewrites.length === 0) return { content: null, rewrites };
+
+  const usesTab = /\n\t/.test(content);
+  const indent = usesTab ? '\t' : detectJsonIndent(content) ?? 0;
+  const trailingNewline = content.endsWith('\n') ? '\n' : '';
+  const serialized = JSON.stringify(data, null, indent) + trailingNewline;
+  return { content: serialized, rewrites };
+}
+
+// True when a .base file's text mentions the old name or old path. Bases reference notes by name
+// inside formulas, where a blind string rewrite is too risky — so we only flag, never edit.
+function baseMentionsOldFile(content: string, oldName: string, oldPath: string): boolean {
+  const lower = content.toLowerCase();
+  return lower.includes(oldName.toLowerCase()) || lower.includes(oldPath.toLowerCase());
+}
+
+// Walk the vault collecting every scannable .md, .canvas, and .base file (skipping dotfiles and
+// .mcpignore-blocked paths), excluding the moved file itself.
+async function collectRewriteTargets(excludeRel: string): Promise<string[]> {
+  const out: string[] = [];
+
+  async function walk(dir: string) {
+    const entries = await fs.readdir(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.name.startsWith('.')) continue;
+      const fullPath = path.join(dir, entry.name);
+      if (isIgnored(fullPath)) continue;
+      if (entry.isDirectory()) {
+        await walk(fullPath);
+        continue;
+      }
+      if (!/\.(md|canvas|base)$/i.test(entry.name)) continue;
+      const rel = path.relative(VAULT_ROOT, fullPath);
+      if (rel === excludeRel) continue;
+      out.push(rel);
+    }
+  }
+
+  await walk(VAULT_ROOT);
+  return out;
+}
+
+// Is the old basename shared by another vault file (any .md, .canvas, or .base)? When true,
+// bare-name links are ambiguous and must be skipped rather than guessed.
+async function hasBasenameCollision(oldRel: string): Promise<boolean> {
+  const oldName = linkNameForFile(oldRel).toLowerCase();
+  const targets = await collectRewriteTargets(oldRel);
+  return targets.some(rel => linkNameForFile(rel).toLowerCase() === oldName);
+}
+
+// Build the full rewrite plan for moving `from` to `to`. Pure read: scans the vault and reports
+// what it would change, writing nothing. Both dry-run and the write pass start here.
+export async function planReferenceRewrite(from: string, to: string): Promise<RewritePlan> {
+  // Honor .mcpignore / escape policy on both endpoints, matching moveFile's preflight.
+  const fromAbs = resolveSafePath(from);
+  resolveSafePath(to);
+
+  // A typo'd source would otherwise produce a plausible-looking empty plan. Fail the way
+  // moveFile does, with the vault-relative path.
+  if (!pathExists(fromAbs)) {
+    throw new Error(`No file found at "${from}".`);
+  }
+
+  const oldName = linkNameForFile(from);
+  const newName = linkNameForFile(to);
+  const oldPathTarget = linkPathForFile(from);
+  const newPathTarget = linkPathForFile(to);
+  const isRename = oldName.toLowerCase() !== newName.toLowerCase();
+  const basenameCollision = await hasBasenameCollision(from);
+
+  const targets = await collectRewriteTargets(from);
+  const files: FileRewrite[] = [];
+  const baseFilesToReview: string[] = [];
+  const skippedLinks: SkippedLink[] = [];
+
+  for (const rel of targets) {
+    if (/\.base$/i.test(rel)) {
+      const content = await fs.readFile(resolveSafePath(rel), 'utf-8');
+      if (baseMentionsOldFile(content, oldName, from)) baseFilesToReview.push(rel);
+      continue;
+    }
+
+    const content = await fs.readFile(resolveSafePath(rel), 'utf-8');
+
+    if (/\.canvas$/i.test(rel)) {
+      const { content: next, rewrites } = planCanvasRewrites(content, from, to);
+      if (next !== null) files.push({ path: rel, rewrites });
+      continue;
+    }
+
+    const { content: next, rewrites, skipped } = planMarkdownRewrites(content, {
+      oldName,
+      newName,
+      oldPathTarget,
+      newPathTarget,
+      isRename,
+      allowBare: !basenameCollision,
+    });
+    for (const link of skipped) {
+      skippedLinks.push({
+        path: rel,
+        link,
+        reason: `bare name "${oldName}" is shared by another file, so this link is ambiguous`,
+      });
+    }
+    if (next !== null) files.push({ path: rel, rewrites });
+  }
+
+  return { from, to, isRename, basenameCollision, files, baseFilesToReview, skippedLinks };
+}
+
+// Apply a previously-built plan's rewrites to disk. The caller moves the file first; this writes
+// each file's new content under its per-path lock. A file whose write throws is recorded in
+// `failures` (its links stay stale, fixable by hand) and the pass continues, so a mid-pass error
+// is visible per-file rather than aborting the whole batch.
+export async function applyReferenceRewrite(plan: RewritePlan): Promise<RewriteResult> {
+  assertWritable();
+  const modified: string[] = [];
+  const failures: { path: string; error: string }[] = [];
+
+  for (const file of plan.files) {
+    const absPath = resolveSafePath(file.path);
+    try {
+      let written = false;
+      await withPathLock(absPath, async () => {
+        const content = await fs.readFile(absPath, 'utf-8');
+        const next = recomputeFileContent(file.path, content, plan);
+        if (next !== null) {
+          await fs.writeFile(absPath, next, 'utf-8');
+          written = true;
+        }
+      });
+      // The recompute can find nothing to change (e.g. a concurrent edit already removed the
+      // link); only files actually written belong in `modified`.
+      if (written) modified.push(file.path);
+    } catch (e) {
+      failures.push({ path: file.path, error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+
+  invalidateResolverCache();
+  return {
+    from: plan.from,
+    to: plan.to,
+    modified,
+    baseFilesToReview: plan.baseFilesToReview,
+    skippedLinks: plan.skippedLinks,
+    failures,
+  };
+}
+
+// Recompute a single file's rewritten content from its current on-disk text. Re-derives the
+// rewrite at write time (under the lock) so a concurrent edit elsewhere in the file is preserved
+// rather than clobbered by stale planned text. Returns null when nothing matches now.
+function recomputeFileContent(rel: string, content: string, plan: RewritePlan): string | null {
+  const oldName = linkNameForFile(plan.from);
+  const newName = linkNameForFile(plan.to);
+  const oldPathTarget = linkPathForFile(plan.from);
+  const newPathTarget = linkPathForFile(plan.to);
+
+  if (/\.canvas$/i.test(rel)) {
+    return planCanvasRewrites(content, plan.from, plan.to).content;
+  }
+  return planMarkdownRewrites(content, {
+    oldName,
+    newName,
+    oldPathTarget,
+    newPathTarget,
+    isRename: plan.isRename,
+    allowBare: !plan.basenameCollision,
+  }).content;
+}
+
 // --- Daily notes -------------------------------------------------------------
 
 function formatDailyNotePath(date: Date, template: string): string {
