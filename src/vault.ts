@@ -182,6 +182,93 @@ export async function readNote(relativePath: string): Promise<string> {
   return fs.readFile(resolveSafePath(relativePath), 'utf-8');
 }
 
+// --- Attachments (binary reads) ----------------------------------------------
+
+// Extension → MIME type for attachment reads. Explicit and small on purpose — no
+// dependency, and only the types worth exposing over MCP. Image types here are the
+// ones that round-trip as an MCP `image` content block; everything else comes back
+// as base64 with metadata in a text block.
+const ATTACHMENT_MIME_TYPES: Record<string, string> = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  webp: 'image/webp',
+  svg: 'image/svg+xml',
+  pdf: 'application/pdf',
+  mp3: 'audio/mpeg',
+  mp4: 'video/mp4',
+  zip: 'application/zip',
+};
+
+const IMAGE_MIME_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
+
+// Default size cap for attachment reads. Base64 inflates the payload by about a third
+// and the result lands in model context, so files over this are rejected rather than read.
+const DEFAULT_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
+
+function attachmentMaxBytes(): number {
+  const raw = Number(process.env.VAULT_ATTACHMENT_MAX_BYTES);
+  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_ATTACHMENT_MAX_BYTES;
+}
+
+function mimeTypeFor(relativePath: string): string {
+  const ext = path.extname(relativePath).slice(1).toLowerCase();
+  return ATTACHMENT_MIME_TYPES[ext] ?? 'application/octet-stream';
+}
+
+// Thrown by readAttachment when the file is larger than the configured cap. Carries the
+// actual and max sizes so the tool layer can name the real size in its error.
+export class AttachmentTooLargeError extends Error {
+  constructor(public readonly bytes: number, public readonly maxBytes: number, message: string) {
+    super(message);
+    this.name = 'AttachmentTooLargeError';
+  }
+}
+
+export interface AttachmentResult {
+  mimeType: string;
+  bytes: number;       // size on disk
+  isImage: boolean;    // true for the image types that render as an MCP image block
+  data?: string;       // base64 payload; omitted when statOnly is true
+}
+
+// Read a binary attachment from the vault. Path sandboxing and .mcpignore are enforced via
+// resolveSafePath, mirroring note reads. With statOnly, returns size + mime without reading
+// the bytes so an agent can check before pulling a large file. Throws AttachmentTooLargeError
+// when the file exceeds the cap (skipped for statOnly, which never loads the payload).
+export async function readAttachment(
+  relativePath: string,
+  statOnly = false,
+): Promise<AttachmentResult> {
+  const absPath = resolveSafePath(relativePath);
+  const st = await fs.stat(absPath);
+  if (st.isDirectory()) {
+    const err = new Error(`"${relativePath}" is a directory, not a file.`) as NodeJS.ErrnoException;
+    err.code = 'EISDIR';
+    throw err;
+  }
+
+  const mimeType = mimeTypeFor(relativePath);
+  const isImage = IMAGE_MIME_TYPES.has(mimeType);
+
+  if (statOnly) {
+    return { mimeType, bytes: st.size, isImage };
+  }
+
+  const max = attachmentMaxBytes();
+  if (st.size > max) {
+    throw new AttachmentTooLargeError(
+      st.size,
+      max,
+      `Attachment "${relativePath}" is ${st.size} bytes, over the ${max}-byte cap. Use stat_only to inspect it without reading, or raise VAULT_ATTACHMENT_MAX_BYTES.`,
+    );
+  }
+
+  const buf = await fs.readFile(absPath);
+  return { mimeType, bytes: st.size, isImage, data: buf.toString('base64') };
+}
+
 function splitFrontmatter(content: string): { frontmatter: string | null; body: string } {
   if (!content.startsWith('---\n')) {
     return { frontmatter: null, body: content };
