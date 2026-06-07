@@ -523,10 +523,16 @@ export async function moveFile(source: string, destination: string): Promise<Mov
   const fromAbs = resolveSafePath(source);
   const toAbs = resolveSafePath(destination);
 
-  // Source and destination resolving to the same file is a no-op move; treat it as a collision
+  // A missing source would surface as a raw ENOENT from fs.rename, whose message embeds
+  // absolute filesystem paths. Check up front and fail with the vault-relative path instead.
+  if (!pathExists(fromAbs)) {
+    throw new Error(`No file found at "${source}".`);
+  }
+
+  // Source and destination resolving to the same file is a no-op move; reject it up front
   // rather than deadlocking on the same lock key below or silently doing nothing.
   if (fromAbs === toAbs) {
-    throw new NoteExistsError(`File already exists at ${destination}`);
+    throw new Error(`Source and destination are the same path ("${source}").`);
   }
 
   // Lock both paths so a concurrent write to either can't interleave with the rename. Take them

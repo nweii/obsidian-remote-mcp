@@ -62,6 +62,18 @@ describe('moveFile', () => {
     expect(await read('Diagrams/diagram.canvas')).toBe('{"nodes":[]}\n');
   });
 
+  test('rejects a missing source with a clean vault-relative error', async () => {
+    await expect(vault.moveFile('does-not-exist.md', 'anywhere.md')).rejects.toThrow(
+      'No file found at "does-not-exist.md".',
+    );
+  });
+
+  test('rejects a move whose source and destination are the same path', async () => {
+    await seed('same.md', 'still here\n');
+    await expect(vault.moveFile('same.md', 'same.md')).rejects.toThrow(/same path/);
+    expect(await read('same.md')).toBe('still here\n');
+  });
+
   test('refuses to overwrite an existing destination', async () => {
     await seed('mover.md', 'mine\n');
     await seed('target.md', 'theirs\n');
