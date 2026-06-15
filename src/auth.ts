@@ -106,6 +106,101 @@ function getVaultDisplayNameHtml(): string {
   return escapeHtml(getVaultDisplayName());
 }
 
+// --- Optional password gate --------------------------------------------------
+//
+// Off by default: the approval page is click-to-approve. Set VAULT_OAUTH_PASSWORD to require a
+// username + password on every authorization before a code is issued — a low-friction option for
+// deployments not already fronted by a reverse proxy or zero-trust gateway (which remain the
+// stronger choice). VAULT_OAUTH_USERNAME defaults to "obsidian". The password is demanded on every
+// authorization, so there is no session for a hostile client to ride.
+
+function getOAuthPassword(): string | undefined {
+  const pw = process.env.VAULT_OAUTH_PASSWORD;
+  return pw ? pw : undefined;
+}
+
+function getOAuthUsername(): string {
+  const user = process.env.VAULT_OAUTH_USERNAME?.trim();
+  return user ? user : 'obsidian';
+}
+
+function isPasswordGateEnabled(): boolean {
+  return getOAuthPassword() !== undefined;
+}
+
+// Constant-time comparison that also hides length differences: a wrong-length guess returns false
+// without a length-dependent timing signal.
+function safeEqual(a: string, b: string): boolean {
+  const ab = Buffer.from(a, 'utf-8');
+  const bb = Buffer.from(b, 'utf-8');
+  if (ab.length !== bb.length) return false;
+  return timingSafeEqual(ab, bb);
+}
+
+// Both fields are checked even when the first fails, so a valid username can't be told from an
+// invalid one by timing.
+function credentialsValid(username: string, password: string): boolean {
+  const userOk = safeEqual(username, getOAuthUsername());
+  const passOk = safeEqual(password, getOAuthPassword() ?? '');
+  return userOk && passOk;
+}
+
+// The OAuth request params, re-emitted as hidden form inputs so POST /authorize carries everything
+// GET validated. Shared by the first render and the wrong-password re-render. Absent optional
+// params are dropped.
+function buildAuthParamInputs(src: Record<string, string>): string {
+  const params: [string, string | undefined][] = [
+    ['response_type', src.response_type],
+    ['client_id', src.client_id],
+    ['redirect_uri', src.redirect_uri],
+    ['code_challenge', src.code_challenge],
+    ['code_challenge_method', src.code_challenge_method],
+    ['state', src.state],
+    ['scope', src.scope],
+  ];
+  return params
+    .filter((entry): entry is [string, string] => entry[1] !== undefined)
+    .map(([name, val]) => `<input type="hidden" name="${name}" value="${escapeHtml(val)}">`)
+    .join('\n    ');
+}
+
+// The approval page. With the password gate off it is a single Approve button — byte-identical to
+// the original click-to-approve. With it on, username + password fields are added and `error`
+// carries a failed-attempt message; `username` pre-fills after a failed attempt so only the
+// password is retyped.
+function renderApprovalPage(inputsHtml: string, opts: { error?: string; username?: string } = {}): string {
+  const errorHtml = opts.error ? `<p style="color:#b00">${escapeHtml(opts.error)}</p>` : '';
+  const credentialFields = isPasswordGateEnabled()
+    ? `<div style="margin:0 0 1rem"><label>Username<br><input name="username" autocomplete="username" value="${escapeHtml(opts.username ?? '')}"></label></div>
+    <div style="margin:0 0 1rem"><label>Password<br><input name="password" type="password" autocomplete="current-password"></label></div>`
+    : '';
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Authorize obsidian-remote-mcp</title>
+  <style>
+    body   { font-family: system-ui, sans-serif; max-width: 400px; margin: 80px auto; padding: 0 1rem; color: #111; }
+    h1     { font-size: 1.25rem; margin-bottom: 0.5rem; }
+    p      { color: #555; margin-bottom: 1.5rem; }
+    label  { color: #111; }
+    input  { width: 100%; padding: 0.4rem; font-size: 1rem; margin-top: 0.25rem; box-sizing: border-box; }
+    button { padding: 0.5rem 1.5rem; font-size: 1rem; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <h1>Authorize obsidian-remote-mcp</h1>
+  <p>Allow access to your ${getVaultDisplayNameHtml()} vault?</p>
+  ${errorHtml}
+  <form method="POST" action="/authorize">
+    ${inputsHtml}
+    ${credentialFields}
+    <button type="submit">Approve</button>
+  </form>
+</body>
+</html>`;
+}
+
 function wwwAuthenticate(extra = ''): string {
   const meta = `resource_metadata="${getBaseUrl()}/.well-known/oauth-protected-resource"`;
   return extra ? `Bearer ${meta}, ${extra}` : `Bearer ${meta}`;
@@ -141,7 +236,7 @@ export function discoveryHandler(_req: Request, res: Response) {
 // GET /authorize  — validate params, render approval page
 export function authorizationHandler(req: Request, res: Response) {
   const q = req.query as Record<string, string>;
-  const { response_type, client_id, redirect_uri, code_challenge, code_challenge_method, state, scope } = q;
+  const { response_type, client_id, redirect_uri, code_challenge, code_challenge_method } = q;
 
   if (response_type !== 'code') {
     res.status(400).send('Unsupported response_type');
@@ -160,42 +255,9 @@ export function authorizationHandler(req: Request, res: Response) {
     return;
   }
 
-  // Pass all params through hidden inputs so POST /authorize can use them
-  const params: [string, string][] = [
-    ['response_type', response_type],
-    ['client_id', client_id],
-    ['redirect_uri', redirect_uri],
-    ['code_challenge', code_challenge],
-    ['code_challenge_method', code_challenge_method],
-    ...(state ? [['state', state] as [string, string]] : []),
-    ...(scope  ? [['scope',  scope]  as [string, string]] : []),
-  ];
-
-  const inputs = params
-    .map(([name, val]) => `<input type="hidden" name="${name}" value="${escapeHtml(val)}">`)
-    .join('\n    ');
-
-  res.type('html').send(`<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <title>Authorize obsidian-remote-mcp</title>
-  <style>
-    body   { font-family: system-ui, sans-serif; max-width: 400px; margin: 80px auto; padding: 0 1rem; color: #111; }
-    h1     { font-size: 1.25rem; margin-bottom: 0.5rem; }
-    p      { color: #555; margin-bottom: 1.5rem; }
-    button { padding: 0.5rem 1.5rem; font-size: 1rem; cursor: pointer; }
-  </style>
-</head>
-<body>
-  <h1>Authorize obsidian-remote-mcp</h1>
-  <p>Allow access to your ${getVaultDisplayNameHtml()} vault?</p>
-  <form method="POST" action="/authorize">
-    ${inputs}
-    <button type="submit">Approve</button>
-  </form>
-</body>
-</html>`);
+  // Pass all validated params through hidden inputs so POST /authorize carries them, then render
+  // the approval page (with username/password fields when the optional password gate is enabled).
+  res.type('html').send(renderApprovalPage(buildAuthParamInputs(q)));
 }
 
 // POST /authorize  — user approved; generate code and redirect back to client
@@ -210,6 +272,21 @@ export function authorizationApproveHandler(req: Request, res: Response) {
   if (!getAllowedRedirectUris().includes(redirect_uri)) {
     res.status(400).send('redirect_uri not allowed');
     return;
+  }
+
+  // Optional password gate: when VAULT_OAUTH_PASSWORD is set, require valid credentials before
+  // issuing a code. Off by default, so the click-to-approve flow is unchanged. The page is
+  // re-rendered (carrying the same hidden params) on a wrong guess so the user can retry.
+  if (isPasswordGateEnabled()) {
+    const username = (b.username ?? '').toString();
+    const password = (b.password ?? '').toString();
+    if (!credentialsValid(username, password)) {
+      res
+        .status(401)
+        .type('html')
+        .send(renderApprovalPage(buildAuthParamInputs(b), { error: 'Incorrect username or password.', username }));
+      return;
+    }
   }
 
   const code = randomUUID();
