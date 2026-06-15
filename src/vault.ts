@@ -309,11 +309,63 @@ function serializeFrontmatter(data: Record<string, unknown>, body: string): stri
   return `---\n${yaml}\n---\n${body}`;
 }
 
+// Monotonic counter so two atomic writes starting in the same millisecond still get distinct
+// temp names. Combined with the pid, a temp-name collision is effectively impossible.
+let atomicWriteCounter = 0;
+
+// The mode bits of an existing file, or null if it doesn't exist. Used to carry a note's
+// permissions across an atomic overwrite, which swaps in a fresh inode.
+async function fileModeOrNull(absPath: string): Promise<number | null> {
+  try {
+    const stat = await fs.stat(absPath);
+    return stat.mode & 0o777;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw e;
+  }
+}
+
+// Write `content` to `absPath` atomically. The bytes go to a temp file in the SAME directory,
+// are flushed to disk, then renamed over the target. A rename within a directory is atomic on
+// POSIX, so any reader - Obsidian, Obsidian Sync, another tool call - sees either the old bytes
+// or the new bytes, never a half-written mix. Writing straight to the target with fs.writeFile
+// truncates it first, so a crash or an interleaved read mid-write can expose a zero-length or
+// torn file, which Obsidian Sync would then propagate to every device.
+//
+// The temp file is hidden (leading dot) so Obsidian ignores it and Sync won't propagate it, and
+// it carries the original basename plus a unique suffix. The content is fsynced before the
+// rename so a power loss can't make the new name point at unflushed bytes. If the target already
+// exists its mode is copied onto the temp file first, since replacing the inode would otherwise
+// reset the note's permissions. On any failure the temp file is removed so a failed write never
+// litters the vault.
+async function atomicWriteFile(absPath: string, content: string): Promise<void> {
+  const dir = path.dirname(absPath);
+  const tmpPath = path.join(
+    dir,
+    `.${path.basename(absPath)}.${process.pid}.${Date.now()}.${atomicWriteCounter++}.tmp`,
+  );
+  const handle = await fs.open(tmpPath, 'w');
+  try {
+    await handle.writeFile(content, 'utf-8');
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  try {
+    const targetMode = await fileModeOrNull(absPath);
+    if (targetMode !== null) await fs.chmod(tmpPath, targetMode);
+    await fs.rename(tmpPath, absPath);
+  } catch (e) {
+    await fs.rm(tmpPath, { force: true });
+    throw e;
+  }
+}
+
 export async function writeNote(relativePath: string, content: string): Promise<void> {
   assertWritable();
   const absPath = resolveSafePath(relativePath);
   await fs.mkdir(path.dirname(absPath), { recursive: true });
-  await fs.writeFile(absPath, content, 'utf-8');
+  await atomicWriteFile(absPath, content);
   invalidateResolverCache();
 }
 
@@ -396,7 +448,7 @@ export async function updateNote(
       }
       // No base version: plain create.
       await fs.mkdir(path.dirname(absPath), { recursive: true });
-      await fs.writeFile(absPath, content, 'utf-8');
+      await atomicWriteFile(absPath, content);
       invalidateResolverCache();
       return { version: versionOf(content) };
     }
@@ -409,7 +461,7 @@ export async function updateNote(
     }
 
     // No base version (opted out), or the note is unchanged since the caller read it.
-    await fs.writeFile(absPath, content, 'utf-8');
+    await atomicWriteFile(absPath, content);
     invalidateResolverCache();
     return { version: versionOf(content) };
   });
@@ -559,7 +611,7 @@ export async function prependToNote(relativePath: string, content: string): Prom
   const absPath = resolveSafePath(relativePath);
   await withPathLock(absPath, async () => {
     const existing = await fs.readFile(absPath, 'utf-8');
-    await fs.writeFile(absPath, content + existing, 'utf-8');
+    await atomicWriteFile(absPath, content + existing);
   });
   invalidateResolverCache();
 }
@@ -574,7 +626,7 @@ export async function replaceInNote(relativePath: string, find: string, content:
     const existing = await fs.readFile(absPath, 'utf-8');
     // Function replacer keeps `content` literal — a plain string replacement would interpret
     // $&, $1, $$ etc. in the agent's content as special replacement patterns.
-    await fs.writeFile(absPath, existing.replace(find, () => content), 'utf-8');
+    await atomicWriteFile(absPath, existing.replace(find, () => content));
   });
   invalidateResolverCache();
 }
@@ -940,7 +992,7 @@ export async function editNoteSection(
   // between reading the section and writing it back (Race A).
   await withPathLock(absPath, async () => {
     const existing = await fs.readFile(absPath, 'utf-8');
-    await fs.writeFile(absPath, applySectionEdit(existing, heading, operation, content, relativePath), 'utf-8');
+    await atomicWriteFile(absPath, applySectionEdit(existing, heading, operation, content, relativePath));
   });
   invalidateResolverCache();
 }
@@ -1732,7 +1784,7 @@ export async function applyReferenceRewrite(plan: RewritePlan): Promise<RewriteR
         const content = await fs.readFile(absPath, 'utf-8');
         const next = recomputeFileContent(file.path, content, plan);
         if (next !== null) {
-          await fs.writeFile(absPath, next, 'utf-8');
+          await atomicWriteFile(absPath, next);
           written = true;
         }
       });
