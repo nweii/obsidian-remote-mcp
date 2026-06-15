@@ -478,16 +478,108 @@ export async function getFrontmatterProperty(relativePath: string, name: string)
 }
 
 export async function setFrontmatterProperty(relativePath: string, name: string, value: unknown): Promise<void> {
+  await setFrontmatterProperties(relativePath, { [name]: value });
+}
+
+// Set several frontmatter properties on a note in one locked read-modify-write. Each key is
+// spliced individually (see setFrontmatterKey), so untouched keys keep their on-disk byte form
+// and only the named keys change. Holding the lock across the whole sequence keeps a concurrent
+// edit to the same note from interleaving between the read and the write. An empty fields object
+// is a no-op, so the file is never rewritten (and never churned through Obsidian Sync) for nothing.
+export async function setFrontmatterProperties(
+  relativePath: string,
+  fields: Record<string, unknown>,
+): Promise<void> {
   assertWritable();
+  if (Object.keys(fields).length === 0) return;
   const absPath = resolveSafePath(relativePath);
-  // Lock the read-modify-write so a concurrent edit to the same note can't interleave
-  // between reading the body and writing the updated frontmatter (Race A).
   await withPathLock(absPath, async () => {
-    const content = await readNote(relativePath);
-    const coerced = coerceFrontmatterValue(value);
-    const updated = setFrontmatterKey(content, name, coerced);
-    await writeNote(relativePath, updated);
+    let content = await readNote(relativePath);
+    for (const [name, value] of Object.entries(fields)) {
+      content = setFrontmatterKey(content, name, coerceFrontmatterValue(value));
+    }
+    await writeNote(relativePath, content);
   });
+}
+
+// --- Batch operations --------------------------------------------------------
+//
+// Both batch helpers are per-item and non-transactional: one bad entry is reported in the result
+// and never aborts the others. They compose the same single-note primitives (resolution, read,
+// frontmatter splice, per-path lock) the individual tools use, so batching changes only the
+// round-trip count, not the read/write semantics.
+
+export interface BatchReadItem {
+  path: string;                          // resolved vault-relative path
+  frontmatter: Record<string, unknown> | null;
+  version: string;                       // content hash; pass to vault_update as base_version
+  content?: string;                      // included only when requested
+}
+
+export interface BatchReadFailure {
+  reference: string;                     // the input that could not be resolved or read
+  error: string;
+}
+
+export interface BatchReadResult {
+  found: BatchReadItem[];
+  missing: BatchReadFailure[];
+}
+
+// Read several notes in one call. References resolve like vault_read (path or bare title); each
+// failure is collected in `missing` instead of throwing. With includeContent false, bodies are
+// omitted so an agent can triage many notes by frontmatter cheaply before opening any.
+export async function readNotesBatch(
+  references: string[],
+  includeContent: boolean,
+): Promise<BatchReadResult> {
+  const found: BatchReadItem[] = [];
+  const missing: BatchReadFailure[] = [];
+  for (const reference of references) {
+    try {
+      const ref = await resolveNoteReference(reference);
+      const content = await readNote(ref.path);
+      const item: BatchReadItem = {
+        path: ref.path,
+        frontmatter: parseFrontmatter(content),
+        version: versionOf(content),
+      };
+      if (includeContent) item.content = content;
+      found.push(item);
+    } catch (e) {
+      missing.push({ reference, error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+  return { found, missing };
+}
+
+export interface BatchFrontmatterUpdate {
+  path: string;
+  fields: Record<string, unknown>;
+}
+
+export interface BatchUpdateOutcome {
+  path: string;
+  updated: boolean;
+  error?: string;
+}
+
+// Apply frontmatter property updates to several notes. Each note's fields are set in one locked
+// read-modify-write via setFrontmatterProperties; a failure on one note is recorded and the rest
+// still run. Paths are explicit vault-relative paths, matching vault_set_frontmatter_property.
+export async function updateFrontmatterBatch(
+  updates: BatchFrontmatterUpdate[],
+): Promise<BatchUpdateOutcome[]> {
+  const outcomes: BatchUpdateOutcome[] = [];
+  for (const update of updates) {
+    try {
+      await setFrontmatterProperties(update.path, update.fields);
+      outcomes.push({ path: update.path, updated: true });
+    } catch (e) {
+      outcomes.push({ path: update.path, updated: false, error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+  return outcomes;
 }
 
 // If a client serialized an array or object as a JSON string before sending (because
