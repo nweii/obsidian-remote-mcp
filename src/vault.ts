@@ -758,6 +758,89 @@ export async function searchFilename(pattern: string): Promise<string[]> {
   return results;
 }
 
+export type FrontmatterMatchType = 'exact' | 'contains' | 'exists';
+
+export interface FrontmatterSearchOptions {
+  value?: string;                    // required for 'exact'/'contains'; ignored for 'exists'
+  matchType?: FrontmatterMatchType;  // defaults to 'exact'
+  folder?: string;                   // scope the scan to a subfolder; defaults to vault root
+  limit?: number;                    // max matching notes; default 20, 0 = no limit
+}
+
+export interface FrontmatterSearchResult {
+  path: string;                          // vault-relative path
+  title: string;                         // frontmatter title, else filename without .md
+  frontmatter: Record<string, unknown>;  // the note's full parsed frontmatter
+}
+
+// Does a note's frontmatter value satisfy the predicate? For a list field the test is applied
+// per element (real membership), so `contains: draft` matches `tags: [draft, idea]` and
+// `exact: idea` matches it too — unlike a substring test against the stringified list. `exists`
+// is decided by the caller (the key being present), so it always passes here.
+function frontmatterValueMatches(
+  fieldValue: unknown,
+  matchType: FrontmatterMatchType,
+  value: string | undefined,
+): boolean {
+  if (matchType === 'exists') return true;
+  if (value === undefined) return false;
+  const test = (v: unknown): boolean =>
+    matchType === 'exact'
+      ? String(v) === value
+      : String(v).toLowerCase().includes(value.toLowerCase());
+  return Array.isArray(fieldValue) ? fieldValue.some(test) : test(fieldValue);
+}
+
+// Find notes whose frontmatter has `field`, optionally constrained by value/matchType. Walks the
+// vault (or a folder) once, parsing each note's frontmatter — stateless, no persistent index, so
+// it stays consistent with the per-request server. Reuses the scanTags traversal: skips dotfiles,
+// honours .mcpignore, reads only .md files. Notes without frontmatter, or without `field`, are
+// skipped before the predicate runs.
+export async function searchFrontmatter(
+  field: string,
+  options: FrontmatterSearchOptions = {},
+): Promise<FrontmatterSearchResult[]> {
+  const { value, matchType = 'exact', folder, limit = 20 } = options;
+  const root = folder ? resolveSafePath(folder) : VAULT_ROOT;
+  const maxResults = limit > 0 ? limit : Number.POSITIVE_INFINITY;
+  const results: FrontmatterSearchResult[] = [];
+
+  async function walk(dir: string) {
+    if (results.length >= maxResults) return;
+    const entries = await fs.readdir(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (results.length >= maxResults) break;
+      if (entry.name.startsWith('.')) continue;
+      const fullPath = path.join(dir, entry.name);
+      if (isIgnored(fullPath)) continue;
+      if (entry.isDirectory()) {
+        await walk(fullPath);
+        continue;
+      }
+      if (!entry.name.endsWith('.md')) continue;
+      let content: string;
+      try {
+        content = await fs.readFile(fullPath, 'utf-8');
+      } catch {
+        continue; // skip unreadable files (e.g. permission denied)
+      }
+      const frontmatter = parseFrontmatter(content);
+      if (!frontmatter || !(field in frontmatter)) continue;
+      if (!frontmatterValueMatches(frontmatter[field], matchType, value)) continue;
+      const rel = path.relative(VAULT_ROOT, fullPath);
+      const titleValue = frontmatter.title;
+      const title =
+        typeof titleValue === 'string' && titleValue.trim() !== ''
+          ? titleValue
+          : path.basename(rel, '.md');
+      results.push({ path: rel, title, frontmatter });
+    }
+  }
+
+  await walk(root);
+  return results;
+}
+
 export interface FindResult {
   path: string;
   title: string; // filename without .md extension

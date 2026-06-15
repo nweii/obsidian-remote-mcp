@@ -752,6 +752,45 @@ export async function registerTools(server: McpServer) {
   );
 
   registerLogged(server,
+    "vault_search_frontmatter",
+    {
+      title: "Search vault by frontmatter property",
+      description:
+        "Find notes by a frontmatter (YAML property) value. match_type: exact = equals (for a list property, matches when any element equals the value); contains = case-insensitive substring (per element for lists); exists = the property is present, value ignored. Use folder to scope large vaults. Returns matching paths with the property's value.",
+      inputSchema: z.object({
+        field: z.string().describe("Frontmatter property name (top-level key)"),
+        value: z.string().optional().describe("Value to match. Required for exact/contains; ignored for exists."),
+        match_type: z.enum(["exact", "contains", "exists"]).optional().default("exact").describe("How to match the value (default exact)"),
+        folder: z.string().optional().describe('Limit the scan to this subfolder (e.g. "02-Notes").'),
+        limit: z.number().optional().default(20).describe("Max matching notes (default 20, 0 = no limit)"),
+      }),
+    },
+    async ({ field, value, match_type, folder, limit }) => {
+      if (match_type !== "exists" && (value === undefined || value === "")) {
+        return {
+          content: [{ type: "text", text: `Error: value is required for match_type "${match_type}". Pass a value, or use match_type "exists" to match any note that has the "${field}" property.` }],
+          isError: true,
+        };
+      }
+      const results = await vault.searchFrontmatter(field, { value, matchType: match_type, folder, limit });
+      if (results.length === 0) {
+        return { content: [{ type: "text", text: "No matching notes found." }] };
+      }
+      const renderValue = (v: unknown): string => (Array.isArray(v) ? v.map(String).join(", ") : String(v));
+      const text = results.map((r) => `${r.path}\t${field}: ${renderValue(r.frontmatter[field])}`).join("\n");
+      const hitLimit = limit > 0 && results.length === limit;
+      return {
+        content: [
+          {
+            type: "text",
+            text: hitLimit ? `${text}\n\n(limit of ${limit} reached — increase limit or pass a folder to narrow)` : text,
+          },
+        ],
+      };
+    },
+  );
+
+  registerLogged(server,
     "vault_tags",
     {
       title: "List vault tags or notes by tag",
