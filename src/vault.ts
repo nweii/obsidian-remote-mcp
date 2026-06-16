@@ -875,6 +875,16 @@ export interface FrontmatterSearchResult {
   frontmatter: Record<string, unknown>;  // the note's full parsed frontmatter
 }
 
+// Canonical string form of a frontmatter value for matching. js-yaml parses an unquoted ISO-8601
+// scalar (e.g. `due: 2026-01-15`) into a Date; `String(Date)` would render the timezone-shifted JS
+// locale string ("Wed Jan 14 2026 19:00:00 GMT-0500 ..."), which is unmatchable and can even land
+// on the wrong day. Rendering a Date as its UTC calendar date (`YYYY-MM-DD`) reconstructs what the
+// user typed, so `exact: 2026-01-15` matches; a datetime matches by its date. This isn't an ISO
+// requirement — any other date convention stays a plain string and is matched verbatim by String().
+function frontmatterValueToString(v: unknown): string {
+  return v instanceof Date ? v.toISOString().slice(0, 10) : String(v);
+}
+
 // Does a note's frontmatter value satisfy the predicate? For a list field the test is applied
 // per element (real membership), so `contains: draft` matches `tags: [draft, idea]` and
 // `exact: idea` matches it too — unlike a substring test against the stringified list. `exists`
@@ -888,8 +898,8 @@ function frontmatterValueMatches(
   if (value === undefined) return false;
   const test = (v: unknown): boolean =>
     matchType === 'exact'
-      ? String(v) === value
-      : String(v).toLowerCase().includes(value.toLowerCase());
+      ? frontmatterValueToString(v) === value
+      : frontmatterValueToString(v).toLowerCase().includes(value.toLowerCase());
   return Array.isArray(fieldValue) ? fieldValue.some(test) : test(fieldValue);
 }
 

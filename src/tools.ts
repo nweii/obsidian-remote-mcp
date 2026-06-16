@@ -838,7 +838,7 @@ export async function registerTools(server: McpServer) {
     {
       title: "Search vault by frontmatter property",
       description:
-        "Find notes by a frontmatter (YAML property) value. match_type: exact = equals (for a list property, matches when any element equals the value); contains = case-insensitive substring (per element for lists); exists = the property is present, value ignored. Use folder to scope large vaults. Returns matching paths with the property's value.",
+        "Find notes by a frontmatter (YAML property) value. match_type: exact = equals (for a list property, matches when any element equals the value); contains = case-insensitive substring (per element for lists); exists = the property is present, value ignored. Date properties match by their YYYY-MM-DD calendar date (e.g. exact: 2026-01-15). Use folder to scope large vaults. Returns matching paths with the property's value.",
       inputSchema: z.object({
         field: z.string().describe("Frontmatter property name (top-level key)"),
         value: z.string().optional().describe("Value to match. Required for exact/contains; ignored for exists."),

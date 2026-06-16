@@ -28,6 +28,7 @@ beforeAll(async () => {
   await note('projects/beta.md', 'status: archived\ntags: [done]');
   await note('notes/gamma.md', 'status: active\npriority: 3');
   await note('notes/delta.md', 'type: meeting');
+  await note('events/launch.md', 'event: 2026-01-15\nstart: 2026-01-15T10:30:00');
   await writeFile(path.join(vaultPath, 'notes', 'plain.md'), 'no frontmatter here\n', 'utf-8');
 });
 
@@ -80,6 +81,21 @@ describe('searchFrontmatter', () => {
   test('limit caps the number of results', async () => {
     const r = await vault.searchFrontmatter('status', { value: 'active', limit: 1 });
     expect(r.length).toBe(1);
+  });
+
+  test('matches an ISO date property by its calendar date (timezone-stable)', async () => {
+    const r = await vault.searchFrontmatter('event', { value: '2026-01-15', matchType: 'exact' });
+    expect(paths(r)).toEqual(['events/launch.md']);
+  });
+
+  test('matches a datetime property by its calendar date', async () => {
+    const r = await vault.searchFrontmatter('start', { value: '2026-01-15', matchType: 'exact' });
+    expect(paths(r)).toEqual(['events/launch.md']);
+  });
+
+  test('contains matches a substring of the canonical date', async () => {
+    const r = await vault.searchFrontmatter('event', { value: '2026', matchType: 'contains' });
+    expect(paths(r)).toEqual(['events/launch.md']);
   });
 });
 
