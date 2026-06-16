@@ -346,16 +346,26 @@ async function atomicWriteFile(absPath: string, content: string): Promise<void> 
   );
   const handle = await fs.open(tmpPath, 'w');
   try {
-    await handle.writeFile(content, 'utf-8');
-    await handle.sync();
-  } finally {
-    await handle.close();
-  }
-  try {
+    try {
+      await handle.writeFile(content, 'utf-8');
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    // Carry the target's mode onto the temp file before the swap. Best-effort: preserving the
+    // note's permissions is a nicety and must never be the thing that blocks the write.
     const targetMode = await fileModeOrNull(absPath);
-    if (targetMode !== null) await fs.chmod(tmpPath, targetMode);
+    if (targetMode !== null) {
+      try {
+        await fs.chmod(tmpPath, targetMode);
+      } catch {
+        // Keep the temp file's default mode rather than failing an otherwise-good write.
+      }
+    }
     await fs.rename(tmpPath, absPath);
   } catch (e) {
+    // Any failure after the temp file was opened — write, fsync, chmod, or rename — removes it so
+    // a failed write never leaves a stray temp file in the vault.
     await fs.rm(tmpPath, { force: true });
     throw e;
   }

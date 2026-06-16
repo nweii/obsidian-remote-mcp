@@ -183,4 +183,39 @@ describe('password gate on', () => {
       }
     });
   });
+
+  test('state round-trips to the redirect with the gate on', async () => {
+    await withGate({ password: 'hunter2' }, async () => {
+      const app = createApp();
+      const { base, close } = await listen(app);
+      try {
+        const res = await postAuthorize(base, { username: 'obsidian', password: 'hunter2', state: 'xyz-state' });
+        expect(res.status).toBe(302);
+        expect(new URL(res.headers.get('location')!).searchParams.get('state')).toBe('xyz-state');
+      } finally {
+        await close();
+      }
+    });
+  });
+
+  test('the 401 re-render preserves state and escapes a reflected username', async () => {
+    await withGate({ password: 'hunter2' }, async () => {
+      const app = createApp();
+      const { base, close } = await listen(app);
+      try {
+        const res = await postAuthorize(base, {
+          username: '"><script>x</script>',
+          password: 'wrong',
+          state: 'keepme',
+        });
+        expect(res.status).toBe(401);
+        const html = await res.text();
+        expect(html).toContain('value="keepme"');          // state carried in a hidden input
+        expect(html).not.toContain('<script>x</script>');   // username not reflected raw
+        expect(html).toContain('&lt;script&gt;');           // escaped form present
+      } finally {
+        await close();
+      }
+    });
+  });
 });

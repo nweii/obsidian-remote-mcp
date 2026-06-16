@@ -82,3 +82,25 @@ describe('searchFrontmatter', () => {
     expect(r.length).toBe(1);
   });
 });
+
+describe('searchFrontmatter honours .mcpignore', () => {
+  test('excludes notes under an ignored folder', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'orm-fm-ignore-'));
+    const prev = process.env.VAULT_PATH;
+    process.env.VAULT_PATH = root;
+    try {
+      await mkdir(path.join(root, 'private'), { recursive: true });
+      await writeFile(path.join(root, 'public.md'), '---\nstatus: active\n---\nbody\n', 'utf-8');
+      await writeFile(path.join(root, 'private', 'secret.md'), '---\nstatus: active\n---\nbody\n', 'utf-8');
+      await writeFile(path.join(root, '.mcpignore'), 'private\n', 'utf-8');
+      // Fresh import so the module re-resolves VAULT_PATH and loads this .mcpignore.
+      const v: typeof import('../src/vault.js') = await import(`../src/vault.js?fm-ignore=${Date.now()}`);
+      const r = await v.searchFrontmatter('status', { value: 'active' });
+      expect(r.map(x => x.path)).toEqual(['public.md']);
+    } finally {
+      if (prev === undefined) delete process.env.VAULT_PATH;
+      else process.env.VAULT_PATH = prev;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});

@@ -1,7 +1,7 @@
 // ABOUTME: Tests for the atomic write path — content round-trips, no .tmp litter is left behind,
 // file permissions survive an overwrite, and parallel writes to distinct notes don't collide.
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdtemp, readFile, readdir, rm, stat, chmod, writeFile } from 'fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, rm, stat, chmod, writeFile } from 'fs/promises';
 import os from 'os';
 import path from 'path';
 
@@ -53,6 +53,14 @@ describe('atomic writes', () => {
     await vault.updateNote('note.md', 'rewritten\n');
     const mode = (await stat(path.join(vaultPath, 'note.md'))).mode & 0o777;
     expect(mode).toBe(0o640);
+  });
+
+  test('a failed write leaves no temp file behind', async () => {
+    // A directory sitting at the target path makes the final rename fail; the cleanup path must
+    // still remove the temp file so a failed write never litters the vault.
+    await mkdir(path.join(vaultPath, 'isdir'), { recursive: true });
+    await expect(vault.writeNote('isdir', 'x\n')).rejects.toThrow();
+    expect((await entries()).filter(n => n.endsWith('.tmp'))).toEqual([]);
   });
 
   test('parallel writes to distinct notes all land (no temp-name collision)', async () => {

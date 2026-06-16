@@ -38,8 +38,10 @@ function appendJsonl(filename: string, record: Record<string, unknown>) {
 // Arg names whose values may contain note bodies, frontmatter values, or other
 // personal text. Matched at any depth in the args tree. Always redacted
 // regardless of length, so logs retain shape (which tool, what arg keys)
-// without recording vault content.
-const REDACTED_FIELDS = new Set(['content', 'value', 'template', 'find']);
+// without recording vault content. `fields` is vault_batch_frontmatter_update's
+// per-note property map, whose values are frontmatter content; redacting the
+// whole map keeps the sibling `path` visible while no value reaches disk.
+const REDACTED_FIELDS = new Set(['content', 'value', 'template', 'find', 'fields']);
 
 function redactValue(v: unknown): string {
   if (typeof v === 'string') return `<redacted:${v.length}chars>`;
@@ -49,7 +51,7 @@ function redactValue(v: unknown): string {
 
 // Truncate string fields over 80 chars so logs stay readable and small.
 // Numbers, booleans, and short strings pass through unchanged.
-// Fields named in REDACTED_FIELDS at the top level of args are always redacted.
+// Fields named in REDACTED_FIELDS are always redacted, at any depth in the tree.
 export function summarizeArgs(args: unknown): unknown {
   if (args === null || args === undefined) return args;
   if (typeof args === 'string') return args.length > 80 ? `<str:${args.length}chars>` : args;

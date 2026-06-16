@@ -128,8 +128,9 @@ function isPasswordGateEnabled(): boolean {
   return getOAuthPassword() !== undefined;
 }
 
-// Constant-time comparison that also hides length differences: a wrong-length guess returns false
-// without a length-dependent timing signal.
+// Compares the value bytes in constant time. A length mismatch returns early — so length can be
+// inferred from timing, matching the existing bearer/health token checks — but the bytes
+// themselves are compared without a content-dependent timing signal.
 function safeEqual(a: string, b: string): boolean {
   const ab = Buffer.from(a, 'utf-8');
   const bb = Buffer.from(b, 'utf-8');
@@ -164,10 +165,10 @@ function buildAuthParamInputs(src: Record<string, string>): string {
     .join('\n    ');
 }
 
-// The approval page. With the password gate off it is a single Approve button — byte-identical to
-// the original click-to-approve. With it on, username + password fields are added and `error`
-// carries a failed-attempt message; `username` pre-fills after a failed attempt so only the
-// password is retyped.
+// The approval page. With the password gate off it is the same single Approve button as the
+// original click-to-approve (no credential fields rendered). With it on, username + password
+// fields are added and `error` carries a failed-attempt message; `username` pre-fills after a
+// failed attempt so only the password is retyped.
 function renderApprovalPage(inputsHtml: string, opts: { error?: string; username?: string } = {}): string {
   const errorHtml = opts.error ? `<p style="color:#b00">${escapeHtml(opts.error)}</p>` : '';
   const credentialFields = isPasswordGateEnabled()
