@@ -195,6 +195,9 @@ async function titleSearchToolResult(title: string, exact: boolean, limit: numbe
   };
 }
 
+// Max entries accepted by the batch tools (vault_batch_read, vault_batch_frontmatter_update).
+const BATCH_MAX = 50;
+
 // Accepted shapes for a frontmatter property value, shared by the single and batch setters.
 const frontmatterValueSchema = z.union([
   z.string(),
@@ -205,17 +208,20 @@ const frontmatterValueSchema = z.union([
   z.record(z.string(), z.unknown()),
 ]);
 
-// Render a note's frontmatter as compact `key: value` lines for batch read. Arrays are joined,
-// nested objects are JSON, scalars stringified. Enough to triage which notes to open.
+// Render a parsed frontmatter value for display. Arrays are joined element-wise, nested objects
+// are JSON, and scalars (including js-yaml Dates) go through vault.frontmatterValueToString, so a
+// date renders as the same YYYY-MM-DD that vault_search_frontmatter matched on.
+function renderFrontmatterValue(v: unknown): string {
+  if (Array.isArray(v)) return v.map(renderFrontmatterValue).join(", ");
+  if (v !== null && typeof v === "object" && !(v instanceof Date)) return JSON.stringify(v);
+  return vault.frontmatterValueToString(v);
+}
+
+// Render a note's frontmatter as compact `key: value` lines for batch read — enough to triage
+// which notes to open.
 function renderFrontmatterBlock(fm: Record<string, unknown> | null): string {
   if (!fm || Object.keys(fm).length === 0) return "(no frontmatter)";
-  const render = (v: unknown): string =>
-    Array.isArray(v)
-      ? v.map(String).join(", ")
-      : v !== null && typeof v === "object"
-        ? JSON.stringify(v)
-        : String(v);
-  return Object.entries(fm).map(([k, v]) => `${k}: ${render(v)}`).join("\n");
+  return Object.entries(fm).map(([k, v]) => `${k}: ${renderFrontmatterValue(v)}`).join("\n");
 }
 
 export async function registerTools(server: McpServer) {
@@ -338,7 +344,7 @@ export async function registerTools(server: McpServer) {
       description:
         'Read multiple notes in one call. Each entry is a vault-relative path or a bare note title (resolved like vault_read); entries that can\'t be resolved are reported under "Not found" without failing the others. Set include_content false to return only each note\'s frontmatter — cheap triage to pick which notes to open before reading bodies.',
       inputSchema: z.object({
-        paths: z.array(z.string()).min(1).max(50).describe("Vault-relative paths or bare note titles (1–50)"),
+        paths: z.array(z.string()).min(1).max(BATCH_MAX).describe(`Vault-relative paths or bare note titles (1–${BATCH_MAX})`),
         include_content: z
           .boolean()
           .optional()
@@ -637,8 +643,8 @@ export async function registerTools(server: McpServer) {
             }),
           )
           .min(1)
-          .max(50)
-          .describe("Per-note frontmatter updates (1–50)"),
+          .max(BATCH_MAX)
+          .describe(`Per-note frontmatter updates (1–${BATCH_MAX})`),
       }),
     },
     async ({ updates }) => {
@@ -858,8 +864,7 @@ export async function registerTools(server: McpServer) {
       if (results.length === 0) {
         return { content: [{ type: "text", text: "No matching notes found." }] };
       }
-      const renderValue = (v: unknown): string => (Array.isArray(v) ? v.map(String).join(", ") : String(v));
-      const text = results.map((r) => `${r.path}\t${field}: ${renderValue(r.frontmatter[field])}`).join("\n");
+      const text = results.map((r) => `${r.path}\t${field}: ${renderFrontmatterValue(r.frontmatter[field])}`).join("\n");
       const hitLimit = limit > 0 && results.length === limit;
       return {
         content: [

@@ -3,7 +3,6 @@ import express from 'express';
 import type { Request, Response, NextFunction } from 'express';
 import type { Express } from 'express';
 import { stat } from 'fs/promises';
-import { timingSafeEqual } from 'crypto';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import {
@@ -13,6 +12,7 @@ import {
   authorizationApproveHandler,
   tokenHandler,
   authMiddleware,
+  constantTimeEqual,
 } from './auth.js';
 import { getVaultRoot } from './vault.js';
 import { registerTools } from './tools.js';
@@ -68,13 +68,6 @@ function getHealthToken(): string | undefined {
   return t ? t : undefined;
 }
 
-function healthTokenMatches(token: string, expected: string): boolean {
-  const a = Buffer.from(token, 'utf8');
-  const b = Buffer.from(expected, 'utf8');
-  if (a.length !== b.length) return false;
-  return timingSafeEqual(a, b);
-}
-
 async function healthHandler(req: Request, res: Response) {
   const expected = getHealthToken();
   if (!expected) {
@@ -84,7 +77,7 @@ async function healthHandler(req: Request, res: Response) {
 
   const authHeader = req.headers.authorization;
   const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : '';
-  if (!token || !healthTokenMatches(token, expected)) {
+  if (!token || !constantTimeEqual(token, expected)) {
     res.status(401).json({ error: 'unauthorized' });
     return;
   }

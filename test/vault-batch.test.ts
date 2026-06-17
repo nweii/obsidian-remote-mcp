@@ -45,12 +45,12 @@ describe('readNotesBatch', () => {
     expect(missing.map(m => m.reference)).toEqual(['ghost.md']);
   });
 
-  test('omits bodies when includeContent is false but keeps frontmatter + version', async () => {
+  test('omits the body and the version in frontmatter-only triage mode', async () => {
     await note('a.md', '---\nstatus: active\n---\nAlpha body\n');
     const { found } = await vault.readNotesBatch(['a.md'], false);
     expect(found[0].content).toBeUndefined();
+    expect(found[0].version).toBeUndefined(); // no content to anchor a base_version
     expect(found[0].frontmatter).toEqual({ status: 'active' });
-    expect(found[0].version).toBeTruthy();
   });
 
   test('resolves a bare note title like vault_read', async () => {

@@ -128,10 +128,10 @@ function isPasswordGateEnabled(): boolean {
   return getOAuthPassword() !== undefined;
 }
 
-// Compares the value bytes in constant time. A length mismatch returns early — so length can be
-// inferred from timing, matching the existing bearer/health token checks — but the bytes
-// themselves are compared without a content-dependent timing signal.
-function safeEqual(a: string, b: string): boolean {
+// Constant-time string comparison shared by the password gate, the static bearer check, and the
+// /health token check. A length mismatch returns early — so length can be inferred from timing —
+// but the bytes themselves are compared without a content-dependent timing signal.
+export function constantTimeEqual(a: string, b: string): boolean {
   const ab = Buffer.from(a, 'utf-8');
   const bb = Buffer.from(b, 'utf-8');
   if (ab.length !== bb.length) return false;
@@ -141,8 +141,8 @@ function safeEqual(a: string, b: string): boolean {
 // Both fields are checked even when the first fails, so a valid username can't be told from an
 // invalid one by timing.
 function credentialsValid(username: string, password: string): boolean {
-  const userOk = safeEqual(username, getOAuthUsername());
-  const passOk = safeEqual(password, getOAuthPassword() ?? '');
+  const userOk = constantTimeEqual(username, getOAuthUsername());
+  const passOk = constantTimeEqual(password, getOAuthPassword() ?? '');
   return userOk && passOk;
 }
 
@@ -371,10 +371,7 @@ function getStaticBearerToken(): string | undefined {
 function bearerMatchesStatic(token: string): boolean {
   const expected = getStaticBearerToken();
   if (!expected) return false;
-  const a = Buffer.from(token, 'utf8');
-  const b = Buffer.from(expected, 'utf8');
-  if (a.length !== b.length) return false;
-  return timingSafeEqual(a, b);
+  return constantTimeEqual(token, expected);
 }
 
 /** Inserts a valid opaque access token for HTTP tests. Only when `VAULT_MCP_TEST=1`. */

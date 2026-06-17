@@ -522,7 +522,7 @@ export async function setFrontmatterProperties(
 export interface BatchReadItem {
   path: string;                          // resolved vault-relative path
   frontmatter: Record<string, unknown> | null;
-  version: string;                       // content hash; pass to vault_update as base_version
+  version?: string;                      // content hash for base_version; set only when content is included
   content?: string;                      // included only when requested
 }
 
@@ -552,9 +552,13 @@ export async function readNotesBatch(
       const item: BatchReadItem = {
         path: ref.path,
         frontmatter: parseFrontmatter(content),
-        version: versionOf(content),
       };
-      if (includeContent) item.content = content;
+      // The version anchors a later vault_update; it only makes sense next to the content the
+      // caller would edit, so skip the hash entirely in frontmatter-only triage mode.
+      if (includeContent) {
+        item.content = content;
+        item.version = versionOf(content);
+      }
       found.push(item);
     } catch (e) {
       missing.push({ reference, error: e instanceof Error ? e.message : String(e) });
@@ -881,7 +885,7 @@ export interface FrontmatterSearchResult {
 // on the wrong day. Rendering a Date as its UTC calendar date (`YYYY-MM-DD`) reconstructs what the
 // user typed, so `exact: 2026-01-15` matches; a datetime matches by its date. This isn't an ISO
 // requirement — any other date convention stays a plain string and is matched verbatim by String().
-function frontmatterValueToString(v: unknown): string {
+export function frontmatterValueToString(v: unknown): string {
   return v instanceof Date ? v.toISOString().slice(0, 10) : String(v);
 }
 
