@@ -1370,18 +1370,10 @@ export interface LinkResult {
   path: string | null; // null if the linked note wasn't found in the vault
 }
 
-// Build a lowercase-title → relative-path index from a single vault walk.
-async function buildTitleIndex(): Promise<Map<string, string>> {
-  const index = new Map<string, string>();
-  for await (const { relPath, name } of walkVaultFiles()) {
-    index.set(name.slice(0, -3).toLowerCase(), relPath);
-  }
-  return index;
-}
-
-// Return all outgoing [[wikilinks]] from a note with resolved paths.
-// One vault walk for the title index, so cost is proportional to vault size regardless
-// of how many links the note contains.
+// Return all outgoing [[wikilinks]] from a note with resolved paths. Resolution reuses the cached
+// resolver title index — the same index vault_read uses — so a link resolves to the same note a
+// bare title would, an ambiguous title picks the deterministic first match, and repeated link
+// queries hit the cache instead of re-walking the vault.
 export async function getNoteLinks(relativePath: string): Promise<LinkResult[]> {
   const content = await readNote(relativePath);
 
@@ -1401,8 +1393,8 @@ export async function getNoteLinks(relativePath: string): Promise<LinkResult[]> 
 
   if (titles.length === 0) return [];
 
-  const index = await buildTitleIndex();
-  return titles.map(title => ({ title, path: index.get(title.toLowerCase()) ?? null }));
+  const index = await getResolverTitleIndex();
+  return titles.map(title => ({ title, path: index.get(title.toLowerCase())?.[0] ?? null }));
 }
 
 // Return paths of notes that link to the given note (backlinks).
