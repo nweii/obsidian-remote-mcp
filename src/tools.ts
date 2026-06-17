@@ -2,6 +2,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import * as vault from "./vault.js";
+import { frontmatterValueToString } from "./frontmatter.js";
 import { registerClipTool } from "./clip.js";
 import { logFeedback, isLoggingEnabled } from "./log.js";
 import { parseLocalYmd, localYmd } from "./date.js";
@@ -209,12 +210,12 @@ const frontmatterValueSchema = z.union([
 ]);
 
 // Render a parsed frontmatter value for display. Arrays are joined element-wise, nested objects
-// are JSON, and scalars (including js-yaml Dates) go through vault.frontmatterValueToString, so a
-// date renders as the same YYYY-MM-DD that vault_search_frontmatter matched on.
+// are JSON, and scalars (including js-yaml Dates) go through frontmatterValueToString, so a date
+// renders as the same YYYY-MM-DD that vault_search_frontmatter matched on.
 function renderFrontmatterValue(v: unknown): string {
   if (Array.isArray(v)) return v.map(renderFrontmatterValue).join(", ");
   if (v !== null && typeof v === "object" && !(v instanceof Date)) return JSON.stringify(v);
-  return vault.frontmatterValueToString(v);
+  return frontmatterValueToString(v);
 }
 
 // Render a note's frontmatter as compact `key: value` lines for batch read — enough to triage
