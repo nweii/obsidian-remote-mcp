@@ -1,20 +1,59 @@
 # obsidian-remote-mcp
 
-A self-hosted [MCP](https://modelcontextprotocol.io) server for headless Obsidian vaults. It gives remote AI clients read and write access to a vault over HTTPS **without requiring the Obsidian desktop app to be running on the same machine.**
+A self-hosted [MCP](https://modelcontextprotocol.io) server that gives remote MCP clients (Claude, ChatGPT, Notion etc.) secure access to your Obsidian vault over HTTPS without requiring the Obsidian desktop app to be running on the same machine.
+
+It runs as an HTTP service on the machine where your vault lives (an NAS, VPS, or always-on PC/Mac). You keep a copy of your vault on that machine; clients reach them through your deployment of this repo, secured behind OAuth 2.1 authentication. 
 
 ## Features
 
-This is meant for home servers, NAS boxes, VPSes, and other setups where your vault lives on disk and you want to expose it through a remote MCP endpoint for apps like Claude.ai, ChatGPT, and Cursor.
+- **Flexible** — configure it to your environment and your vault's conventions.
+- **[Layerable security](#security-and-scope)** — secure by default, and you can layer on more as needed for your setup, up to an external access gateway.
+- **[Careful, precise edits](#vault-edits)** — it changes your notes safely and surgically:
+    - Writes are atomic, so your sync services never see a partial file.
+    - Version checks and per-note locks keep two agents from clobbering each other.
+    - Read or edit one section or one property; read or update notes in batches.
+- **Obsidian-native** — wikilinks, frontmatter, tags, and periodic notes work as expected; moving or renaming a note rewrites the wikilinks pointing at it.
 
-- OAuth (browser sign-in) or an API key (fixed bearer token), depending on what the client supports.
-- `vault_context` serves your vault guide note (defaults to `AGENTS.md`) plus a shallow folder tree so agents can see your vault structure.
-- Periodic notes (daily, weekly, monthly, quarterly, yearly) from path templates you configure.
-- Create, edit, update, and trash notes; wikilinks and YAML frontmatter work as usual.
-- Token-efficient partial access: read or edit one section under a heading, work with individual frontmatter properties, and list headings before reading. The [tools table](#tools) has the full set.
-- Full-note updates can check the version you last read, so another agent's edit is not overwritten by accident.
-- Search by filename or regex in note text; content search can be scoped to a folder.
-- Block paths with `.mcpignore`; set `VAULT_READ_ONLY` to turn off writes.
-- Optional JSONL logs of tool calls (note bodies redacted) if you want to review what agents did.
+## How it fits together
+
+```text
+┌─ sync ─────────────┐
+│ ex. Obsidian Sync, │
+│ git, rsync         │
+└────────────────────┘
+           │
+           ▼
+┌┄┄┄┄┄┄┄┄┄┄┬┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┐
+┆ your machine — VPS, NAS, always-on PC/Mac    ┆
+┆                                              ┆
+┆    ┌─ vault ──┐      ┌─ server ────────────┐ ┆
+┆    │ your .md │◄────►│ obsidian-remote-mcp │ ┆
+┆    │ files    │      │ (this repo)         │ ┆
+┆    └──────────┘      └─────────────────────┘ ┆
+┆                                 │            ┆
+└┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┼┄┄┄┄┄┄┄┄┄┄┄┄┘
+                                  │
+                                  ▼  over HTTPS
+                     ┌─ access ───────────────┐
+                     │ ex. Cloudflare Tunnel, │
+                     │ Tailscale              │
+                     └────────────────────────┘
+                                  │
+                                  ▼  authenticated MCP connection
+                      ┌─ client ─────────────┐
+                      │ ex. Claude, ChatGPT, │
+                      │ Cursor, Codex        │
+                      └──────────────────────┘
+```
+
+The server and its tools are built in. The rest you choose to fit your setup:
+
+- **vault** — the markdown files the server reads and edits
+- **sync** — you keep the vault current on the machine using any service; the server reads whatever's on disk.
+- **server** — obsidian-remote-mcp, this repo running
+- **access** — makes the server reachable over HTTPS. See [Expose it over HTTPS](#2-expose-it-over-https).
+- **auth** — built in (OAuth or API key); you can also put an external gate like Cloudflare Zero Trust in front. See [Authentication](#authentication).
+- **client** — the app that talks to the server.
 
 ## Tools
 
@@ -24,6 +63,7 @@ The server currently exposes these tools:
 |------|-------------|
 | `vault_context` | Read the vault guidance note configured by `VAULT_CONTEXT_PATH`, or fall back to `AGENTS.md` / `CLAUDE.md` |
 | `vault_read` | Full note text (`mode` full, default) with a version for safe updates, or list one folder level (`mode` `list`; `path` `""` = vault root) |
+| `vault_batch_read` | Read several notes in one call by path or title; `include_content: false` returns just frontmatter for cheap triage |
 | `vault_outline` | All `#` headings in a note (one per line); use before `vault_read_section` |
 | `vault_read_section` | Body under a single heading (`heading` = text without `#`, case-insensitive) |
 | `vault_read_attachment` | Read a binary attachment by path; images return a renderable image block, other types base64 plus mime/size; `stat_only` checks size first (read-only) |
@@ -32,33 +72,49 @@ The server currently exposes these tools:
 | `vault_create` | Create a new note |
 | `vault_update` | Replace a note's full contents; optional `base_version` rejects stale writes |
 | `vault_set_frontmatter_property` | Set one frontmatter property without rewriting the note body |
+| `vault_batch_frontmatter_update` | Set frontmatter properties on several notes in one call |
 | `vault_edit` | Append, prepend, or replace exact text within a note |
 | `vault_edit_section` | Append, prepend, or replace the body under one heading |
 | `vault_trash` | Move a note to `.trash` |
 | `vault_move` | Move or rename any vault file by explicit path and rewrite the wikilinks that point at it; defaults to a dry run that shows the plan and writes nothing |
 | `vault_search_title` | Find notes by filename (partial or exact); returns paths for `vault_read` |
 | `vault_search_content` | Regex search in note bodies; optional `folder` to scope large vaults |
+| `vault_search_frontmatter` | Find notes by a frontmatter property (match type `exact`, `contains`, or `exists`) |
 | `vault_tags` | List all tags with note counts, or note paths for one `tag`; counts frontmatter and inline `#tag` |
 | `vault_periodic_note` | Read or create a daily, weekly, monthly, quarterly, or yearly note using a per-cadence path template |
+| `vault_clip_url` | Save a web page to the vault as a markdown note |
+| `vault_feedback` | Log a structured note when an agent gets stuck or wants a tool that doesn't exist |
+
+## Vault edits
+
+The server edits the same files Obsidian and Obsidian Sync are using. Two things shape how it writes:
+
+- Each write goes to a temporary file that is renamed into place. Obsidian, Sync, or other tools never read a half-written or empty note, even if the process stops mid-write.
+- Writes to one note run one at a time. `vault_read` returns a version string; passing it to `vault_update` as `base_version` makes the update fail if the note changed since you read it, instead of overwriting the other edit.
 
 ## Security and scope
 
-Built-in safeguards:
+Access to the vault is controlled in layers.
 
-- **OAuth 2.1 + PKCE** with optional `MCP_CLIENT_SECRET` on token exchange
-- **API key** (`MCP_STATIC_BEARER_TOKEN`) for clients that take a fixed credential instead of browser auth
-- **CORS allowlisting** (`CORS_ALLOWED_ORIGINS`) for browser-based clients
-- **Vault path sandboxing** — all paths validated against the vault root
-- **`.mcpignore`** to block specific paths from MCP access
-- **`VAULT_READ_ONLY`** mode to prevent all writes
+**Authentication** — a client presents a credential to reach `/mcp`. Two ways to connect:
+- **[OAuth 2.1 + PKCE](#oauth-browser-sign-in)** — browser sign-in, presenting your `MCP_CLIENT_ID`.
+- **[API key](#api-key-static-bearer-token)** (`MCP_STATIC_BEARER_TOKEN`) — a fixed bearer token, for clients that can't open a browser.
+
+**Approval** — with OAuth, a client is granted access at the approval page, so the server won't start until access is guarded. Set [`VAULT_APPROVAL_PASSWORD`](#password-gate) to require a password there, or rely on a client secret (`MCP_CLIENT_SECRET`), which guards token exchange instead. If a gateway like Cloudflare Zero Trust already fronts `/authorize`, set `VAULT_APPROVAL_OPEN=true`.
+
+**Scope** — `.mcpignore` blocks paths from access, `VAULT_READ_ONLY` disables writes, and `CORS_ALLOWED_ORIGINS` limits browser origins. Paths are always confined to the vault root.
+
+The configurable parts are set as [environment variables](#environment-variables).
 
 ## Quick start
+
+Prefer to hand it to a coding agent? [Setup prompt.md](Setup%20prompt.md) is a paste-in prompt that sets it up *with* you. Or do it by hand:
 
 Getting from a vault on disk to an AI client reading it takes three steps:
 
 1. **Run the server** — locally with Bun, or in Docker.
 2. **Expose it over HTTPS** — remote clients and OAuth both require it.
-3. **Connect a client** — with browser OAuth or an API key. Per-client steps are under [Client setup guides](#client-setup-guides).
+3. **Connect a client** — with browser OAuth or an API key. Per-client steps are under [clients.md](clients.md).
 
 ### 1. Run the server
 
@@ -72,6 +128,7 @@ cd obsidian-remote-mcp
 bun install
 export VAULT_PATH=/absolute/path/to/your/vault
 export MCP_CLIENT_ID=my-vault-mcp
+export VAULT_APPROVAL_PASSWORD=pick-a-password   # or VAULT_APPROVAL_OPEN=true behind a gateway
 bun run src/server.ts
 ```
 
@@ -126,85 +183,7 @@ Every client needs two things: your MCP URL (`https://mcp.example.com/mcp` — b
 | **OAuth** (browser sign-in) | The client walks you through a sign-in flow (Claude.ai, Cursor, ChatGPT, Poke via Kitchen) | `MCP_CLIENT_ID`, optionally `MCP_CLIENT_SECRET` |
 | **API key** (fixed bearer token) | The client's setup form has an "API key" field, or it can't open a browser (Poke, scripts, `mcp-remote`) | `MCP_STATIC_BEARER_TOKEN` set to a long random string |
 
-Details for each mechanism are under [Authentication](#authentication).
-
-## Client setup guides
-
-### Claude.ai
-
-Available on paid plans, as a custom connector. Use your base URL with `/mcp` included. Under advanced settings, set OAuth client ID to your **`MCP_CLIENT_ID`**, and OAuth client secret to your **`MCP_CLIENT_SECRET`** if you've configured one for your server. On the server, set **`MCP_BASE_URL`** to the same origin as the connector URL, without `/mcp`.
-
-Claude's OAuth callback is in the server's default redirect allowlist, so no further configuration is needed.
-
-### Cursor
-
-Cursor supports both auth styles in `mcp.json`. Pick one — do not set both `auth` and `headers` on the same entry.
-
-OAuth:
-
-```json
-{
-  "mcpServers": {
-    "obsidian-vault": {
-      "url": "https://your-host/mcp",
-      "auth": {
-        "CLIENT_ID": "your-mcp-client-id",
-        "CLIENT_SECRET": "your-mcp-client-secret (optional)"
-      }
-    }
-  }
-}
-```
-
-API key:
-
-```json
-{
-  "mcpServers": {
-    "obsidian-vault": {
-      "url": "https://your-host/mcp",
-      "headers": {
-        "Authorization": "Bearer YOUR_MCP_STATIC_BEARER_TOKEN"
-      }
-    }
-  }
-}
-```
-
-Cursor's OAuth redirect URI (`cursor://anysphere.cursor-mcp/oauth/callback`) is in the default allowlist. If you set **`MCP_ALLOWED_REDIRECT_URIS`** yourself, include it so Cursor can still complete OAuth.
-
-### ChatGPT
-
-Add the server as a connector with your MCP URL and OAuth credentials. ChatGPT's legacy fixed callback (`https://chatgpt.com/connector_platform_oauth_redirect`) is in the default allowlist. Newer connectors may present a per-app callback URL (`https://chatgpt.com/connector/oauth/…`) during setup — if OAuth fails with `redirect_uri not allowed`, add the URL ChatGPT shows you to **`MCP_ALLOWED_REDIRECT_URIS`**.
-
-### Poke
-
-[Poke](https://poke.com) supports both auth styles:
-
-- **API key (simpler).** Set `MCP_STATIC_BEARER_TOKEN` on the server. At [poke.com/integrations/new](https://poke.com/integrations/new), enter your MCP URL and paste the same token into the **API Key** field. Poke sends it as `Authorization: Bearer …`, which is exactly what the server expects.
-- **OAuth (via Kitchen).** Poke's standard OAuth path assumes dynamic client registration, which this server [does not support](#oauth-browser-sign-in). Use Poke's fixed-credentials flow instead: at [poke.com/kitchen](https://poke.com/kitchen), create a template with your MCP URL, **`MCP_CLIENT_ID`**, and **`MCP_CLIENT_SECRET`**, then a recipe that includes it. Leave **scopes** blank (the server ignores them). Poke's callback (`https://poke.com/api/v1/mcp/callback`) is in the default redirect allowlist.
-
-### Scripts and headless clients
-
-For anything that just sends HTTP headers, use the API key. Antigravity `mcp_config.json`:
-
-```json
-"obsidian-vault": {
-  "serverUrl": "https://your-host/mcp",
-  "headers": {
-    "Authorization": "Bearer YOUR_MCP_STATIC_BEARER_TOKEN"
-  }
-}
-```
-
-Bridging over stdio with **`mcp-remote`**:
-
-```json
-"obsidian-vault": {
-  "command": "bunx",
-  "args": ["-y", "mcp-remote", "https://your-host/mcp", "--transport", "http-only", "--header", "Authorization: Bearer YOUR_MCP_STATIC_BEARER_TOKEN"]
-}
-```
+Details for each mechanism are under [Authentication](#authentication), and per-client setup (Claude.ai, Cursor, ChatGPT, Poke, scripts) is in [clients.md](clients.md).
 
 ## Server configuration
 
@@ -228,11 +207,13 @@ The relevant variables:
 
 #### API key (static bearer token)
 
-When a client's setup form asks for an API key (Poke, and most hosted MCP integrations), use `MCP_STATIC_BEARER_TOKEN`. It also covers scripts and clients that cannot open a browser.
+For scripts and clients that cannot open a browser, use a long random string as your API key for  `MCP_STATIC_BEARER_TOKEN`  on the server end. Then give the client the same value for `Authorization: Bearer [your key]`. 
 
-Set **`MCP_STATIC_BEARER_TOKEN`** on the server to a long random string, and give the client the same value. The client sends it as `Authorization: Bearer …` on every `/mcp` request; the server compares it directly, skipping `/authorize`, `POST /oauth/token`, and `TOKEN_STORE_PATH` for that client. It works alongside OAuth — setting it does not disable the browser flow for other clients.
+The client will then use this for every `/mcp` request. The server compares it directly, skipping `/authorize`, `POST /oauth/token`, and `TOKEN_STORE_PATH` for that client. This works alongside OAuth — setting it does not disable the browser flow for other clients.
 
-The trade-off versus OAuth: the token is long-lived and held by the client service, so rotate it (change the env var and update the client) if you ever suspect exposure.
+The trade-off versus OAuth is that the token is long-lived and held by the client service. You'll need to replace this token with a new one if you ever suspect exposure.
+
+To generate a random, secure API key, run this in your terminal:
 
 ```bash
 # generate one
@@ -249,6 +230,12 @@ CORS_ALLOWED_ORIGINS=https://claude.ai,http://localhost:3000
 ```
 
 When set, only listed origins get a reflected `Access-Control-Allow-Origin`; other browser preflights fail.
+
+#### Password gate
+
+The OAuth approval page must be guarded, and the server refuses to start otherwise. Set `VAULT_APPROVAL_PASSWORD` to require a password on that page before a code is issued; it's checked on every authorization. A client secret (`MCP_CLIENT_SECRET`) satisfies the guard instead, by blocking token exchange.
+
+If a reverse proxy or zero-trust gateway already guards `/authorize` (the stronger control), set `VAULT_APPROVAL_OPEN=true` for the click-to-approve page instead.
 
 ### Health endpoint
 
@@ -277,11 +264,13 @@ Sample Uptime Kuma monitor: type **HTTP(s)**, URL `https://mcp.example.com/healt
 
 ### Environment variables
 
-Set these on the server process (Compose `environment:`, Portainer, shell `export`, etc.):
+Configuration is through environment variables. There's no required `.env` file — set them wherever your deployment takes config: a Docker Compose `environment:` block, a dashboard field (Portainer and similar), an `.env` file you load, or a shell `export`.
 
 ```env
 MCP_CLIENT_ID=your-client-id
 MCP_CLIENT_SECRET=your-client-secret   # optional
+VAULT_APPROVAL_PASSWORD=                # password for the OAuth approval page; required unless MCP_CLIENT_SECRET or VAULT_APPROVAL_OPEN is set
+VAULT_APPROVAL_OPEN=                    # set true to allow click-to-approve when a gateway already guards /authorize
 MCP_BASE_URL=https://mcp.example.com
 MCP_ALLOWED_REDIRECT_URIS=https://claude.ai/api/mcp/auth_callback # optional; overrides the built-in defaults
 VAULT_PATH=/path/to/your/vault         # optional if obsidian.json is available
@@ -414,6 +403,10 @@ YEARLY_NOTE_PATH_TEMPLATE=Yearly/{YYYY}.md
 - `vault_move` takes explicit vault-relative paths (with extension) for both source and destination — bare titles are rejected, since a move is a mutation and title resolution adds ambiguity exactly where it isn't wanted. Use `vault_search_title` first to find the path. It also rewrites the wikilinks that point at the moved file, across note bodies and frontmatter (string and array values) and `.canvas` node paths.
 - `vault_move` rewrites conservatively. `dry_run` defaults to `true`: the call returns the full plan — every file and the rewrites it would make, plus `.base` files to review and any ambiguous links it would skip — and writes nothing, not even the move. Pass `dry_run: false` to move the file (first) and apply the rewrites (after). All wikilink forms are handled — `[[Note]]`, `[[folder/Note]]`, `[[Note#Heading]]`, `[[Note#^block]]`, `[[Note|alias]]`, embeds `![[Note]]`, links carrying an explicit extension, and combinations — with the alias, heading, and block parts preserved.
 - A pure move (same filename, new folder) leaves bare `[[Name]]` links alone, since Obsidian still resolves them by filename; only path-form links are repointed. A rename rewrites every form. If another file shares the old basename, bare-name links are ambiguous and skipped with a warning rather than guessed. Wikilinks inside fenced code blocks and inline code are left untouched. `.base` files are never edited — any that mention the old name or path are reported for manual attention, because rewriting strings inside Base formulas is too risky. `.mcpignore`d notes are neither scanned nor modified.
+
+## Similar projects
+
+[obsidian-web-mcp](https://github.com/jimprosser/obsidian-web-mcp) is another remote MCP server for Obsidian vaults, written in Python. The two cover much of the same ground but are built differently: obsidian-web-mcp keeps an in-memory index of the vault, while obsidian-remote-mcp is stateless, reading the current vault on each request. 
 
 ## Tests
 
