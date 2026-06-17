@@ -47,4 +47,12 @@ describe('summarizeArgs', () => {
     expect(result[0].content).toBe('<redacted:1chars>');
     expect(result[1].path).toBe('b.md');
   });
+
+  test('redacts the batch frontmatter fields map but keeps the sibling path', () => {
+    const result = summarizeArgs({
+      updates: [{ path: 'a.md', fields: { status: 'private', owner: 'nathan' } }],
+    }) as { updates: Array<Record<string, string>> };
+    expect(result.updates[0].path).toBe('a.md');
+    expect(result.updates[0].fields).toBe('<redacted:object>');
+  });
 });

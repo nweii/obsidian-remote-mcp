@@ -195,6 +195,35 @@ async function titleSearchToolResult(title: string, exact: boolean, limit: numbe
   };
 }
 
+// Max entries accepted by the batch tools (vault_batch_read, vault_batch_frontmatter_update).
+const BATCH_MAX = 50;
+
+// Accepted shapes for a frontmatter property value, shared by the single and batch setters.
+const frontmatterValueSchema = z.union([
+  z.string(),
+  z.number(),
+  z.boolean(),
+  z.null(),
+  z.array(z.unknown()),
+  z.record(z.string(), z.unknown()),
+]);
+
+// Render a parsed frontmatter value for display. Arrays are joined element-wise, nested objects
+// are JSON, and scalars (including js-yaml Dates) go through vault.frontmatterValueToString, so a
+// date renders as the same YYYY-MM-DD that vault_search_frontmatter matched on.
+function renderFrontmatterValue(v: unknown): string {
+  if (Array.isArray(v)) return v.map(renderFrontmatterValue).join(", ");
+  if (v !== null && typeof v === "object" && !(v instanceof Date)) return JSON.stringify(v);
+  return vault.frontmatterValueToString(v);
+}
+
+// Render a note's frontmatter as compact `key: value` lines for batch read — enough to triage
+// which notes to open.
+function renderFrontmatterBlock(fm: Record<string, unknown> | null): string {
+  if (!fm || Object.keys(fm).length === 0) return "(no frontmatter)";
+  return Object.entries(fm).map(([k, v]) => `${k}: ${renderFrontmatterValue(v)}`).join("\n");
+}
+
 export async function registerTools(server: McpServer) {
   // Optional: vault_clip_url. Wrapped in try/catch so a failure in the optional clip layer
   // can never break registration of the core vault tools.
@@ -305,6 +334,39 @@ export async function registerTools(server: McpServer) {
         text: `(version: ${version} — pass as base_version to vault_update to avoid clobbering a concurrent edit)`,
       });
       return result;
+    },
+  );
+
+  registerLogged(server,
+    "vault_batch_read",
+    {
+      title: "Read several notes at once",
+      description:
+        'Read multiple notes in one call. Each entry is a vault-relative path or a bare note title (resolved like vault_read); entries that can\'t be resolved are reported under "Not found" without failing the others. Set include_content false to return only each note\'s frontmatter — cheap triage to pick which notes to open before reading bodies.',
+      inputSchema: z.object({
+        paths: z.array(z.string()).min(1).max(BATCH_MAX).describe(`Vault-relative paths or bare note titles (1–${BATCH_MAX})`),
+        include_content: z
+          .boolean()
+          .optional()
+          .default(true)
+          .describe("Include each note's full body (default true). false returns frontmatter only."),
+      }),
+    },
+    async ({ paths, include_content }) => {
+      const { found, missing } = await vault.readNotesBatch(paths, include_content);
+      const blocks: string[] = [];
+      for (const item of found) {
+        const lines = [`=== ${item.path} ===`];
+        if (include_content) lines.push(`(version: ${item.version})`);
+        lines.push(renderFrontmatterBlock(item.frontmatter));
+        if (include_content && item.content !== undefined) lines.push("", item.content.trimEnd());
+        blocks.push(lines.join("\n"));
+      }
+      if (missing.length > 0) {
+        blocks.push(["Not found:", ...missing.map((m) => `- ${m.reference}: ${m.error}`)].join("\n"));
+      }
+      blocks.push(`(${found.length} found, ${missing.length} missing)`);
+      return { content: [{ type: "text", text: blocks.join("\n\n") }] };
     },
   );
 
@@ -555,23 +617,49 @@ export async function registerTools(server: McpServer) {
       inputSchema: z.object({
         path: z.string().describe("Relative path to the note"),
         name: z.string().describe("Frontmatter property name"),
-        value: z
-          .union([
-            z.string(),
-            z.number(),
-            z.boolean(),
-            z.null(),
-            z.array(z.unknown()),
-            z.record(z.string(), z.unknown()),
-          ])
-          .describe(
-            "Value to store. Pass arrays as JSON arrays (renders as YAML sequence), objects as JSON objects, scalars as strings/numbers/booleans. null is allowed.",
-          ),
+        value: frontmatterValueSchema.describe(
+          "Value to store. Pass arrays as JSON arrays (renders as YAML sequence), objects as JSON objects, scalars as strings/numbers/booleans. null is allowed.",
+        ),
       }),
     },
     async ({ path, name, value }) => {
       await vault.setFrontmatterProperty(path, name, value);
       return { content: [{ type: "text", text: `Set frontmatter property "${name}" on ${path}` }] };
+    },
+  );
+
+  registerLogged(server,
+    "vault_batch_frontmatter_update",
+    {
+      title: "Set frontmatter on several notes",
+      description:
+        "Set frontmatter properties on multiple notes in one call. Each update is { path, fields } where fields maps property → value; every property is spliced in place so untouched keys keep their on-disk form. Per note, all fields are written in one locked read-modify-write. One note failing (e.g. missing file) is reported and does not stop the others. Paths are explicit vault-relative paths.",
+      inputSchema: z.object({
+        updates: z
+          .array(
+            z.object({
+              path: z.string().describe("Relative path to the note"),
+              fields: z.record(z.string(), frontmatterValueSchema).describe("Property → value map to set on this note"),
+            }),
+          )
+          .min(1)
+          .max(BATCH_MAX)
+          .describe(`Per-note frontmatter updates (1–${BATCH_MAX})`),
+      }),
+    },
+    async ({ updates }) => {
+      const outcomes = await vault.updateFrontmatterBatch(updates);
+      const ok = outcomes.filter((o) => o.updated);
+      const failed = outcomes.filter((o) => !o.updated);
+      const lines: string[] = [];
+      if (ok.length > 0) lines.push(`Updated ${ok.length} note(s):`, ...ok.map((o) => `- ${o.path}`));
+      if (failed.length > 0) {
+        if (lines.length > 0) lines.push("");
+        lines.push("Failed:", ...failed.map((o) => `- ${o.path}: ${o.error}`));
+      }
+      // Flag the call as an error only when nothing succeeded; a partial success is a normal
+      // result that lists which notes failed.
+      return { content: [{ type: "text", text: lines.join("\n") }], ...(ok.length === 0 ? { isError: true } : {}) };
     },
   );
 
@@ -745,6 +833,44 @@ export async function registerTools(server: McpServer) {
           {
             type: "text",
             text: hitLimit ? `${text}\n\n(limit of ${limit} reached — use folder to narrow the search)` : text,
+          },
+        ],
+      };
+    },
+  );
+
+  registerLogged(server,
+    "vault_search_frontmatter",
+    {
+      title: "Search vault by frontmatter property",
+      description:
+        "Find notes by a frontmatter (YAML property) value. match_type: exact = equals (for a list property, matches when any element equals the value); contains = case-insensitive substring (per element for lists); exists = the property is present, value ignored. Date properties match by their YYYY-MM-DD calendar date (e.g. exact: 2026-01-15). Use folder to scope large vaults. Returns matching paths with the property's value.",
+      inputSchema: z.object({
+        field: z.string().describe("Frontmatter property name (top-level key)"),
+        value: z.string().optional().describe("Value to match. Required for exact/contains; ignored for exists."),
+        match_type: z.enum(["exact", "contains", "exists"]).optional().default("exact").describe("How to match the value (default exact)"),
+        folder: z.string().optional().describe('Limit the scan to this subfolder (e.g. "02-Notes").'),
+        limit: z.number().optional().default(20).describe("Max matching notes (default 20, 0 = no limit)"),
+      }),
+    },
+    async ({ field, value, match_type, folder, limit }) => {
+      if (match_type !== "exists" && (value === undefined || value === "")) {
+        return {
+          content: [{ type: "text", text: `Error: value is required for match_type "${match_type}". Pass a value, or use match_type "exists" to match any note that has the "${field}" property.` }],
+          isError: true,
+        };
+      }
+      const results = await vault.searchFrontmatter(field, { value, matchType: match_type, folder, limit });
+      if (results.length === 0) {
+        return { content: [{ type: "text", text: "No matching notes found." }] };
+      }
+      const text = results.map((r) => `${r.path}\t${field}: ${renderFrontmatterValue(r.frontmatter[field])}`).join("\n");
+      const hitLimit = limit > 0 && results.length === limit;
+      return {
+        content: [
+          {
+            type: "text",
+            text: hitLimit ? `${text}\n\n(limit of ${limit} reached — increase limit or pass a folder to narrow)` : text,
           },
         ],
       };

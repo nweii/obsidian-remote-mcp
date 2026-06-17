@@ -309,11 +309,73 @@ function serializeFrontmatter(data: Record<string, unknown>, body: string): stri
   return `---\n${yaml}\n---\n${body}`;
 }
 
+// Monotonic counter so two atomic writes starting in the same millisecond still get distinct
+// temp names. Combined with the pid, a temp-name collision is effectively impossible.
+let atomicWriteCounter = 0;
+
+// The mode bits of an existing file, or null if it doesn't exist. Used to carry a note's
+// permissions across an atomic overwrite, which swaps in a fresh inode.
+async function fileModeOrNull(absPath: string): Promise<number | null> {
+  try {
+    const stat = await fs.stat(absPath);
+    return stat.mode & 0o777;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw e;
+  }
+}
+
+// Write `content` to `absPath` atomically. The bytes go to a temp file in the SAME directory,
+// are flushed to disk, then renamed over the target. A rename within a directory is atomic on
+// POSIX, so any reader - Obsidian, Obsidian Sync, another tool call - sees either the old bytes
+// or the new bytes, never a half-written mix. Writing straight to the target with fs.writeFile
+// truncates it first, so a crash or an interleaved read mid-write can expose a zero-length or
+// torn file, which Obsidian Sync would then propagate to every device.
+//
+// The temp file is hidden (leading dot) so Obsidian ignores it and Sync won't propagate it, and
+// it carries the original basename plus a unique suffix. The content is fsynced before the
+// rename so a power loss can't make the new name point at unflushed bytes. If the target already
+// exists its mode is copied onto the temp file first, since replacing the inode would otherwise
+// reset the note's permissions. On any failure the temp file is removed so a failed write never
+// litters the vault.
+async function atomicWriteFile(absPath: string, content: string): Promise<void> {
+  const dir = path.dirname(absPath);
+  const tmpPath = path.join(
+    dir,
+    `.${path.basename(absPath)}.${process.pid}.${Date.now()}.${atomicWriteCounter++}.tmp`,
+  );
+  const handle = await fs.open(tmpPath, 'w');
+  try {
+    try {
+      await handle.writeFile(content, 'utf-8');
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    // Carry the target's mode onto the temp file before the swap. Best-effort: preserving the
+    // note's permissions is a nicety and must never be the thing that blocks the write.
+    const targetMode = await fileModeOrNull(absPath);
+    if (targetMode !== null) {
+      try {
+        await fs.chmod(tmpPath, targetMode);
+      } catch {
+        // Keep the temp file's default mode rather than failing an otherwise-good write.
+      }
+    }
+    await fs.rename(tmpPath, absPath);
+  } catch (e) {
+    // Any failure after the temp file was opened — write, fsync, chmod, or rename — removes it so
+    // a failed write never leaves a stray temp file in the vault.
+    await fs.rm(tmpPath, { force: true });
+    throw e;
+  }
+}
+
 export async function writeNote(relativePath: string, content: string): Promise<void> {
   assertWritable();
   const absPath = resolveSafePath(relativePath);
   await fs.mkdir(path.dirname(absPath), { recursive: true });
-  await fs.writeFile(absPath, content, 'utf-8');
+  await atomicWriteFile(absPath, content);
   invalidateResolverCache();
 }
 
@@ -396,7 +458,7 @@ export async function updateNote(
       }
       // No base version: plain create.
       await fs.mkdir(path.dirname(absPath), { recursive: true });
-      await fs.writeFile(absPath, content, 'utf-8');
+      await atomicWriteFile(absPath, content);
       invalidateResolverCache();
       return { version: versionOf(content) };
     }
@@ -409,7 +471,7 @@ export async function updateNote(
     }
 
     // No base version (opted out), or the note is unchanged since the caller read it.
-    await fs.writeFile(absPath, content, 'utf-8');
+    await atomicWriteFile(absPath, content);
     invalidateResolverCache();
     return { version: versionOf(content) };
   });
@@ -426,16 +488,112 @@ export async function getFrontmatterProperty(relativePath: string, name: string)
 }
 
 export async function setFrontmatterProperty(relativePath: string, name: string, value: unknown): Promise<void> {
+  await setFrontmatterProperties(relativePath, { [name]: value });
+}
+
+// Set several frontmatter properties on a note in one locked read-modify-write. Each key is
+// spliced individually (see setFrontmatterKey), so untouched keys keep their on-disk byte form
+// and only the named keys change. Holding the lock across the whole sequence keeps a concurrent
+// edit to the same note from interleaving between the read and the write. An empty fields object
+// is a no-op, so the file is never rewritten (and never churned through Obsidian Sync) for nothing.
+export async function setFrontmatterProperties(
+  relativePath: string,
+  fields: Record<string, unknown>,
+): Promise<void> {
   assertWritable();
+  if (Object.keys(fields).length === 0) return;
   const absPath = resolveSafePath(relativePath);
-  // Lock the read-modify-write so a concurrent edit to the same note can't interleave
-  // between reading the body and writing the updated frontmatter (Race A).
   await withPathLock(absPath, async () => {
-    const content = await readNote(relativePath);
-    const coerced = coerceFrontmatterValue(value);
-    const updated = setFrontmatterKey(content, name, coerced);
-    await writeNote(relativePath, updated);
+    let content = await readNote(relativePath);
+    for (const [name, value] of Object.entries(fields)) {
+      content = setFrontmatterKey(content, name, coerceFrontmatterValue(value));
+    }
+    await writeNote(relativePath, content);
   });
+}
+
+// --- Batch operations --------------------------------------------------------
+//
+// Both batch helpers are per-item and non-transactional: one bad entry is reported in the result
+// and never aborts the others. They compose the same single-note primitives (resolution, read,
+// frontmatter splice, per-path lock) the individual tools use, so batching changes only the
+// round-trip count, not the read/write semantics.
+
+export interface BatchReadItem {
+  path: string;                          // resolved vault-relative path
+  frontmatter: Record<string, unknown> | null;
+  version?: string;                      // content hash for base_version; set only when content is included
+  content?: string;                      // included only when requested
+}
+
+export interface BatchReadFailure {
+  reference: string;                     // the input that could not be resolved or read
+  error: string;
+}
+
+export interface BatchReadResult {
+  found: BatchReadItem[];
+  missing: BatchReadFailure[];
+}
+
+// Read several notes in one call. References resolve like vault_read (path or bare title); each
+// failure is collected in `missing` instead of throwing. With includeContent false, bodies are
+// omitted so an agent can triage many notes by frontmatter cheaply before opening any.
+export async function readNotesBatch(
+  references: string[],
+  includeContent: boolean,
+): Promise<BatchReadResult> {
+  const found: BatchReadItem[] = [];
+  const missing: BatchReadFailure[] = [];
+  for (const reference of references) {
+    try {
+      const ref = await resolveNoteReference(reference);
+      const content = await readNote(ref.path);
+      const item: BatchReadItem = {
+        path: ref.path,
+        frontmatter: parseFrontmatter(content),
+      };
+      // The version anchors a later vault_update; it only makes sense next to the content the
+      // caller would edit, so skip the hash entirely in frontmatter-only triage mode.
+      if (includeContent) {
+        item.content = content;
+        item.version = versionOf(content);
+      }
+      found.push(item);
+    } catch (e) {
+      missing.push({ reference, error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+  return { found, missing };
+}
+
+export interface BatchFrontmatterUpdate {
+  path: string;
+  fields: Record<string, unknown>;
+}
+
+export interface BatchUpdateOutcome {
+  path: string;
+  updated: boolean;
+  error?: string;
+}
+
+// Apply frontmatter property updates to several notes. Each note's fields are set in one locked
+// read-modify-write via setFrontmatterProperties; a failure on one note is recorded and the rest
+// still run. Paths are explicit vault-relative paths, matching vault_set_frontmatter_property.
+export async function updateFrontmatterBatch(
+  updates: BatchFrontmatterUpdate[],
+): Promise<BatchUpdateOutcome[]> {
+  const outcomes: BatchUpdateOutcome[] = [];
+  for (const update of updates) {
+    try {
+      await setFrontmatterProperties(update.path, update.fields);
+      outcomes.push({ path: update.path, updated: true });
+    } catch (e) {
+      outcomes.push({ path: update.path, updated: false, error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+  return outcomes;
 }
 
 // If a client serialized an array or object as a JSON string before sending (because
@@ -559,7 +717,7 @@ export async function prependToNote(relativePath: string, content: string): Prom
   const absPath = resolveSafePath(relativePath);
   await withPathLock(absPath, async () => {
     const existing = await fs.readFile(absPath, 'utf-8');
-    await fs.writeFile(absPath, content + existing, 'utf-8');
+    await atomicWriteFile(absPath, content + existing);
   });
   invalidateResolverCache();
 }
@@ -574,7 +732,7 @@ export async function replaceInNote(relativePath: string, find: string, content:
     const existing = await fs.readFile(absPath, 'utf-8');
     // Function replacer keeps `content` literal — a plain string replacement would interpret
     // $&, $1, $$ etc. in the agent's content as special replacement patterns.
-    await fs.writeFile(absPath, existing.replace(find, () => content), 'utf-8');
+    await atomicWriteFile(absPath, existing.replace(find, () => content));
   });
   invalidateResolverCache();
 }
@@ -703,6 +861,99 @@ export async function searchFilename(pattern: string): Promise<string[]> {
   }
 
   await walk(VAULT_ROOT);
+  return results;
+}
+
+export type FrontmatterMatchType = 'exact' | 'contains' | 'exists';
+
+export interface FrontmatterSearchOptions {
+  value?: string;                    // required for 'exact'/'contains'; ignored for 'exists'
+  matchType?: FrontmatterMatchType;  // defaults to 'exact'
+  folder?: string;                   // scope the scan to a subfolder; defaults to vault root
+  limit?: number;                    // max matching notes; default 20, 0 = no limit
+}
+
+export interface FrontmatterSearchResult {
+  path: string;                          // vault-relative path
+  title: string;                         // frontmatter title, else filename without .md
+  frontmatter: Record<string, unknown>;  // the note's full parsed frontmatter
+}
+
+// Canonical string form of a frontmatter value for matching. js-yaml parses an unquoted ISO-8601
+// scalar (e.g. `due: 2026-01-15`) into a Date; `String(Date)` would render the timezone-shifted JS
+// locale string ("Wed Jan 14 2026 19:00:00 GMT-0500 ..."), which is unmatchable and can even land
+// on the wrong day. Rendering a Date as its UTC calendar date (`YYYY-MM-DD`) reconstructs what the
+// user typed, so `exact: 2026-01-15` matches; a datetime matches by its date. This isn't an ISO
+// requirement — any other date convention stays a plain string and is matched verbatim by String().
+export function frontmatterValueToString(v: unknown): string {
+  return v instanceof Date ? v.toISOString().slice(0, 10) : String(v);
+}
+
+// Does a note's frontmatter value satisfy the predicate? For a list field the test is applied
+// per element (real membership), so `contains: draft` matches `tags: [draft, idea]` and
+// `exact: idea` matches it too — unlike a substring test against the stringified list. `exists`
+// is decided by the caller (the key being present), so it always passes here.
+function frontmatterValueMatches(
+  fieldValue: unknown,
+  matchType: FrontmatterMatchType,
+  value: string | undefined,
+): boolean {
+  if (matchType === 'exists') return true;
+  if (value === undefined) return false;
+  const test = (v: unknown): boolean =>
+    matchType === 'exact'
+      ? frontmatterValueToString(v) === value
+      : frontmatterValueToString(v).toLowerCase().includes(value.toLowerCase());
+  return Array.isArray(fieldValue) ? fieldValue.some(test) : test(fieldValue);
+}
+
+// Find notes whose frontmatter has `field`, optionally constrained by value/matchType. Walks the
+// vault (or a folder) once, parsing each note's frontmatter — stateless, no persistent index, so
+// it stays consistent with the per-request server. Reuses the scanTags traversal: skips dotfiles,
+// honours .mcpignore, reads only .md files. Notes without frontmatter, or without `field`, are
+// skipped before the predicate runs.
+export async function searchFrontmatter(
+  field: string,
+  options: FrontmatterSearchOptions = {},
+): Promise<FrontmatterSearchResult[]> {
+  const { value, matchType = 'exact', folder, limit = 20 } = options;
+  const root = folder ? resolveSafePath(folder) : VAULT_ROOT;
+  const maxResults = limit > 0 ? limit : Number.POSITIVE_INFINITY;
+  const results: FrontmatterSearchResult[] = [];
+
+  async function walk(dir: string) {
+    if (results.length >= maxResults) return;
+    const entries = await fs.readdir(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (results.length >= maxResults) break;
+      if (entry.name.startsWith('.')) continue;
+      const fullPath = path.join(dir, entry.name);
+      if (isIgnored(fullPath)) continue;
+      if (entry.isDirectory()) {
+        await walk(fullPath);
+        continue;
+      }
+      if (!entry.name.endsWith('.md')) continue;
+      let content: string;
+      try {
+        content = await fs.readFile(fullPath, 'utf-8');
+      } catch {
+        continue; // skip unreadable files (e.g. permission denied)
+      }
+      const frontmatter = parseFrontmatter(content);
+      if (!frontmatter || !(field in frontmatter)) continue;
+      if (!frontmatterValueMatches(frontmatter[field], matchType, value)) continue;
+      const rel = path.relative(VAULT_ROOT, fullPath);
+      const titleValue = frontmatter.title;
+      const title =
+        typeof titleValue === 'string' && titleValue.trim() !== ''
+          ? titleValue
+          : path.basename(rel, '.md');
+      results.push({ path: rel, title, frontmatter });
+    }
+  }
+
+  await walk(root);
   return results;
 }
 
@@ -940,7 +1191,7 @@ export async function editNoteSection(
   // between reading the section and writing it back (Race A).
   await withPathLock(absPath, async () => {
     const existing = await fs.readFile(absPath, 'utf-8');
-    await fs.writeFile(absPath, applySectionEdit(existing, heading, operation, content, relativePath), 'utf-8');
+    await atomicWriteFile(absPath, applySectionEdit(existing, heading, operation, content, relativePath));
   });
   invalidateResolverCache();
 }
@@ -1732,7 +1983,7 @@ export async function applyReferenceRewrite(plan: RewritePlan): Promise<RewriteR
         const content = await fs.readFile(absPath, 'utf-8');
         const next = recomputeFileContent(file.path, content, plan);
         if (next !== null) {
-          await fs.writeFile(absPath, next, 'utf-8');
+          await atomicWriteFile(absPath, next);
           written = true;
         }
       });
