@@ -1,8 +1,16 @@
 // ABOUTME: Process entry — listens on PORT using the shared Express app from app.ts.
 import { createApp } from './app.js';
-import { saveTokens } from './auth.js';
+import { saveTokens, assertApprovalGuardConfigured } from './auth.js';
 
 const PORT = parseInt(process.env.PORT ?? '3456', 10);
+
+// Secure by default: don't boot with the OAuth approval page unguarded.
+try {
+  assertApprovalGuardConfigured();
+} catch (err) {
+  console.error(`[auth] ${(err as Error).message}`);
+  process.exit(1);
+}
 
 const app = createApp();
 

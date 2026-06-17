@@ -106,26 +106,39 @@ function getVaultDisplayNameHtml(): string {
   return escapeHtml(getVaultDisplayName());
 }
 
-// --- Optional password gate --------------------------------------------------
+// --- Approval-page password --------------------------------------------------
 //
-// Off by default: the approval page is click-to-approve. Set VAULT_OAUTH_PASSWORD to require a
-// username + password on every authorization before a code is issued — a low-friction option for
-// deployments not already fronted by a reverse proxy or zero-trust gateway (which remain the
-// stronger choice). VAULT_OAUTH_USERNAME defaults to "obsidian". The password is demanded on every
-// authorization, so there is no session for a hostile client to ride.
+// The OAuth approval page must be guarded, and the server refuses to start otherwise (see
+// assertApprovalGuardConfigured). Set VAULT_APPROVAL_PASSWORD to require a password on every
+// authorization before a code is issued. A client secret (MCP_CLIENT_SECRET) guards token exchange
+// instead, and VAULT_APPROVAL_OPEN=true allows the click-to-approve page when a reverse proxy or
+// zero-trust gateway already guards /authorize. The password is demanded on every authorization, so
+// there is no session for a hostile client to ride.
 
-function getOAuthPassword(): string | undefined {
-  const pw = process.env.VAULT_OAUTH_PASSWORD;
+function getApprovalPassword(): string | undefined {
+  const pw = process.env.VAULT_APPROVAL_PASSWORD;
   return pw ? pw : undefined;
 }
 
-function getOAuthUsername(): string {
-  const user = process.env.VAULT_OAUTH_USERNAME?.trim();
-  return user ? user : 'obsidian';
+function isPasswordGateEnabled(): boolean {
+  return getApprovalPassword() !== undefined;
 }
 
-function isPasswordGateEnabled(): boolean {
-  return getOAuthPassword() !== undefined;
+// Called once at startup (see server.ts). The OAuth approval page is always reachable, so refuse to
+// run with the access path unguarded — otherwise a stranger who reached /authorize could approve
+// their own client and gain access to the vault. Any one guard satisfies it: an approval password,
+// a client secret (which blocks token exchange), or VAULT_APPROVAL_OPEN for deployments fronted by
+// an external gateway.
+export function assertApprovalGuardConfigured(): void {
+  if (getApprovalPassword()) return;
+  if (getClientSecret()) return;
+  if (process.env.VAULT_APPROVAL_OPEN?.trim().toLowerCase() === 'true') return;
+  throw new Error(
+    'Refusing to start: the OAuth approval page has no guard, so anyone who reaches /authorize could ' +
+    'approve their own client and gain access to your vault. Set VAULT_APPROVAL_PASSWORD to require a ' +
+    'password, set MCP_CLIENT_SECRET, or set VAULT_APPROVAL_OPEN=true if a reverse proxy or ' +
+    'zero-trust gateway already guards /authorize.'
+  );
 }
 
 // Constant-time string comparison shared by the password gate, the static bearer check, and the
@@ -138,12 +151,8 @@ export function constantTimeEqual(a: string, b: string): boolean {
   return timingSafeEqual(ab, bb);
 }
 
-// Both fields are checked even when the first fails, so a valid username can't be told from an
-// invalid one by timing.
-function credentialsValid(username: string, password: string): boolean {
-  const userOk = constantTimeEqual(username, getOAuthUsername());
-  const passOk = constantTimeEqual(password, getOAuthPassword() ?? '');
-  return userOk && passOk;
+function passwordValid(password: string): boolean {
+  return constantTimeEqual(password, getApprovalPassword() ?? '');
 }
 
 // The OAuth request params, re-emitted as hidden form inputs so POST /authorize carries everything
@@ -165,15 +174,13 @@ function buildAuthParamInputs(src: Record<string, string>): string {
     .join('\n    ');
 }
 
-// The approval page. With the password gate off it is the same single Approve button as the
-// original click-to-approve (no credential fields rendered). With it on, username + password
-// fields are added and `error` carries a failed-attempt message; `username` pre-fills after a
-// failed attempt so only the password is retyped.
-function renderApprovalPage(inputsHtml: string, opts: { error?: string; username?: string } = {}): string {
+// The approval page. With no approval password it is the single Approve button of the original
+// click-to-approve (no password field). With one set, a password field is added and `error` carries
+// a failed-attempt message.
+function renderApprovalPage(inputsHtml: string, opts: { error?: string } = {}): string {
   const errorHtml = opts.error ? `<p style="color:#b00">${escapeHtml(opts.error)}</p>` : '';
   const credentialFields = isPasswordGateEnabled()
-    ? `<div style="margin:0 0 1rem"><label>Username<br><input name="username" autocomplete="username" value="${escapeHtml(opts.username ?? '')}"></label></div>
-    <div style="margin:0 0 1rem"><label>Password<br><input name="password" type="password" autocomplete="current-password"></label></div>`
+    ? `<div style="margin:0 0 1rem"><label>Password<br><input name="password" type="password" autocomplete="current-password"></label></div>`
     : '';
   return `<!DOCTYPE html>
 <html lang="en">
@@ -257,7 +264,7 @@ export function authorizationHandler(req: Request, res: Response) {
   }
 
   // Pass all validated params through hidden inputs so POST /authorize carries them, then render
-  // the approval page (with username/password fields when the optional password gate is enabled).
+  // the approval page (with a password field when an approval password is set).
   res.type('html').send(renderApprovalPage(buildAuthParamInputs(q)));
 }
 
@@ -275,17 +282,16 @@ export function authorizationApproveHandler(req: Request, res: Response) {
     return;
   }
 
-  // Optional password gate: when VAULT_OAUTH_PASSWORD is set, require valid credentials before
-  // issuing a code. Off by default, so the click-to-approve flow is unchanged. The page is
-  // re-rendered (carrying the same hidden params) on a wrong guess so the user can retry.
+  // Approval password: when VAULT_APPROVAL_PASSWORD is set, require it before issuing a code. With
+  // none set the click-to-approve flow is unchanged. The page is re-rendered (carrying the same
+  // hidden params) on a wrong guess so the user can retry.
   if (isPasswordGateEnabled()) {
-    const username = (b.username ?? '').toString();
     const password = (b.password ?? '').toString();
-    if (!credentialsValid(username, password)) {
+    if (!passwordValid(password)) {
       res
         .status(401)
         .type('html')
-        .send(renderApprovalPage(buildAuthParamInputs(b), { error: 'Incorrect username or password.', username }));
+        .send(renderApprovalPage(buildAuthParamInputs(b), { error: 'Incorrect password.' }));
       return;
     }
   }

@@ -1,5 +1,7 @@
-// ABOUTME: Tests for the optional OAuth password gate — off by default (click-to-approve issues a
-// code), and when VAULT_OAUTH_PASSWORD is set it requires valid credentials before issuing a code.
+// ABOUTME: Tests for the OAuth approval-page password — the page issues a code on click when no
+// password is set, requires the correct password when VAULT_APPROVAL_PASSWORD is set, and the
+// startup guard (assertApprovalGuardConfigured) refuses to run unless an approval password, a
+// client secret, or VAULT_APPROVAL_OPEN is configured.
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { createHash } from 'crypto';
 import { mkdtemp, rm } from 'fs/promises';
@@ -8,6 +10,7 @@ import path from 'path';
 import type { Express } from 'express';
 
 let createApp: () => Express;
+let assertApprovalGuardConfigured: () => void;
 let vaultPath: string;
 
 const PARAMS = {
@@ -48,24 +51,22 @@ async function postAuthorize(base: string, extra: Record<string, string> = {}): 
   });
 }
 
-// Run fn with the gate env applied, then restore — keeps each test independent.
-async function withGate(
-  env: { password?: string; username?: string },
-  fn: () => Promise<void>,
-): Promise<void> {
-  const prevPw = process.env.VAULT_OAUTH_PASSWORD;
-  const prevUser = process.env.VAULT_OAUTH_USERNAME;
-  if (env.password === undefined) delete process.env.VAULT_OAUTH_PASSWORD;
-  else process.env.VAULT_OAUTH_PASSWORD = env.password;
-  if (env.username === undefined) delete process.env.VAULT_OAUTH_USERNAME;
-  else process.env.VAULT_OAUTH_USERNAME = env.username;
+// Apply env vars (clearing those set to undefined) for the duration of fn, then restore — so each
+// test controls the gate without leaking state to the others.
+async function withEnvs(envs: Record<string, string | undefined>, fn: () => void | Promise<void>): Promise<void> {
+  const prev: Record<string, string | undefined> = {};
+  for (const [k, v] of Object.entries(envs)) {
+    prev[k] = process.env[k];
+    if (v === undefined) delete process.env[k];
+    else process.env[k] = v;
+  }
   try {
     await fn();
   } finally {
-    if (prevPw === undefined) delete process.env.VAULT_OAUTH_PASSWORD;
-    else process.env.VAULT_OAUTH_PASSWORD = prevPw;
-    if (prevUser === undefined) delete process.env.VAULT_OAUTH_USERNAME;
-    else process.env.VAULT_OAUTH_USERNAME = prevUser;
+    for (const [k, v] of Object.entries(prev)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
   }
 }
 
@@ -75,18 +76,19 @@ beforeAll(async () => {
   process.env.MCP_CLIENT_ID = 'gate-client';
   process.env.MCP_BASE_URL = 'https://example.test';
   process.env.VAULT_MCP_TEST = '1';
-  delete process.env.VAULT_OAUTH_PASSWORD;
-  delete process.env.VAULT_OAUTH_USERNAME;
+  delete process.env.VAULT_APPROVAL_PASSWORD;
+  delete process.env.VAULT_APPROVAL_OPEN;
   createApp = (await import('../src/app.js')).createApp;
+  assertApprovalGuardConfigured = (await import('../src/auth.js')).assertApprovalGuardConfigured;
 });
 
 afterAll(async () => {
   await rm(vaultPath, { recursive: true, force: true });
 });
 
-describe('password gate off (default)', () => {
+describe('approval page without a password (click-to-approve)', () => {
   test('GET /authorize renders no password field', async () => {
-    await withGate({}, async () => {
+    await withEnvs({ VAULT_APPROVAL_PASSWORD: undefined }, async () => {
       const app = createApp();
       const { base, close } = await listen(app);
       try {
@@ -99,15 +101,14 @@ describe('password gate off (default)', () => {
     });
   });
 
-  test('POST /authorize issues a code with no credentials', async () => {
-    await withGate({}, async () => {
+  test('POST /authorize issues a code with no password', async () => {
+    await withEnvs({ VAULT_APPROVAL_PASSWORD: undefined }, async () => {
       const app = createApp();
       const { base, close } = await listen(app);
       try {
         const res = await postAuthorize(base);
         expect(res.status).toBe(302);
-        const code = new URL(res.headers.get('location')!).searchParams.get('code');
-        expect(code).toBeTruthy();
+        expect(new URL(res.headers.get('location')!).searchParams.get('code')).toBeTruthy();
       } finally {
         await close();
       }
@@ -115,23 +116,25 @@ describe('password gate off (default)', () => {
   });
 });
 
-describe('password gate on', () => {
-  test('GET /authorize renders username + password fields', async () => {
-    await withGate({ password: 'hunter2' }, async () => {
+describe('approval page with a password', () => {
+  const PW = { VAULT_APPROVAL_PASSWORD: 'hunter2' };
+
+  test('GET /authorize renders a password field and no username field', async () => {
+    await withEnvs(PW, async () => {
       const app = createApp();
       const { base, close } = await listen(app);
       try {
         const html = await (await getAuthorize(base)).text();
-        expect(html).toContain('name="username"');
         expect(html).toContain('name="password"');
+        expect(html).not.toContain('name="username"');
       } finally {
         await close();
       }
     });
   });
 
-  test('POST without credentials is rejected with 401 and no redirect', async () => {
-    await withGate({ password: 'hunter2' }, async () => {
+  test('POST without a password is rejected with 401 and no redirect', async () => {
+    await withEnvs(PW, async () => {
       const app = createApp();
       const { base, close } = await listen(app);
       try {
@@ -145,24 +148,23 @@ describe('password gate on', () => {
   });
 
   test('POST with the wrong password is rejected with 401', async () => {
-    await withGate({ password: 'hunter2' }, async () => {
+    await withEnvs(PW, async () => {
       const app = createApp();
       const { base, close } = await listen(app);
       try {
-        const res = await postAuthorize(base, { username: 'obsidian', password: 'wrong' });
-        expect(res.status).toBe(401);
+        expect((await postAuthorize(base, { password: 'wrong' })).status).toBe(401);
       } finally {
         await close();
       }
     });
   });
 
-  test('POST with correct default-username credentials issues a code', async () => {
-    await withGate({ password: 'hunter2' }, async () => {
+  test('POST with the correct password issues a code', async () => {
+    await withEnvs(PW, async () => {
       const app = createApp();
       const { base, close } = await listen(app);
       try {
-        const res = await postAuthorize(base, { username: 'obsidian', password: 'hunter2' });
+        const res = await postAuthorize(base, { password: 'hunter2' });
         expect(res.status).toBe(302);
         expect(new URL(res.headers.get('location')!).searchParams.get('code')).toBeTruthy();
       } finally {
@@ -171,25 +173,12 @@ describe('password gate on', () => {
     });
   });
 
-  test('a custom username is enforced', async () => {
-    await withGate({ password: 'hunter2', username: 'nathan' }, async () => {
+  test('state round-trips to the redirect after a correct password', async () => {
+    await withEnvs(PW, async () => {
       const app = createApp();
       const { base, close } = await listen(app);
       try {
-        expect((await postAuthorize(base, { username: 'obsidian', password: 'hunter2' })).status).toBe(401);
-        expect((await postAuthorize(base, { username: 'nathan', password: 'hunter2' })).status).toBe(302);
-      } finally {
-        await close();
-      }
-    });
-  });
-
-  test('state round-trips to the redirect with the gate on', async () => {
-    await withGate({ password: 'hunter2' }, async () => {
-      const app = createApp();
-      const { base, close } = await listen(app);
-      try {
-        const res = await postAuthorize(base, { username: 'obsidian', password: 'hunter2', state: 'xyz-state' });
+        const res = await postAuthorize(base, { password: 'hunter2', state: 'xyz-state' });
         expect(res.status).toBe(302);
         expect(new URL(res.headers.get('location')!).searchParams.get('state')).toBe('xyz-state');
       } finally {
@@ -198,24 +187,49 @@ describe('password gate on', () => {
     });
   });
 
-  test('the 401 re-render preserves state and escapes a reflected username', async () => {
-    await withGate({ password: 'hunter2' }, async () => {
+  test('the 401 re-render preserves state and shows the password field again', async () => {
+    await withEnvs(PW, async () => {
       const app = createApp();
       const { base, close } = await listen(app);
       try {
-        const res = await postAuthorize(base, {
-          username: '"><script>x</script>',
-          password: 'wrong',
-          state: 'keepme',
-        });
+        const res = await postAuthorize(base, { password: 'wrong', state: 'keepme' });
         expect(res.status).toBe(401);
         const html = await res.text();
-        expect(html).toContain('value="keepme"');          // state carried in a hidden input
-        expect(html).not.toContain('<script>x</script>');   // username not reflected raw
-        expect(html).toContain('&lt;script&gt;');           // escaped form present
+        expect(html).toContain('value="keepme"');   // state carried in a hidden input
+        expect(html).toContain('name="password"');  // password field re-rendered for a retry
       } finally {
         await close();
       }
     });
+  });
+});
+
+describe('assertApprovalGuardConfigured (startup guard)', () => {
+  test('throws when no password, client secret, or open opt-out is set', async () => {
+    await withEnvs(
+      { VAULT_APPROVAL_PASSWORD: undefined, VAULT_APPROVAL_OPEN: undefined, MCP_CLIENT_SECRET: undefined },
+      () => { expect(() => assertApprovalGuardConfigured()).toThrow(/Refusing to start/); },
+    );
+  });
+
+  test('passes when VAULT_APPROVAL_PASSWORD is set', async () => {
+    await withEnvs(
+      { VAULT_APPROVAL_PASSWORD: 'hunter2', VAULT_APPROVAL_OPEN: undefined, MCP_CLIENT_SECRET: undefined },
+      () => { expect(() => assertApprovalGuardConfigured()).not.toThrow(); },
+    );
+  });
+
+  test('passes when MCP_CLIENT_SECRET is set (it guards token exchange)', async () => {
+    await withEnvs(
+      { VAULT_APPROVAL_PASSWORD: undefined, VAULT_APPROVAL_OPEN: undefined, MCP_CLIENT_SECRET: 'shh' },
+      () => { expect(() => assertApprovalGuardConfigured()).not.toThrow(); },
+    );
+  });
+
+  test('passes when VAULT_APPROVAL_OPEN=true', async () => {
+    await withEnvs(
+      { VAULT_APPROVAL_PASSWORD: undefined, VAULT_APPROVAL_OPEN: 'true', MCP_CLIENT_SECRET: undefined },
+      () => { expect(() => assertApprovalGuardConfigured()).not.toThrow(); },
+    );
   });
 });
