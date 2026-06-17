@@ -808,59 +808,77 @@ export interface SearchOptions {
   limit?: number;    // max matching files to return; 0 means no limit
 }
 
+// --- Shared vault traversal ---------------------------------------------------
+//
+// One depth-first walk over the vault's files, used by every search, index, and scan below.
+// Centralizing it keeps the access policy — skip dotfiles, honour .mcpignore, default to .md — in
+// one place instead of being re-derived (and drifting) across each caller. Callers read file
+// content themselves when they need it, and `break` out of the for-await loop to stop early.
+
+interface WalkVaultOptions {
+  folder?: string;                          // vault-relative scope; defaults to the whole vault
+  includeFile?: (name: string) => boolean;  // which files to yield; defaults to .md only
+  sort?: boolean;                           // sort each directory's entries by name for deterministic order
+}
+
+interface WalkEntry {
+  fullPath: string;  // absolute path on disk
+  relPath: string;   // vault-relative path
+  name: string;      // basename
+}
+
+const isMarkdownFile = (name: string): boolean => name.toLowerCase().endsWith('.md');
+
+async function* walkVaultFiles(options: WalkVaultOptions = {}): AsyncGenerator<WalkEntry> {
+  const { folder, includeFile = isMarkdownFile, sort = false } = options;
+  const root = folder ? resolveSafePath(folder) : VAULT_ROOT;
+
+  async function* walk(dir: string): AsyncGenerator<WalkEntry> {
+    const entries = await fs.readdir(dir, { withFileTypes: true });
+    if (sort) entries.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+    for (const entry of entries) {
+      if (entry.name.startsWith('.')) continue;
+      const fullPath = path.join(dir, entry.name);
+      if (isIgnored(fullPath)) continue;
+      if (entry.isDirectory()) {
+        yield* walk(fullPath);
+        continue;
+      }
+      if (!includeFile(entry.name)) continue;
+      yield { fullPath, relPath: path.relative(VAULT_ROOT, fullPath), name: entry.name };
+    }
+  }
+
+  yield* walk(root);
+}
+
 export async function searchContent(query: string, options: SearchOptions = {}): Promise<SearchResult[]> {
   const { caseSensitive = false, folder, limit = 20 } = options;
-  const root = folder ? resolveSafePath(folder) : VAULT_ROOT;
   const results: SearchResult[] = [];
   const regex = new RegExp(query, caseSensitive ? '' : 'i');
   const maxResults = limit > 0 ? limit : Number.POSITIVE_INFINITY;
 
-  async function walk(dir: string) {
-    if (results.length >= maxResults) return;
-    const entries = await fs.readdir(dir, { withFileTypes: true });
-    for (const entry of entries) {
-      if (results.length >= maxResults) break;
-      if (entry.name.startsWith('.')) continue;
-      const fullPath = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        await walk(fullPath);
-      } else if (entry.name.endsWith('.md')) {
-        let content: string;
-        try {
-          content = await fs.readFile(fullPath, 'utf-8');
-        } catch {
-          continue; // skip unreadable files (e.g. permission denied)
-        }
-        const matches = content.split('\n').filter(line => regex.test(line));
-        if (matches.length > 0) {
-          results.push({ path: path.relative(VAULT_ROOT, fullPath), matches });
-        }
-      }
+  for await (const { fullPath, relPath } of walkVaultFiles({ folder })) {
+    if (results.length >= maxResults) break;
+    let content: string;
+    try {
+      content = await fs.readFile(fullPath, 'utf-8');
+    } catch {
+      continue; // skip unreadable files (e.g. permission denied)
     }
+    const matches = content.split('\n').filter(line => regex.test(line));
+    if (matches.length > 0) results.push({ path: relPath, matches });
   }
-
-  await walk(root);
   return results;
 }
 
 export async function searchFilename(pattern: string): Promise<string[]> {
   const results: string[] = [];
   const regex = new RegExp(pattern, 'i');
-
-  async function walk(dir: string) {
-    const entries = await fs.readdir(dir, { withFileTypes: true });
-    for (const entry of entries) {
-      if (entry.name.startsWith('.')) continue;
-      const fullPath = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        await walk(fullPath);
-      } else if (regex.test(entry.name)) {
-        results.push(path.relative(VAULT_ROOT, fullPath));
-      }
-    }
+  // includeFile: () => true so every file is tested against the pattern, not just .md.
+  for await (const { relPath, name } of walkVaultFiles({ includeFile: () => true })) {
+    if (regex.test(name)) results.push(relPath);
   }
-
-  await walk(VAULT_ROOT);
   return results;
 }
 
@@ -909,51 +927,35 @@ function frontmatterValueMatches(
 
 // Find notes whose frontmatter has `field`, optionally constrained by value/matchType. Walks the
 // vault (or a folder) once, parsing each note's frontmatter — stateless, no persistent index, so
-// it stays consistent with the per-request server. Reuses the scanTags traversal: skips dotfiles,
-// honours .mcpignore, reads only .md files. Notes without frontmatter, or without `field`, are
+// it stays consistent with the per-request server. Uses the shared walkVaultFiles traversal (skips
+// dotfiles, honours .mcpignore, reads only .md). Notes without frontmatter, or without `field`, are
 // skipped before the predicate runs.
 export async function searchFrontmatter(
   field: string,
   options: FrontmatterSearchOptions = {},
 ): Promise<FrontmatterSearchResult[]> {
   const { value, matchType = 'exact', folder, limit = 20 } = options;
-  const root = folder ? resolveSafePath(folder) : VAULT_ROOT;
   const maxResults = limit > 0 ? limit : Number.POSITIVE_INFINITY;
   const results: FrontmatterSearchResult[] = [];
 
-  async function walk(dir: string) {
-    if (results.length >= maxResults) return;
-    const entries = await fs.readdir(dir, { withFileTypes: true });
-    for (const entry of entries) {
-      if (results.length >= maxResults) break;
-      if (entry.name.startsWith('.')) continue;
-      const fullPath = path.join(dir, entry.name);
-      if (isIgnored(fullPath)) continue;
-      if (entry.isDirectory()) {
-        await walk(fullPath);
-        continue;
-      }
-      if (!entry.name.endsWith('.md')) continue;
-      let content: string;
-      try {
-        content = await fs.readFile(fullPath, 'utf-8');
-      } catch {
-        continue; // skip unreadable files (e.g. permission denied)
-      }
-      const frontmatter = parseFrontmatter(content);
-      if (!frontmatter || !(field in frontmatter)) continue;
-      if (!frontmatterValueMatches(frontmatter[field], matchType, value)) continue;
-      const rel = path.relative(VAULT_ROOT, fullPath);
-      const titleValue = frontmatter.title;
-      const title =
-        typeof titleValue === 'string' && titleValue.trim() !== ''
-          ? titleValue
-          : path.basename(rel, '.md');
-      results.push({ path: rel, title, frontmatter });
+  for await (const { fullPath, relPath } of walkVaultFiles({ folder })) {
+    if (results.length >= maxResults) break;
+    let content: string;
+    try {
+      content = await fs.readFile(fullPath, 'utf-8');
+    } catch {
+      continue; // skip unreadable files (e.g. permission denied)
     }
+    const frontmatter = parseFrontmatter(content);
+    if (!frontmatter || !(field in frontmatter)) continue;
+    if (!frontmatterValueMatches(frontmatter[field], matchType, value)) continue;
+    const titleValue = frontmatter.title;
+    const title =
+      typeof titleValue === 'string' && titleValue.trim() !== ''
+        ? titleValue
+        : path.basename(relPath, '.md');
+    results.push({ path: relPath, title, frontmatter });
   }
-
-  await walk(root);
   return results;
 }
 
@@ -1035,29 +1037,15 @@ export async function findByTitle(query: string, exact = false, limit = 50): Pro
   const normalizedQuery = query.toLowerCase();
   const maxResults = limit > 0 ? limit : Number.POSITIVE_INFINITY;
 
-  async function walk(dir: string) {
-    if (results.length >= maxResults) return;
-    const entries = await fs.readdir(dir, { withFileTypes: true });
-    for (const entry of entries) {
-      if (results.length >= maxResults) break;
-      if (entry.name.startsWith('.')) continue;
-      const fullPath = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        await walk(fullPath);
-      } else if (entry.name.endsWith('.md')) {
-        const title = entry.name.slice(0, -3);
-        const normalizedTitle = title.toLowerCase();
-        const matched = exact
-          ? normalizedTitle === normalizedQuery
-          : normalizedTitle.includes(normalizedQuery);
-        if (matched) {
-          results.push({ path: path.relative(VAULT_ROOT, fullPath), title });
-        }
-      }
-    }
+  for await (const { relPath, name } of walkVaultFiles()) {
+    if (results.length >= maxResults) break;
+    const title = name.slice(0, -3);
+    const normalizedTitle = title.toLowerCase();
+    const matched = exact
+      ? normalizedTitle === normalizedQuery
+      : normalizedTitle.includes(normalizedQuery);
+    if (matched) results.push({ path: relPath, title });
   }
-
-  await walk(VAULT_ROOT);
   return results;
 }
 
@@ -1286,27 +1274,14 @@ export function invalidateResolverCache(): void {
 // before recursion so "first match wins" is deterministic across filesystems.
 async function buildResolverTitleIndex(): Promise<Map<string, string[]>> {
   const index = new Map<string, string[]>();
-
-  async function walk(dir: string) {
-    const entries = await fs.readdir(dir, { withFileTypes: true });
-    entries.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
-    for (const entry of entries) {
-      if (entry.name.startsWith('.')) continue;
-      const fullPath = path.join(dir, entry.name);
-      if (isIgnored(fullPath)) continue;
-      if (entry.isDirectory()) {
-        await walk(fullPath);
-      } else if (/\.md$/i.test(entry.name)) {
-        const key = entry.name.slice(0, -3).toLowerCase();
-        const rel = path.relative(VAULT_ROOT, fullPath);
-        const existing = index.get(key);
-        if (existing) existing.push(rel);
-        else index.set(key, [rel]);
-      }
-    }
+  // sort: true so directory entries are visited in a stable order and "first match wins" is
+  // deterministic across filesystems.
+  for await (const { relPath, name } of walkVaultFiles({ sort: true })) {
+    const key = name.slice(0, -3).toLowerCase();
+    const existing = index.get(key);
+    if (existing) existing.push(relPath);
+    else index.set(key, [relPath]);
   }
-
-  await walk(VAULT_ROOT);
   return index;
 }
 
@@ -1395,24 +1370,12 @@ export interface LinkResult {
   path: string | null; // null if the linked note wasn't found in the vault
 }
 
-// Build a lowercase-title → relative-path index from a single vault walk (directory reads only).
+// Build a lowercase-title → relative-path index from a single vault walk.
 async function buildTitleIndex(): Promise<Map<string, string>> {
   const index = new Map<string, string>();
-
-  async function walk(dir: string) {
-    const entries = await fs.readdir(dir, { withFileTypes: true });
-    for (const entry of entries) {
-      if (entry.name.startsWith('.')) continue;
-      const fullPath = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        await walk(fullPath);
-      } else if (entry.name.endsWith('.md')) {
-        index.set(entry.name.slice(0, -3).toLowerCase(), path.relative(VAULT_ROOT, fullPath));
-      }
-    }
+  for await (const { relPath, name } of walkVaultFiles()) {
+    index.set(name.slice(0, -3).toLowerCase(), relPath);
   }
-
-  await walk(VAULT_ROOT);
   return index;
 }
 
@@ -1537,54 +1500,37 @@ interface TagAggregate {
   occurrences: number;
 }
 
-// Single pass over the vault (or a folder), reading each note once and
-// aggregating tag counts in memory. Returns the per-tag aggregate keyed by
-// lowercased tag. Reuses the searchContent traversal pattern: skips dotfiles,
-// honours .mcpignore (via resolveSafePath on the scoped root and isIgnored on
-// each entry), and only reads .md files.
+// Single pass over the vault (or a folder) via the shared walkVaultFiles traversal, reading each
+// note once and aggregating tag counts in memory. Returns the per-tag aggregate keyed by lowercased
+// tag.
 async function scanTags(options: TagScanOptions = {}): Promise<Map<string, TagAggregate>> {
   const { folder } = options;
-  const root = folder ? resolveSafePath(folder) : VAULT_ROOT;
   const aggregates = new Map<string, TagAggregate>();
 
-  async function walk(dir: string) {
-    const entries = await fs.readdir(dir, { withFileTypes: true });
-    for (const entry of entries) {
-      if (entry.name.startsWith('.')) continue;
-      const fullPath = path.join(dir, entry.name);
-      if (isIgnored(fullPath)) continue;
-      if (entry.isDirectory()) {
-        await walk(fullPath);
-        continue;
+  for await (const { fullPath, relPath } of walkVaultFiles({ folder })) {
+    let content: string;
+    try {
+      content = await fs.readFile(fullPath, 'utf-8');
+    } catch {
+      continue; // skip unreadable files (e.g. permission denied)
+    }
+    // Per-note dedupe so one note carrying `#a` twice counts as one note for
+    // noteCount but two for occurrences. Keyed by lowercased tag.
+    const seenInNote = new Set<string>();
+    for (const tag of collectNoteTags(content)) {
+      const key = tag.toLowerCase();
+      let agg = aggregates.get(key);
+      if (!agg) {
+        agg = { display: tag, notePaths: [], occurrences: 0 };
+        aggregates.set(key, agg);
       }
-      if (!entry.name.endsWith('.md')) continue;
-      let content: string;
-      try {
-        content = await fs.readFile(fullPath, 'utf-8');
-      } catch {
-        continue; // skip unreadable files (e.g. permission denied)
-      }
-      const rel = path.relative(VAULT_ROOT, fullPath);
-      // Per-note dedupe so one note carrying `#a` twice counts as one note for
-      // noteCount but two for occurrences. Keyed by lowercased tag.
-      const seenInNote = new Set<string>();
-      for (const tag of collectNoteTags(content)) {
-        const key = tag.toLowerCase();
-        let agg = aggregates.get(key);
-        if (!agg) {
-          agg = { display: tag, notePaths: [], occurrences: 0 };
-          aggregates.set(key, agg);
-        }
-        agg.occurrences++;
-        if (!seenInNote.has(key)) {
-          seenInNote.add(key);
-          agg.notePaths.push(rel);
-        }
+      agg.occurrences++;
+      if (!seenInNote.has(key)) {
+        seenInNote.add(key);
+        agg.notePaths.push(relPath);
       }
     }
   }
-
-  await walk(root);
   return aggregates;
 }
 
@@ -1875,25 +1821,9 @@ function baseMentionsOldFile(content: string, oldName: string, oldPath: string):
 // .mcpignore-blocked paths), excluding the moved file itself.
 async function collectRewriteTargets(excludeRel: string): Promise<string[]> {
   const out: string[] = [];
-
-  async function walk(dir: string) {
-    const entries = await fs.readdir(dir, { withFileTypes: true });
-    for (const entry of entries) {
-      if (entry.name.startsWith('.')) continue;
-      const fullPath = path.join(dir, entry.name);
-      if (isIgnored(fullPath)) continue;
-      if (entry.isDirectory()) {
-        await walk(fullPath);
-        continue;
-      }
-      if (!/\.(md|canvas|base)$/i.test(entry.name)) continue;
-      const rel = path.relative(VAULT_ROOT, fullPath);
-      if (rel === excludeRel) continue;
-      out.push(rel);
-    }
+  for await (const { relPath } of walkVaultFiles({ includeFile: name => /\.(md|canvas|base)$/i.test(name) })) {
+    if (relPath !== excludeRel) out.push(relPath);
   }
-
-  await walk(VAULT_ROOT);
   return out;
 }
 
