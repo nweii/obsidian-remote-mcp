@@ -1,8 +1,8 @@
 # Guided setup
 
-The simplest way to stand this up is to hand it to a coding agent. Paste the prompt below into one — Claude Code, Codex, Cursor, or anything that can read files, run commands, and search the web. Use a coding agent rather than a plain chat: it can do the setup *with* you — read the repo, write your config, run things, check the current provider docs — instead of only telling you what to do.
+Paste the prompt below into a coding agent (Claude Code, Codex, Cursor, or similar). If it can read files and run commands, it'll carry out the setup with you.
 
-Drop the prompt wherever the setup is happening (your server, your infra folder, wherever the vault and deployment will live). You don't need to be inside this repo.
+You don't need to be inside this repo; paste it wherever you're setting things up.
 
 ```
 I want to set up obsidian-remote-mcp — a self-hosted server that gives my AI
