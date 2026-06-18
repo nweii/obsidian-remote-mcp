@@ -55,36 +55,6 @@ The server and its tools are built in. The rest you choose to fit your setup:
 - **auth** — built in (OAuth or API key); you can also put an external gate like Cloudflare Zero Trust in front. See [Authentication](#authentication).
 - **client** — the app that talks to the server.
 
-## Tools
-
-The server currently exposes these tools:
-
-| Tool | Description |
-|------|-------------|
-| `vault_context` | Read the vault guidance note configured by `VAULT_CONTEXT_PATH`, or fall back to `AGENTS.md` / `CLAUDE.md` |
-| `vault_read` | Full note text (`mode` full, default) with a version for safe updates, or list one folder level (`mode` `list`; `path` `""` = vault root) |
-| `vault_batch_read` | Read several notes in one call by path or title; `include_content: false` returns just frontmatter for cheap triage |
-| `vault_outline` | All `#` headings in a note (one per line); use before `vault_read_section` |
-| `vault_read_section` | Body under a single heading (`heading` = text without `#`, case-insensitive) |
-| `vault_read_attachment` | Read a binary attachment by path; images return a renderable image block, other types base64 plus mime/size; `stat_only` checks size first (read-only) |
-| `vault_frontmatter` | Read YAML frontmatter from a note; optional `property` for a single key |
-| `vault_links` | Read outgoing wikilinks and optional backlinks |
-| `vault_create` | Create a new note |
-| `vault_update` | Replace a note's full contents; optional `base_version` rejects stale writes |
-| `vault_set_frontmatter_property` | Set one frontmatter property without rewriting the note body |
-| `vault_batch_frontmatter_update` | Set frontmatter properties on several notes in one call |
-| `vault_edit` | Append, prepend, or replace exact text within a note |
-| `vault_edit_section` | Append, prepend, or replace the body under one heading |
-| `vault_trash` | Move a note to `.trash` |
-| `vault_move` | Move or rename any vault file by explicit path and rewrite the wikilinks that point at it; defaults to a dry run that shows the plan and writes nothing |
-| `vault_search_title` | Find notes by filename (partial or exact); returns paths for `vault_read` |
-| `vault_search_content` | Regex search in note bodies; optional `folder` to scope large vaults |
-| `vault_search_frontmatter` | Find notes by a frontmatter property (match type `exact`, `contains`, or `exists`) |
-| `vault_tags` | List all tags with note counts, or note paths for one `tag`; counts frontmatter and inline `#tag` |
-| `vault_periodic_note` | Read or create a daily, weekly, monthly, quarterly, or yearly note using a per-cadence path template |
-| `vault_clip_url` | Save a web page to the vault as a markdown note |
-| `vault_feedback` | Log a structured note when an agent gets stuck or wants a tool that doesn't exist |
-
 ## Vault edits
 
 The server edits the same files Obsidian and Obsidian Sync are using. Two things shape how it writes:
@@ -108,7 +78,7 @@ The configurable parts are set as [environment variables](#environment-variables
 
 ## Quick start
 
-Prefer to hand it to a coding agent? [Setup prompt.md](Setup%20prompt.md) is a paste-in prompt that sets it up *with* you. Or do it by hand:
+Prefer to hand it to a coding agent? [SETUP-PROMPT.md](SETUP-PROMPT.md) is a paste-in prompt that sets it up with you. Or do it by hand:
 
 Getting from a vault on disk to an AI client reading it takes three steps:
 
@@ -184,6 +154,36 @@ Every client needs two things: your MCP URL (`https://mcp.example.com/mcp` — b
 | **API key** (fixed bearer token) | The client's setup form has an "API key" field, or it can't open a browser (Poke, scripts, `mcp-remote`) | `MCP_STATIC_BEARER_TOKEN` set to a long random string |
 
 Details for each mechanism are under [Authentication](#authentication), and per-client setup (Claude.ai, Cursor, ChatGPT, Poke, scripts) is in [clients.md](clients.md).
+
+## Tools
+
+The server currently exposes these tools:
+
+| Tool | Description |
+|------|-------------|
+| `vault_context` | Read the vault guidance note configured by `VAULT_CONTEXT_PATH`, or fall back to `AGENTS.md` / `CLAUDE.md` |
+| `vault_read` | Full note text (`mode` full, default) with a version for safe updates, or list one folder level (`mode` `list`; `path` `""` = vault root) |
+| `vault_batch_read` | Read several notes in one call by path or title; `include_content: false` returns just frontmatter for cheap triage |
+| `vault_outline` | All `#` headings in a note (one per line); use before `vault_read_section` |
+| `vault_read_section` | Body under a single heading (`heading` = text without `#`, case-insensitive) |
+| `vault_read_attachment` | Read a binary attachment by path; images return a renderable image block, other types base64 plus mime/size; `stat_only` checks size first (read-only) |
+| `vault_frontmatter` | Read YAML frontmatter from a note; optional `property` for a single key |
+| `vault_links` | Read outgoing wikilinks and optional backlinks |
+| `vault_create` | Create a new note |
+| `vault_update` | Replace a note's full contents; optional `base_version` rejects stale writes |
+| `vault_set_frontmatter_property` | Set one frontmatter property without rewriting the note body |
+| `vault_batch_frontmatter_update` | Set frontmatter properties on several notes in one call |
+| `vault_edit` | Append, prepend, or replace exact text within a note |
+| `vault_edit_section` | Append, prepend, or replace the body under one heading |
+| `vault_trash` | Move a note to `.trash` |
+| `vault_move` | Move or rename any vault file by explicit path and rewrite the wikilinks that point at it; defaults to a dry run that shows the plan and writes nothing |
+| `vault_search_title` | Find notes by filename (partial or exact); returns paths for `vault_read` |
+| `vault_search_content` | Regex search in note bodies; optional `folder` to scope large vaults |
+| `vault_search_frontmatter` | Find notes by a frontmatter property (match type `exact`, `contains`, or `exists`) |
+| `vault_tags` | List all tags with note counts, or note paths for one `tag`; counts frontmatter and inline `#tag` |
+| `vault_periodic_note` | Read or create a daily, weekly, monthly, quarterly, or yearly note using a per-cadence path template |
+| `vault_clip_url` | Save a web page to the vault as a markdown note |
+| `vault_feedback` | Log a structured note when an agent gets stuck or wants a tool that doesn't exist |
 
 ## Server configuration
 
