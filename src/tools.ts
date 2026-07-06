@@ -4,9 +4,8 @@ import { z } from "zod";
 import * as vault from "./vault.js";
 import { frontmatterValueToString } from "./frontmatter.js";
 import { registerClipTool } from "./clip.js";
-import { logFeedback, isLoggingEnabled } from "./log.js";
+import { registerLogged, logFeedback, isLoggingEnabled, type ToolResult } from "./log.js";
 import { parseLocalYmd, localYmd } from "./date.js";
-import { registerLogged, type ToolResult } from "./register-logged.js";
 
 // Hard cap on the folder-tree walk inside vault_context. The tree is a bonus orientation
 // section; if filesystem traversal stalls (slow disk, network mount, huge vault) we'd rather

@@ -1,7 +1,7 @@
 // ABOUTME: Tests for the OAuth approval-page password — the page issues a code on click when no
 // password is set, requires the correct password when VAULT_APPROVAL_PASSWORD is set, and the
-// startup guard (assertApprovalGuardConfigured) refuses to run unless an approval password, a
-// client secret, or VAULT_APPROVAL_OPEN is configured.
+// construction-time guard refuses to build the app unless an approval password, a client secret, or
+// VAULT_APPROVAL_OPEN is configured.
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { createHash } from 'crypto';
 import { mkdtemp, rm } from 'fs/promises';
@@ -9,8 +9,7 @@ import os from 'os';
 import path from 'path';
 import type { Express } from 'express';
 
-let createApp: () => Express;
-let assertApprovalGuardConfigured: () => void;
+let createApp: () => { app: Express };
 let vaultPath: string;
 
 const PARAMS = {
@@ -79,7 +78,6 @@ beforeAll(async () => {
   delete process.env.VAULT_APPROVAL_PASSWORD;
   delete process.env.VAULT_APPROVAL_OPEN;
   createApp = (await import('../src/app.js')).createApp;
-  assertApprovalGuardConfigured = (await import('../src/auth.js')).assertApprovalGuardConfigured;
 });
 
 afterAll(async () => {
@@ -88,8 +86,8 @@ afterAll(async () => {
 
 describe('approval page without a password (click-to-approve)', () => {
   test('GET /authorize renders no password field', async () => {
-    await withEnvs({ VAULT_APPROVAL_PASSWORD: undefined }, async () => {
-      const app = createApp();
+    await withEnvs({ VAULT_APPROVAL_PASSWORD: undefined, VAULT_APPROVAL_OPEN: 'true' }, async () => {
+      const { app } = createApp();
       const { base, close } = await listen(app);
       try {
         const html = await (await getAuthorize(base)).text();
@@ -102,8 +100,8 @@ describe('approval page without a password (click-to-approve)', () => {
   });
 
   test('POST /authorize issues a code with no password', async () => {
-    await withEnvs({ VAULT_APPROVAL_PASSWORD: undefined }, async () => {
-      const app = createApp();
+    await withEnvs({ VAULT_APPROVAL_PASSWORD: undefined, VAULT_APPROVAL_OPEN: 'true' }, async () => {
+      const { app } = createApp();
       const { base, close } = await listen(app);
       try {
         const res = await postAuthorize(base);
@@ -121,7 +119,7 @@ describe('approval page with a password', () => {
 
   test('GET /authorize renders a password field and no username field', async () => {
     await withEnvs(PW, async () => {
-      const app = createApp();
+      const { app } = createApp();
       const { base, close } = await listen(app);
       try {
         const html = await (await getAuthorize(base)).text();
@@ -135,7 +133,7 @@ describe('approval page with a password', () => {
 
   test('POST without a password is rejected with 401 and no redirect', async () => {
     await withEnvs(PW, async () => {
-      const app = createApp();
+      const { app } = createApp();
       const { base, close } = await listen(app);
       try {
         const res = await postAuthorize(base);
@@ -149,7 +147,7 @@ describe('approval page with a password', () => {
 
   test('POST with the wrong password is rejected with 401', async () => {
     await withEnvs(PW, async () => {
-      const app = createApp();
+      const { app } = createApp();
       const { base, close } = await listen(app);
       try {
         expect((await postAuthorize(base, { password: 'wrong' })).status).toBe(401);
@@ -161,7 +159,7 @@ describe('approval page with a password', () => {
 
   test('POST with the correct password issues a code', async () => {
     await withEnvs(PW, async () => {
-      const app = createApp();
+      const { app } = createApp();
       const { base, close } = await listen(app);
       try {
         const res = await postAuthorize(base, { password: 'hunter2' });
@@ -175,7 +173,7 @@ describe('approval page with a password', () => {
 
   test('state round-trips to the redirect after a correct password', async () => {
     await withEnvs(PW, async () => {
-      const app = createApp();
+      const { app } = createApp();
       const { base, close } = await listen(app);
       try {
         const res = await postAuthorize(base, { password: 'hunter2', state: 'xyz-state' });
@@ -189,7 +187,7 @@ describe('approval page with a password', () => {
 
   test('the 401 re-render preserves state and shows the password field again', async () => {
     await withEnvs(PW, async () => {
-      const app = createApp();
+      const { app } = createApp();
       const { base, close } = await listen(app);
       try {
         const res = await postAuthorize(base, { password: 'wrong', state: 'keepme' });
@@ -204,32 +202,35 @@ describe('approval page with a password', () => {
   });
 });
 
-describe('assertApprovalGuardConfigured (startup guard)', () => {
+// The startup guard moved from a standalone assertApprovalGuardConfigured() to createApp() itself:
+// createAuth throws at construction when /authorize is unguarded, the same guarantee enforced one
+// layer up. These tests now assert construction throws (or does not) rather than a separate function.
+describe('construction-time approval guard', () => {
   test('throws when no password, client secret, or open opt-out is set', async () => {
     await withEnvs(
       { VAULT_APPROVAL_PASSWORD: undefined, VAULT_APPROVAL_OPEN: undefined, MCP_CLIENT_SECRET: undefined },
-      () => { expect(() => assertApprovalGuardConfigured()).toThrow(/Refusing to start/); },
+      () => { expect(() => createApp()).toThrow(/Refusing to start/); },
     );
   });
 
-  test('passes when VAULT_APPROVAL_PASSWORD is set', async () => {
+  test('constructs when VAULT_APPROVAL_PASSWORD is set', async () => {
     await withEnvs(
       { VAULT_APPROVAL_PASSWORD: 'hunter2', VAULT_APPROVAL_OPEN: undefined, MCP_CLIENT_SECRET: undefined },
-      () => { expect(() => assertApprovalGuardConfigured()).not.toThrow(); },
+      () => { expect(() => createApp()).not.toThrow(); },
     );
   });
 
-  test('passes when MCP_CLIENT_SECRET is set (it guards token exchange)', async () => {
+  test('constructs when MCP_CLIENT_SECRET is set (it guards token exchange)', async () => {
     await withEnvs(
       { VAULT_APPROVAL_PASSWORD: undefined, VAULT_APPROVAL_OPEN: undefined, MCP_CLIENT_SECRET: 'shh' },
-      () => { expect(() => assertApprovalGuardConfigured()).not.toThrow(); },
+      () => { expect(() => createApp()).not.toThrow(); },
     );
   });
 
-  test('passes when VAULT_APPROVAL_OPEN=true', async () => {
+  test('constructs when VAULT_APPROVAL_OPEN=true', async () => {
     await withEnvs(
       { VAULT_APPROVAL_PASSWORD: undefined, VAULT_APPROVAL_OPEN: 'true', MCP_CLIENT_SECRET: undefined },
-      () => { expect(() => assertApprovalGuardConfigured()).not.toThrow(); },
+      () => { expect(() => createApp()).not.toThrow(); },
     );
   });
 });

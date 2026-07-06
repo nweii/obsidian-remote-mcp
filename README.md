@@ -142,7 +142,7 @@ docker compose logs -f    # watch output
 
 Remote MCP and OAuth require **HTTPS**. Use a reverse proxy (Caddy, nginx, Cloudflare Tunnel, etc.) to handle TLS in front of the app and expose a public URL like `https://mcp.example.com`. Set **`MCP_BASE_URL`** on the server to that origin **without** the `/mcp` path — it must match what users see in the browser bar.
 
-If you use Cloudflare Zero Trust, a practical pattern is to put the identity gate **only** on `/authorize`, so users log in to approve access while `/.well-known/*`, `/oauth/token`, and `/mcp` stay reachable for the protocol.
+If you use Cloudflare Zero Trust, a practical pattern is to put the identity gate **only** on `/authorize`, so users log in to approve access while `/.well-known/*`, `/token`, and `/mcp` stay reachable for the protocol.
 
 ### 3. Connect a client
 
@@ -193,14 +193,14 @@ Every `POST /mcp` request must send `Authorization: Bearer …`. You can offer *
 
 #### OAuth (browser sign-in)
 
-For clients where the user can open a browser. The server uses **OAuth 2.1**: approve on `/authorize`, exchange the short-lived code at `POST /oauth/token`, then send the issued access token in `Authorization` on `/mcp`.
+For clients where the user can open a browser. The server uses **OAuth 2.1**: approve on `/authorize`, exchange the short-lived code at `POST /token`, then send the issued access token in `Authorization` on `/mcp`.
 
 The server does **not** support dynamic client registration (DCR). You configure one fixed client ID, and clients present that same ID — there is no `/register` endpoint. Clients that expect DCR need their manual-credentials path (for example, Poke's Kitchen templates).
 
 The relevant variables:
 
 - **`MCP_CLIENT_ID`** (required) — the one client ID the server accepts.
-- **`MCP_CLIENT_SECRET`** (optional) — if set, every OAuth client must send the same value at `POST /oauth/token`. If unset, token exchange relies on PKCE alone — use HTTPS and limit who can reach `/authorize`.
+- **`MCP_CLIENT_SECRET`** (optional) — if set, every OAuth client must send the same value at `POST /token`. If unset, token exchange relies on PKCE alone — use HTTPS and limit who can reach `/authorize`.
 - **`MCP_BASE_URL`** — must match the public site origin (no `/mcp`).
 - **`MCP_ALLOWED_REDIRECT_URIS`** (optional) — comma-separated allowlist of OAuth callback URIs. When unset, the server allows the callbacks for Claude.ai (`https://claude.ai/api/mcp/auth_callback`), ChatGPT connectors (`https://chatgpt.com/connector_platform_oauth_redirect`), Cursor (`cursor://anysphere.cursor-mcp/oauth/callback`), and Poke (`https://poke.com/api/v1/mcp/callback`) out of the box. Setting the env var **replaces** that default list, so include every callback you want to keep.
 - **`TOKEN_STORE_PATH`** (default `./tokens.json`) — stores OAuth-issued tokens after login so clients survive server restarts.
@@ -209,7 +209,7 @@ The relevant variables:
 
 For scripts and clients that cannot open a browser, use a long random string as your API key for  `MCP_STATIC_BEARER_TOKEN`  on the server end. Then give the client the same value for `Authorization: Bearer [your key]`. 
 
-The client will then use this for every `/mcp` request. The server compares it directly, skipping `/authorize`, `POST /oauth/token`, and `TOKEN_STORE_PATH` for that client. This works alongside OAuth — setting it does not disable the browser flow for other clients.
+The client will then use this for every `/mcp` request. The server compares it directly, skipping `/authorize`, `POST /token`, and `TOKEN_STORE_PATH` for that client. This works alongside OAuth — setting it does not disable the browser flow for other clients.
 
 The trade-off versus OAuth is that the token is long-lived and held by the client service. You'll need to replace this token with a new one if you ever suspect exposure.
 
