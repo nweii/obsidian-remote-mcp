@@ -5,8 +5,7 @@ import os from 'os';
 import path from 'path';
 import type { Express } from 'express';
 
-let createApp: () => Express;
-let seedTestToken: () => string;
+let createApp: () => { app: Express; auth: { seedTestToken(): string } };
 let vault: typeof import('../src/vault.js');
 let vaultPath: string;
 
@@ -65,15 +64,17 @@ beforeAll(async () => {
   process.env.MCP_CLIENT_SECRET = 'test-secret';
   process.env.MCP_BASE_URL = 'https://example.test';
   process.env.VAULT_MCP_TEST = '1';
+  // createAuth now enforces the approval guard at construction. This file's guard is the client
+  // secret, but one case deletes it to exercise the PKCE-only exchange; the open flag keeps
+  // construction working there (the secret is still enforced at the token endpoint when set).
+  process.env.VAULT_APPROVAL_OPEN = 'true';
   // Defensive: another test file (e.g. vault-resolve.test.ts) may set a long
   // resolver TTL; clear so this file's resolver behavior is predictable.
   delete process.env.RESOLVE_INDEX_TTL_MS;
 
   const appMod = await import('../src/app.js');
-  const authMod = await import('../src/auth.js');
   vault = await import('../src/vault.js');
   createApp = appMod.createApp;
-  seedTestToken = authMod.seedTestToken;
 });
 
 afterAll(async () => {
@@ -81,26 +82,28 @@ afterAll(async () => {
   delete process.env.VAULT_CONTEXT_PATH;
   delete process.env.VAULT_DISPLAY_NAME;
   delete process.env.DAILY_NOTE_PATH_TEMPLATE;
+  delete process.env.VAULT_APPROVAL_OPEN;
   await rm(vaultPath, { recursive: true, force: true });
 });
 
 describe('OAuth discovery', () => {
   test('protected resource metadata includes resource and authorization_servers', async () => {
-    const app = createApp();
+    const { app, auth } = createApp();
     const { base, close } = await listen(app);
     try {
       const res = await fetch(`${base}/.well-known/oauth-protected-resource`);
       expect(res.ok).toBe(true);
       const body = (await res.json()) as { resource: string; authorization_servers: string[] };
-      expect(body.resource).toBe('https://example.test');
-      expect(body.authorization_servers).toEqual(['https://example.test']);
+      // Re-pin (delta: issuer/resource URLs gain a trailing slash, frozen at construction).
+      expect(body.resource).toBe('https://example.test/');
+      expect(body.authorization_servers).toEqual(['https://example.test/']);
     } finally {
       await close();
     }
   });
 
   test('authorization server metadata exposes token and authorize endpoints', async () => {
-    const app = createApp();
+    const { app, auth } = createApp();
     const { base, close } = await listen(app);
     try {
       const res = await fetch(`${base}/.well-known/oauth-authorization-server`);
@@ -111,10 +114,13 @@ describe('OAuth discovery', () => {
         token_endpoint: string;
         token_endpoint_auth_methods_supported: string[];
       };
-      expect(body.issuer).toBe('https://example.test');
+      // Re-pin (delta: issuer gains a trailing slash; token endpoint /oauth/token → /token;
+      // token_endpoint_auth_methods_supported always includes 'none' even with a secret set). The
+      // authorization_endpoint path is unchanged.
+      expect(body.issuer).toBe('https://example.test/');
       expect(body.authorization_endpoint).toBe('https://example.test/authorize');
-      expect(body.token_endpoint).toBe('https://example.test/oauth/token');
-      expect(body.token_endpoint_auth_methods_supported).toEqual(['client_secret_post']);
+      expect(body.token_endpoint).toBe('https://example.test/token');
+      expect(body.token_endpoint_auth_methods_supported).toEqual(['client_secret_post', 'none']);
     } finally {
       await close();
     }
@@ -123,12 +129,12 @@ describe('OAuth discovery', () => {
 
 describe('OAuth token endpoint', () => {
   test('requires client_secret when MCP_CLIENT_SECRET is set', async () => {
-    const app = createApp();
+    const { app, auth } = createApp();
     const { base, close } = await listen(app);
     try {
       const verifier = 'verifier-without-secret';
       const code = await issueAuthCode(base, toCodeChallenge(verifier));
-      const res = await fetch(`${base}/oauth/token`, {
+      const res = await fetch(`${base}/token`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded',
@@ -142,7 +148,8 @@ describe('OAuth token endpoint', () => {
         }),
       });
 
-      expect(res.status).toBe(401);
+      // Re-pin (delta: client-secret failures move 401 → 400 at the token endpoint; error unchanged).
+      expect(res.status).toBe(400);
       const body = (await res.json()) as { error?: string };
       expect(body.error).toBe('invalid_client');
     } finally {
@@ -151,12 +158,12 @@ describe('OAuth token endpoint', () => {
   });
 
   test('accepts valid client_secret when provided', async () => {
-    const app = createApp();
+    const { app, auth } = createApp();
     const { base, close } = await listen(app);
     try {
       const verifier = 'verifier-with-secret';
       const code = await issueAuthCode(base, toCodeChallenge(verifier));
-      const res = await fetch(`${base}/oauth/token`, {
+      const res = await fetch(`${base}/token`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded',
@@ -180,12 +187,12 @@ describe('OAuth token endpoint', () => {
   });
 
   test('rejects invalid client_secret when provided', async () => {
-    const app = createApp();
+    const { app, auth } = createApp();
     const { base, close } = await listen(app);
     try {
       const verifier = 'verifier-bad-secret';
       const code = await issueAuthCode(base, toCodeChallenge(verifier));
-      const res = await fetch(`${base}/oauth/token`, {
+      const res = await fetch(`${base}/token`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded',
@@ -200,7 +207,8 @@ describe('OAuth token endpoint', () => {
         }),
       });
 
-      expect(res.status).toBe(401);
+      // Re-pin (delta: client-secret failures move 401 → 400 at the token endpoint; error unchanged).
+      expect(res.status).toBe(400);
       const body = (await res.json()) as { error?: string };
       expect(body.error).toBe('invalid_client');
     } finally {
@@ -211,12 +219,12 @@ describe('OAuth token endpoint', () => {
   test('allows PKCE-only exchange when MCP_CLIENT_SECRET is unset', async () => {
     const prev = process.env.MCP_CLIENT_SECRET;
     delete process.env.MCP_CLIENT_SECRET;
-    const app = createApp();
+    const { app, auth } = createApp();
     const { base, close } = await listen(app);
     try {
       const verifier = 'verifier-without-configured-secret';
       const code = await issueAuthCode(base, toCodeChallenge(verifier));
-      const res = await fetch(`${base}/oauth/token`, {
+      const res = await fetch(`${base}/token`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded',
@@ -630,7 +638,7 @@ describe('Vault-derived defaults', () => {
 describe('CORS', () => {
   test('allows all origins by default', async () => {
     delete process.env.CORS_ALLOWED_ORIGINS;
-    const app = createApp();
+    const { app, auth } = createApp();
     const { base, close } = await listen(app);
     try {
       const res = await fetch(`${base}/.well-known/oauth-protected-resource`, {
@@ -644,11 +652,15 @@ describe('CORS', () => {
 
   test('reflects configured allowed origins', async () => {
     process.env.CORS_ALLOWED_ORIGINS = 'https://claude.ai,https://app.example.com';
-    const app = createApp();
+    const { app, auth } = createApp();
     const { base, close } = await listen(app);
     try {
-      const res = await fetch(`${base}/.well-known/oauth-protected-resource`, {
-        headers: { Origin: 'https://claude.ai' },
+      // Re-pin (delta: the SDK applies its own cors() to the discovery/OAuth endpoints independent of
+      // the kit's CORS config, always answering '*'). The kit's configurable CORS still governs the
+      // non-auth routes, so the configured-origin reflection is characterized on /mcp. (The bare GET
+      // is unauthenticated → 401, but the CORS middleware sets the header before the auth check.)
+      const res = await fetch(`${base}/mcp`, {
+        headers: { Origin: 'https://claude.ai', Accept: 'text/event-stream' },
       });
       expect(res.headers.get('access-control-allow-origin')).toBe('https://claude.ai');
     } finally {
@@ -659,7 +671,7 @@ describe('CORS', () => {
 
   test('rejects disallowed preflight origins', async () => {
     process.env.CORS_ALLOWED_ORIGINS = 'https://claude.ai';
-    const app = createApp();
+    const { app, auth } = createApp();
     const { base, close } = await listen(app);
     try {
       const res = await fetch(`${base}/mcp`, {
@@ -676,7 +688,7 @@ describe('CORS', () => {
 
 describe('MCP /mcp', () => {
   test('GET without Authorization returns 401', async () => {
-    const app = createApp();
+    const { app, auth } = createApp();
     const { base, close } = await listen(app);
     try {
       const res = await fetch(`${base}/mcp`, {
@@ -689,7 +701,7 @@ describe('MCP /mcp', () => {
   });
 
   test('GET with invalid Bearer returns 401', async () => {
-    const app = createApp();
+    const { app, auth } = createApp();
     const { base, close } = await listen(app);
     try {
       const res = await fetch(`${base}/mcp`, {
@@ -705,10 +717,10 @@ describe('MCP /mcp', () => {
   });
 
   test('GET with valid token returns 405 (no standalone SSE)', async () => {
-    const app = createApp();
+    const { app, auth } = createApp();
     const { base, close } = await listen(app);
     try {
-      const token = seedTestToken();
+      const token = auth.seedTestToken();
       const res = await fetch(`${base}/mcp`, {
         headers: {
           Accept: 'text/event-stream',
@@ -726,7 +738,7 @@ describe('MCP /mcp', () => {
     const prev = process.env.MCP_STATIC_BEARER_TOKEN;
     process.env.MCP_STATIC_BEARER_TOKEN = 'static-bearer-test-secret';
     try {
-      const app = createApp();
+      const { app, auth } = createApp();
       const { base, close } = await listen(app);
       try {
         const res = await fetch(`${base}/mcp`, {
@@ -749,7 +761,7 @@ describe('MCP /mcp', () => {
     const prev = process.env.MCP_STATIC_BEARER_TOKEN;
     process.env.MCP_STATIC_BEARER_TOKEN = 'static-bearer-test-secret';
     try {
-      const app = createApp();
+      const { app, auth } = createApp();
       const { base, close } = await listen(app);
       try {
         const res = await fetch(`${base}/mcp`, {
@@ -783,7 +795,7 @@ describe('MCP /mcp', () => {
   });
 
   test('POST without Authorization returns 401', async () => {
-    const app = createApp();
+    const { app, auth } = createApp();
     const { base, close } = await listen(app);
     try {
       const res = await fetch(`${base}/mcp`, {
@@ -810,10 +822,10 @@ describe('MCP /mcp', () => {
   });
 
   test('POST initialize with valid token returns JSON-RPC result', async () => {
-    const app = createApp();
+    const { app, auth } = createApp();
     const { base, close } = await listen(app);
     try {
-      const token = seedTestToken();
+      const token = auth.seedTestToken();
       const res = await fetch(`${base}/mcp`, {
         method: 'POST',
         headers: {
@@ -892,10 +904,10 @@ describe('Title resolution via tool round-trips', () => {
     await writeFile(titleFile, '# resolved\nhello\n', 'utf-8');
     vault.invalidateResolverCache();
 
-    const app = createApp();
+    const { app, auth } = createApp();
     const { base, close } = await listen(app);
     try {
-      const token = seedTestToken();
+      const token = auth.seedTestToken();
       const result = await callTool(base, token, 'vault_read', { path: 'IntegrationFoo' });
       const texts = result.content?.map(c => c.text) ?? [];
       expect(texts.join('\n')).toContain('hello');
@@ -915,10 +927,10 @@ describe('Title resolution via tool round-trips', () => {
     await writeFile(path.join(b, 'Dupe.md'), '# from B\n', 'utf-8');
     vault.invalidateResolverCache();
 
-    const app = createApp();
+    const { app, auth } = createApp();
     const { base, close } = await listen(app);
     try {
-      const token = seedTestToken();
+      const token = auth.seedTestToken();
       const result = await callTool(base, token, 'vault_read', { path: 'Dupe' });
       const texts = result.content?.map(c => c.text) ?? [];
       expect(texts.length).toBeGreaterThanOrEqual(2);
@@ -932,10 +944,10 @@ describe('Title resolution via tool round-trips', () => {
   });
 
   test('vault_outline returns isError when the title cannot be resolved', async () => {
-    const app = createApp();
+    const { app, auth } = createApp();
     const { base, close } = await listen(app);
     try {
-      const token = seedTestToken();
+      const token = auth.seedTestToken();
       const result = await callTool(base, token, 'vault_outline', { path: 'NoSuchNoteIntegration' });
       expect(result.isError).toBe(true);
       const texts = result.content?.map(c => c.text) ?? [];
@@ -949,10 +961,10 @@ describe('Title resolution via tool round-trips', () => {
     const file = path.join(vaultPath, 'SectionEditIntegration.md');
     await writeFile(file, '# A\nbody\n\n# B\nb body\n', 'utf-8');
 
-    const app = createApp();
+    const { app, auth } = createApp();
     const { base, close } = await listen(app);
     try {
-      const token = seedTestToken();
+      const token = auth.seedTestToken();
       const result = await callTool(base, token, 'vault_edit_section', {
         path: 'SectionEditIntegration.md',
         heading: 'A',
@@ -972,10 +984,10 @@ describe('Title resolution via tool round-trips', () => {
     const file = path.join(vaultPath, 'SectionEditMissingHeading.md');
     await writeFile(file, '# A\nbody\n', 'utf-8');
 
-    const app = createApp();
+    const { app, auth } = createApp();
     const { base, close } = await listen(app);
     try {
-      const token = seedTestToken();
+      const token = auth.seedTestToken();
       const result = await callTool(base, token, 'vault_edit_section', {
         path: 'SectionEditMissingHeading.md',
         heading: 'NoSuchHeading',
@@ -1006,10 +1018,10 @@ describe('Title resolution via tool round-trips', () => {
     const file = path.join(vaultPath, 'VersionedRead.md');
     await writeFile(file, '# V\nbody\n', 'utf-8');
 
-    const app = createApp();
+    const { app, auth } = createApp();
     const { base, close } = await listen(app);
     try {
-      const token = seedTestToken();
+      const token = auth.seedTestToken();
       const result = await callTool(base, token, 'vault_read', { path: 'VersionedRead.md' });
       const texts = result.content?.map(c => c.text) ?? [];
       expect(texts.join('\n')).toContain('body');     // note body present
@@ -1024,10 +1036,10 @@ describe('Title resolution via tool round-trips', () => {
     const file = path.join(vaultPath, 'RejectRoundTrip.md');
     await writeFile(file, '# R\noriginal\n', 'utf-8');
 
-    const app = createApp();
+    const { app, auth } = createApp();
     const { base, close } = await listen(app);
     try {
-      const token = seedTestToken();
+      const token = auth.seedTestToken();
       const readResult = await callTool(base, token, 'vault_read', { path: 'RejectRoundTrip.md' });
       const version = versionFrom(readResult.content?.map(c => c.text) ?? []);
 
@@ -1060,10 +1072,10 @@ describe('Title resolution via tool round-trips', () => {
     await writeFile(file, '# T\nshared\n', 'utf-8');
     vault.invalidateResolverCache();
 
-    const app = createApp();
+    const { app, auth } = createApp();
     const { base, close } = await listen(app);
     try {
-      const token = seedTestToken();
+      const token = auth.seedTestToken();
       const readResult = await callTool(base, token, 'vault_read', { path: 'Titled' });
       const version = versionFrom(readResult.content?.map(c => c.text) ?? []);
 
@@ -1090,10 +1102,10 @@ describe('Title resolution via tool round-trips', () => {
     await writeFile(path.join(dir, 'ref.md'), 'see [[Target]] here\n', 'utf-8');
     vault.invalidateResolverCache();
 
-    const app = createApp();
+    const { app, auth } = createApp();
     const { base, close } = await listen(app);
     try {
-      const token = seedTestToken();
+      const token = auth.seedTestToken();
       const result = await callTool(base, token, 'vault_move', {
         source: 'MoveDryRun/Target.md',
         destination: 'MoveDryRun/Renamed.md',
@@ -1114,10 +1126,10 @@ describe('Title resolution via tool round-trips', () => {
     await writeFile(path.join(dir, 'ref.md'), 'see [[Subject]] here\n', 'utf-8');
     vault.invalidateResolverCache();
 
-    const app = createApp();
+    const { app, auth } = createApp();
     const { base, close } = await listen(app);
     try {
-      const token = seedTestToken();
+      const token = auth.seedTestToken();
       const result = await callTool(base, token, 'vault_move', {
         source: 'MoveWrite/Subject.md',
         destination: 'MoveWrite/Renamed.md',
@@ -1142,10 +1154,10 @@ describe('Title resolution via tool round-trips', () => {
     const file = path.join(dir, 'pixel.png');
     await writeFile(file, png);
 
-    const app = createApp();
+    const { app, auth } = createApp();
     const { base, close } = await listen(app);
     try {
-      const token = seedTestToken();
+      const token = auth.seedTestToken();
       const result = await callTool(base, token, 'vault_read_attachment', {
         path: 'AttachRoundtrip/pixel.png',
       });
@@ -1169,10 +1181,10 @@ describe('Title resolution via tool round-trips', () => {
     await mkdir(dir, { recursive: true });
     await writeFile(path.join(dir, 'pixel.png'), png);
 
-    const app = createApp();
+    const { app, auth } = createApp();
     const { base, close } = await listen(app);
     try {
-      const token = seedTestToken();
+      const token = auth.seedTestToken();
       const result = await callTool(base, token, 'vault_read_attachment', {
         path: 'AttachStat/pixel.png',
         stat_only: true,
@@ -1190,10 +1202,10 @@ describe('Title resolution via tool round-trips', () => {
   });
 
   test('vault_read_attachment returns isError for a path outside the vault', async () => {
-    const app = createApp();
+    const { app, auth } = createApp();
     const { base, close } = await listen(app);
     try {
-      const token = seedTestToken();
+      const token = auth.seedTestToken();
       const result = await callTool(base, token, 'vault_read_attachment', { path: '../escape.png' });
       expect(result.isError).toBe(true);
       const texts = result.content?.map(c => c.text) ?? [];
@@ -1219,7 +1231,7 @@ describe('Health /health', () => {
 
   test('returns 404 when HEALTH_TOKEN is unset (default-closed)', async () => {
     await withHealthToken(undefined, async () => {
-      const app = createApp();
+      const { app, auth } = createApp();
       const { base, close } = await listen(app);
       try {
         const res = await fetch(`${base}/health`);
@@ -1232,7 +1244,7 @@ describe('Health /health', () => {
 
   test('returns 401 when the token is missing', async () => {
     await withHealthToken('health-test-secret', async () => {
-      const app = createApp();
+      const { app, auth } = createApp();
       const { base, close } = await listen(app);
       try {
         const res = await fetch(`${base}/health`);
@@ -1245,7 +1257,7 @@ describe('Health /health', () => {
 
   test('returns 401 when the token is wrong', async () => {
     await withHealthToken('health-test-secret', async () => {
-      const app = createApp();
+      const { app, auth } = createApp();
       const { base, close } = await listen(app);
       try {
         const res = await fetch(`${base}/health`, {
@@ -1260,7 +1272,7 @@ describe('Health /health', () => {
 
   test('returns 200 and { ok, version, uptime_seconds } with the correct token', async () => {
     await withHealthToken('health-test-secret', async () => {
-      const app = createApp();
+      const { app, auth } = createApp();
       const { base, close } = await listen(app);
       try {
         const res = await fetch(`${base}/health`, {
@@ -1282,7 +1294,7 @@ describe('Health /health', () => {
 
   test('returns 503 with ok: false when the vault root is unreadable', async () => {
     await withHealthToken('health-test-secret', async () => {
-      const app = createApp();
+      const { app, auth } = createApp();
       const { base, close } = await listen(app);
       // Remove the vault root so the per-request stat fails, then restore it.
       await rm(vaultPath, { recursive: true, force: true });

@@ -11,19 +11,19 @@ References:
 - **Runtime**: Bun (TypeScript, no build step)
 - **Transport**: Streamable HTTP (MCP spec)
 - **Auth**: OAuth 2.1 authorization code + PKCE (browser flow for Claude.ai)
+- **Scaffolding**: [`mcp-server-kit`](https://github.com/nweii/mcp-server-kit) (git dependency) supplies the app factory (CORS, request logging, the bearer-gated `/health`, the `/mcp` mount), the Claude-facing OAuth module (`createAuth`, SDK-backed), the tool-result helpers, the audit-logging module, and process/shutdown helpers. The OAuth wire surface (discovery, endpoint paths, error shapes) is whatever the MCP SDK emits — notably the token endpoint is `/token`.
 - **Deployment**: Docker container on a server or NAS
 
 ## File structure
 
 ```
 src/
-  server.ts   — Listens on PORT; uses createApp()
-  app.ts      — createApp() — Express routes (OAuth + MCP)
-  auth.ts     — OAuth discovery, token issuance, optional client-secret validation, and Bearer validation middleware
+  server.ts   — Builds the app via createApp() and starts it with the kit's startServer (persists tokens on shutdown)
+  app.ts      — createApp() — maps env vars to the kit's createAuth / createApp and registers the vault tools; returns { app, auth }
   vault.ts    — Vault filesystem operations, frontmatter helpers, vault discovery, and config-derived defaults
   tools.ts    — MCP tool definitions (context, read, batch read, outline, read section, read attachment, frontmatter, links, create/update/edit/edit section/trash, set frontmatter, batch set frontmatter, move/rename, search title, search content, search frontmatter, tags, periodic note, clip URL, feedback)
   lock.ts     — Per-path async mutex; serializes read-modify-write so concurrent edits to one note can't interleave
-  log.ts      — Append-only JSONL logger for tool calls and agent feedback (LOG_DIR, default ./logs)
+  log.ts      — Configures the kit's audit logger for this vault (LOG_DIR default ./logs; redacts note-content arg fields) and re-exports the wired helpers
 test/
   server.test.ts — HTTP checks for discovery, GET /mcp, POST initialize
 ```
@@ -36,7 +36,7 @@ MCP_CLIENT_ID=dev bun run src/server.ts
 ```
 
 OAuth discovery: `GET /.well-known/oauth-authorization-server`
-Token endpoint: `POST /oauth/token`
+Token endpoint: `POST /token`
 MCP endpoint: `POST /mcp` (requires Bearer token)
 
 ## Environment variables
@@ -44,7 +44,7 @@ MCP endpoint: `POST /mcp` (requires Bearer token)
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `MCP_CLIENT_ID` | yes | OAuth client ID |
-| `MCP_CLIENT_SECRET` | no | Optional OAuth client secret. If set on the server, clients must send the same `client_secret` to `/oauth/token`. If unset, PKCE-only clients can sign in without one. |
+| `MCP_CLIENT_SECRET` | no | Optional OAuth client secret. If set on the server, clients must send the same `client_secret` to `/token`. If unset, PKCE-only clients can sign in without one. |
 | `VAULT_APPROVAL_PASSWORD` | yes\* | Password for the OAuth approval page: `/authorize` requires it before issuing a code. \*The server refuses to start with the approval path unguarded; this, `MCP_CLIENT_SECRET`, or `VAULT_APPROVAL_OPEN=true` satisfies that check. |
 | `VAULT_APPROVAL_OPEN` | no | Set `true` to allow the click-to-approve approval page when a reverse proxy / zero-trust gateway already guards `/authorize`. Satisfies the startup guard in place of an approval password. |
 | `MCP_BASE_URL` | yes (prod) | Public **site** URL (scheme + host, no `/mcp`). Used in OAuth discovery as the protected `resource` |
@@ -102,7 +102,7 @@ MCP endpoint: `POST /mcp` (requires Bearer token)
 - `setFrontmatterProperty` (and the `vault_set_frontmatter_property` tool) does a textual single-key splice on the frontmatter block instead of round-tripping the whole block through js-yaml. Untouched keys keep their on-disk byte form — including bare `YYYY-MM-DD` dates (which the YAML parser would otherwise normalize to full ISO datetimes), quoting style, key order, blank lines, and comments. JSON-shaped frontmatter (`---\n{ ... }\n---`) falls back to parse-and-reserialize, which converts to YAML — matching Obsidian's own behavior documented at `help.obsidian.md/properties#JSON+properties`. Values that arrive as JSON-stringified arrays or objects (e.g. from a client whose schema lost the array shape) are defensively parsed back; literal strings that happen to start with `[` or `{` but aren't valid JSON pass through unchanged.
 - `vault_search_frontmatter` finds notes by a frontmatter property. `match_type` is `exact` (equals), `contains` (case-insensitive substring), or `exists` (property present, value ignored). For a list-valued property the predicate runs per element, so it is real membership — `exact: draft` matches `tags: [draft, idea]` — rather than a substring test against the stringified list. A property js-yaml parsed into a `Date` (an unquoted ISO-8601 scalar like `2026-01-15`) is matched by its `YYYY-MM-DD` UTC calendar date, not the timezone-shifted `String(Date)` form, so `exact: 2026-01-15` matches and the day never drifts; non-ISO date conventions stay plain strings and match verbatim. It is a single stateless walk that parses each note's frontmatter, keeping the per-request, no-index design. Every search/index/scan in `vault.ts` (content, filename, title, frontmatter, tags, the resolver and link-graph indices, rewrite-target collection) shares one traversal — `walkVaultFiles` — which skips dotfiles, honours `.mcpignore`, and reads `.md` by default, so the ignore policy is enforced in one place for all of them.
 - `vault_batch_read` reads several notes in one call (paths or bare titles, resolved like `vault_read`); entries that can't be resolved are reported under "missing" without failing the rest. `include_content: false` returns only each note's frontmatter, for cheap triage before opening bodies. `vault_batch_frontmatter_update` sets frontmatter on several notes; each note's fields are applied in one locked read-modify-write via `setFrontmatterProperties` — the multi-key generalization of `setFrontmatterProperty`, which now delegates to it so the splice + lock logic has one implementation. Both batch tools are per-item and non-transactional (one bad note is reported, the rest still run) and capped at 50 entries.
-- The OAuth approval page must be guarded, and the server refuses to start otherwise (`assertApprovalGuardConfigured`, called from `server.ts`). Any one of three satisfies the check: `VAULT_APPROVAL_PASSWORD` (a password on `/authorize`, compared constant-time, re-rendering the page with a 401 on a wrong guess), `MCP_CLIENT_SECRET` (which guards token exchange instead), or `VAULT_APPROVAL_OPEN=true` (for deployments fronted by a reverse proxy / zero-trust gateway). There is no username — the password is the whole secret.
+- The OAuth approval page must be guarded, and the server refuses to start otherwise: the kit's `createAuth` throws at construction (in `createApp`, so `server.ts` exits before listening) when the approval page is unguarded. Any one of three satisfies the check: `VAULT_APPROVAL_PASSWORD` (a password on `/authorize`, compared constant-time, re-rendering the page with a 401 on a wrong guess), `MCP_CLIENT_SECRET` (which guards token exchange instead), or `VAULT_APPROVAL_OPEN=true` (for deployments fronted by a reverse proxy / zero-trust gateway). There is no username — the password is the whole secret.
 - `editNoteSection` and `readNoteSection` are asymmetric on duplicate headings, by design. **Writes refuse to guess**: `editNoteSection` throws an `AmbiguousHeadingError` (carrying every match's line number and a one-line preview) and points the caller at `vault_edit` with a find-anchored `replace` on text unique to the target section. **Reads return everything**: `readNoteSection` joins all matching sections with `<!-- match N of M (line X) -->` labels so the agent can tell candidates apart. The asymmetry tracks the difference in stakes — a write to the wrong section is data loss; a read of all candidates is a couple extra tokens.
 
 ## Tests

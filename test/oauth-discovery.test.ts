@@ -7,7 +7,7 @@ import os from 'os';
 import path from 'path';
 import type { Express } from 'express';
 
-let createApp: () => Express;
+let createApp: () => { app: Express };
 let vaultPath: string;
 
 async function listen(app: Express): Promise<{ base: string; close: () => Promise<void> }> {
@@ -51,6 +51,10 @@ beforeAll(async () => {
   process.env.MCP_CLIENT_ID = 'discovery-client';
   process.env.MCP_BASE_URL = 'https://example.test';
   process.env.VAULT_MCP_TEST = '1';
+  // createAuth now refuses to construct with /authorize unguarded; this suite characterizes the
+  // click-to-approve (no-password) discovery surface, so declare the page externally guarded.
+  process.env.VAULT_APPROVAL_OPEN = 'true';
+  delete process.env.VAULT_APPROVAL_PASSWORD;
   createApp = (await import('../src/app.js')).createApp;
 });
 
@@ -60,7 +64,7 @@ afterAll(async () => {
 
 describe('authorization server metadata', () => {
   test('advertises the code grant, S256 PKCE, and no other flows', async () => {
-    const app = createApp();
+    const { app } = createApp();
     const { base, close } = await listen(app);
     try {
       const body = (await (await fetch(`${base}/.well-known/oauth-authorization-server`)).json()) as {
@@ -69,22 +73,27 @@ describe('authorization server metadata', () => {
         code_challenge_methods_supported: string[];
       };
       expect(body.response_types_supported).toEqual(['code']);
-      expect(body.grant_types_supported).toEqual(['authorization_code']);
+      // Re-pin (delta: grant_types_supported gains refresh_token — the SDK advertises it; this server
+      // rejects the refresh grant with 400 invalid_grant, so clients re-authorize as before).
+      expect(body.grant_types_supported).toEqual(['authorization_code', 'refresh_token']);
       expect(body.code_challenge_methods_supported).toEqual(['S256']);
     } finally {
       await close();
     }
   });
 
-  test('offers only client_secret_post when a client secret is configured', async () => {
+  test('still offers "none" alongside client_secret_post when a client secret is configured', async () => {
     await withEnvs({ MCP_CLIENT_SECRET: 'a-secret' }, async () => {
-      const app = createApp();
+      const { app } = createApp();
       const { base, close } = await listen(app);
       try {
         const body = (await (await fetch(`${base}/.well-known/oauth-authorization-server`)).json()) as {
           token_endpoint_auth_methods_supported: string[];
         };
-        expect(body.token_endpoint_auth_methods_supported).toEqual(['client_secret_post']);
+        // Re-pin (delta: token_endpoint_auth_methods_supported always includes 'none' even with a
+        // secret set — the SDK hardcodes it. The secret is still enforced: a secretless exchange is
+        // rejected 400 invalid_client, so this over-advertisement is cosmetic).
+        expect(body.token_endpoint_auth_methods_supported).toEqual(['client_secret_post', 'none']);
       } finally {
         await close();
       }
@@ -93,7 +102,7 @@ describe('authorization server metadata', () => {
 
   test('also offers "none" when no client secret is configured (PKCE-only clients)', async () => {
     await withEnvs({ MCP_CLIENT_SECRET: undefined }, async () => {
-      const app = createApp();
+      const { app } = createApp();
       const { base, close } = await listen(app);
       try {
         const body = (await (await fetch(`${base}/.well-known/oauth-authorization-server`)).json()) as {

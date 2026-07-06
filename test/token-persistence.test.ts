@@ -92,7 +92,8 @@ async function mintToken(base: string): Promise<string> {
     }),
   });
   const code = new URL(approve.headers.get('location')!).searchParams.get('code')!;
-  const tokenRes = await fetch(`${base}/oauth/token`, {
+  // Re-pin (delta: token endpoint /oauth/token → /token). Path change only.
+  const tokenRes = await fetch(`${base}/token`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({

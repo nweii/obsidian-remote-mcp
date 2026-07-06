@@ -8,7 +8,7 @@ import os from 'os';
 import path from 'path';
 import type { Express } from 'express';
 
-let createApp: () => Express;
+let createApp: () => { app: Express };
 let vaultPath: string;
 
 const CLIENT_ID = 'flow-client';
@@ -57,7 +57,8 @@ async function issueCode(base: string, challenge: string): Promise<string> {
 }
 
 async function postToken(base: string, params: Record<string, string>): Promise<Response> {
-  return fetch(`${base}/oauth/token`, {
+  // Re-pin (delta: token endpoint /oauth/token → /token). Path change only; assertions below hold.
+  return fetch(`${base}/token`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams(params),
@@ -73,6 +74,9 @@ beforeAll(async () => {
   // This file exercises the PKCE-only exchange; a stray client secret would change the token path.
   delete process.env.MCP_CLIENT_SECRET;
   delete process.env.VAULT_APPROVAL_PASSWORD;
+  // createAuth now refuses to construct with /authorize unguarded; this suite characterizes the
+  // click-to-approve (no-password) flow, so declare the page externally guarded.
+  process.env.VAULT_APPROVAL_OPEN = 'true';
   createApp = (await import('../src/app.js')).createApp;
 });
 
@@ -81,8 +85,10 @@ afterAll(async () => {
 });
 
 describe('GET /authorize parameter validation', () => {
+  // redirect: 'manual' so a spec-shaped 302 error redirect is observed here rather than followed to
+  // the real client callback. The direct-400 cases (no trusted redirect target) are unaffected.
   async function getAuthorize(base: string, overrides: Record<string, string>): Promise<Response> {
-    const params = {
+    const params: Record<string, string> = {
       response_type: 'code',
       client_id: CLIENT_ID,
       redirect_uri: REDIRECT_URI,
@@ -90,64 +96,78 @@ describe('GET /authorize parameter validation', () => {
       code_challenge_method: 'S256',
       ...overrides,
     };
-    return fetch(`${base}/authorize?${new URLSearchParams(params)}`);
+    for (const k of Object.keys(params)) if (params[k] === '__ABSENT__') delete params[k];
+    return fetch(`${base}/authorize?${new URLSearchParams(params)}`, { redirect: 'manual' });
+  }
+
+  // A valid client_id + redirect_uri with an otherwise-bad request is an OAuth-spec 302 redirect to
+  // the client callback carrying error params, not a direct response.
+  function expectErrorRedirect(res: Response, error: string) {
+    expect(res.status).toBe(302);
+    const loc = new URL(res.headers.get('location')!);
+    expect(`${loc.origin}${loc.pathname}`).toBe(REDIRECT_URI);
+    expect(loc.searchParams.get('error')).toBe(error);
   }
 
   test('rejects an unsupported response_type', async () => {
-    const app = createApp();
+    const { app } = createApp();
     const { base, close } = await listen(app);
     try {
-      const res = await getAuthorize(base, { response_type: 'token' });
-      expect(res.status).toBe(400);
-      expect(await res.text()).toContain('Unsupported response_type');
+      // Re-pin (delta: bad response_type → 302 redirect with error params, not 400 plaintext).
+      expectErrorRedirect(await getAuthorize(base, { response_type: 'token' }), 'invalid_request');
     } finally {
       await close();
     }
   });
 
   test('rejects an unknown client_id', async () => {
-    const app = createApp();
+    const { app } = createApp();
     const { base, close } = await listen(app);
     try {
+      // Re-pin (delta: unknown client_id → 400 JSON invalid_client, not 400 plaintext). No trusted
+      // redirect target for an unknown client, so the SDK responds directly.
       const res = await getAuthorize(base, { client_id: 'not-the-client' });
       expect(res.status).toBe(400);
-      expect(await res.text()).toContain('Unknown client_id');
+      expect(((await res.json()) as { error?: string }).error).toBe('invalid_client');
     } finally {
       await close();
     }
   });
 
   test('rejects a redirect_uri outside the allowlist', async () => {
-    const app = createApp();
+    const { app } = createApp();
     const { base, close } = await listen(app);
     try {
+      // Re-pin (delta: disallowed redirect_uri → 400 JSON invalid_request, not 400 plaintext). An
+      // unregistered redirect_uri is not a safe redirect target, so the SDK responds directly.
       const res = await getAuthorize(base, { redirect_uri: 'https://evil.example/callback' });
       expect(res.status).toBe(400);
-      expect(await res.text()).toContain('redirect_uri not allowed');
+      expect(((await res.json()) as { error?: string }).error).toBe('invalid_request');
     } finally {
       await close();
     }
   });
 
   test('rejects a non-S256 PKCE challenge method', async () => {
-    const app = createApp();
+    const { app } = createApp();
     const { base, close } = await listen(app);
     try {
-      const res = await getAuthorize(base, { code_challenge_method: 'plain' });
-      expect(res.status).toBe(400);
-      expect(await res.text()).toContain('PKCE with S256 is required');
+      // Re-pin (delta: bad PKCE → 302 redirect with error params). Valid client/redirect, so the SDK
+      // redirects the error to the callback.
+      expectErrorRedirect(await getAuthorize(base, { code_challenge_method: 'plain' }), 'invalid_request');
     } finally {
       await close();
     }
   });
 
   test('rejects a missing PKCE challenge', async () => {
-    const app = createApp();
+    const { app } = createApp();
     const { base, close } = await listen(app);
     try {
-      const res = await getAuthorize(base, { code_challenge: '' });
-      expect(res.status).toBe(400);
-      expect(await res.text()).toContain('PKCE with S256 is required');
+      // Re-pin (delta: missing PKCE → 302 redirect with error params). The challenge is dropped
+      // entirely (the SDK requires code_challenge to be present; an absent one is the "missing" case).
+      const res = await getAuthorize(base, { code_challenge: '__ABSENT__', code_challenge_method: '__ABSENT__' });
+      expectErrorRedirect(res, 'invalid_request');
     } finally {
       await close();
     }
@@ -155,20 +175,23 @@ describe('GET /authorize parameter validation', () => {
 });
 
 describe('POST /oauth/token reject paths', () => {
-  test('unsupported grant_type returns 400 unsupported_grant_type', async () => {
-    const app = createApp();
+  test('a request with no client_id fails client auth before grant_type validation', async () => {
+    const { app } = createApp();
     const { base, close } = await listen(app);
     try {
+      // Re-pin (delta: client auth now runs BEFORE grant_type validation — error precedence changes).
+      // With no client_id the SDK fails client authentication first, so the error is invalid_request
+      // rather than unsupported_grant_type.
       const res = await postToken(base, { grant_type: 'client_credentials', code: 'x' });
       expect(res.status).toBe(400);
-      expect(((await res.json()) as { error?: string }).error).toBe('unsupported_grant_type');
+      expect(((await res.json()) as { error?: string }).error).toBe('invalid_request');
     } finally {
       await close();
     }
   });
 
   test('missing code returns 400 invalid_request', async () => {
-    const app = createApp();
+    const { app } = createApp();
     const { base, close } = await listen(app);
     try {
       const res = await postToken(base, { grant_type: 'authorization_code' });
@@ -180,7 +203,7 @@ describe('POST /oauth/token reject paths', () => {
   });
 
   test('unknown code returns 400 invalid_grant', async () => {
-    const app = createApp();
+    const { app } = createApp();
     const { base, close } = await listen(app);
     try {
       const res = await postToken(base, {
@@ -197,8 +220,8 @@ describe('POST /oauth/token reject paths', () => {
     }
   });
 
-  test('mismatched client_id returns 400 invalid_grant', async () => {
-    const app = createApp();
+  test('a mismatched client_id fails client auth (invalid_client)', async () => {
+    const { app } = createApp();
     const { base, close } = await listen(app);
     try {
       const verifier = 'verifier-client-mismatch';
@@ -210,15 +233,17 @@ describe('POST /oauth/token reject paths', () => {
         client_id: 'a-different-client',
         redirect_uri: REDIRECT_URI,
       });
+      // Re-pin (delta: client auth runs first — an unknown client_id is invalid_client, not the
+      // code store's invalid_grant).
       expect(res.status).toBe(400);
-      expect(((await res.json()) as { error?: string }).error).toBe('invalid_grant');
+      expect(((await res.json()) as { error?: string }).error).toBe('invalid_client');
     } finally {
       await close();
     }
   });
 
   test('mismatched redirect_uri returns 400 invalid_grant', async () => {
-    const app = createApp();
+    const { app } = createApp();
     const { base, close } = await listen(app);
     try {
       const verifier = 'verifier-redirect-mismatch';
@@ -238,7 +263,7 @@ describe('POST /oauth/token reject paths', () => {
   });
 
   test('wrong PKCE verifier returns 400 invalid_grant', async () => {
-    const app = createApp();
+    const { app } = createApp();
     const { base, close } = await listen(app);
     try {
       const code = await issueCode(base, toCodeChallenge('the-real-verifier'));
@@ -252,14 +277,16 @@ describe('POST /oauth/token reject paths', () => {
       expect(res.status).toBe(400);
       const body = (await res.json()) as { error?: string; error_description?: string };
       expect(body.error).toBe('invalid_grant');
-      expect(body.error_description).toContain('PKCE');
+      // Re-pin (delta: several token error_description texts change — the SDK's PKCE-failure message
+      // is "code_verifier does not match the challenge").
+      expect(body.error_description).toContain('code_verifier');
     } finally {
       await close();
     }
   });
 
-  test('a stray client_secret returns 401 invalid_client when none is configured', async () => {
-    const app = createApp();
+  test('a stray client_secret is ignored for a public client (token issued)', async () => {
+    const { app } = createApp();
     const { base, close } = await listen(app);
     try {
       const verifier = 'verifier-stray-secret';
@@ -272,15 +299,18 @@ describe('POST /oauth/token reject paths', () => {
         client_secret: 'unexpected',
         redirect_uri: REDIRECT_URI,
       });
-      expect(res.status).toBe(401);
-      expect(((await res.json()) as { error?: string }).error).toBe('invalid_client');
+      // Re-pin (delta-list addendum, owner-accepted): with no client secret configured, an extraneous
+      // client_secret is ignored rather than rejected. Issuance stays gated by the single-use code +
+      // PKCE verifier, so the old 401 added no security.
+      expect(res.status).toBe(200);
+      expect(((await res.json()) as { access_token?: string }).access_token).toBeTruthy();
     } finally {
       await close();
     }
   });
 
   test('an authorization code is single-use', async () => {
-    const app = createApp();
+    const { app } = createApp();
     const { base, close } = await listen(app);
     try {
       const verifier = 'verifier-single-use';
@@ -306,7 +336,7 @@ describe('POST /oauth/token reject paths', () => {
 
 describe('POST /oauth/token success', () => {
   test('a valid PKCE exchange returns a bearer token with an expiry', async () => {
-    const app = createApp();
+    const { app } = createApp();
     const { base, close } = await listen(app);
     try {
       const verifier = 'verifier-happy-path';

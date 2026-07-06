@@ -7,7 +7,7 @@ import { z } from "zod";
 import * as path from "node:path";
 import * as fs from "node:fs/promises";
 import * as vault from "./vault.js";
-import { registerLogged } from "./register-logged.js";
+import { registerLogged } from "./log.js";
 
 // Local interface declarations for web-clipper-headless. The package's own .ts source isn't
 // directly consumable by this tsconfig; we treat its module surface as opaque and shim the

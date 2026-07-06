@@ -9,9 +9,10 @@
     "setup:clipper": "cd node_modules/web-clipper-headless && bun install && bun run setup"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.10.2",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "express": "^4.21.2",
     "js-yaml": "^4.1.1",
+    "mcp-server-kit": "git+https://github.com/nweii/mcp-server-kit.git#3bd4b5d0d2b02fa12750cb807ede0ee6e94cfb89",
     "zod": "^3.24.2"
   },
   "optionalDependencies": {

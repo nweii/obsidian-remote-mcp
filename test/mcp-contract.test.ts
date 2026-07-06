@@ -8,7 +8,7 @@ import os from 'os';
 import path from 'path';
 import type { Express } from 'express';
 
-let createApp: () => Express;
+let createApp: () => { app: Express };
 let vaultPath: string;
 
 const CLIENT_ID = 'contract-client';
@@ -48,7 +48,8 @@ async function mintToken(base: string): Promise<string> {
     }),
   });
   const code = new URL(approve.headers.get('location')!).searchParams.get('code')!;
-  const tokenRes = await fetch(`${base}/oauth/token`, {
+  // Re-pin (delta: token endpoint /oauth/token → /token). Path change only.
+  const tokenRes = await fetch(`${base}/token`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({
@@ -88,6 +89,9 @@ beforeAll(async () => {
   delete process.env.MCP_CLIENT_SECRET;
   delete process.env.VAULT_APPROVAL_PASSWORD;
   delete process.env.MCP_STATIC_BEARER_TOKEN;
+  // createAuth now refuses to construct with /authorize unguarded; this suite mints tokens through the
+  // click-to-approve (no-password) flow, so declare the page externally guarded.
+  process.env.VAULT_APPROVAL_OPEN = 'true';
   createApp = (await import('../src/app.js')).createApp;
 });
 
@@ -97,7 +101,7 @@ afterAll(async () => {
 
 describe('WWW-Authenticate challenge', () => {
   test('POST without a bearer advertises the protected-resource metadata', async () => {
-    const app = createApp();
+    const { app } = createApp();
     const { base, close } = await listen(app);
     try {
       const res = await fetch(`${base}/mcp`, {
@@ -109,14 +113,15 @@ describe('WWW-Authenticate challenge', () => {
       const header = res.headers.get('www-authenticate') ?? '';
       expect(header).toContain('Bearer');
       expect(header).toContain('resource_metadata="https://example.test/.well-known/oauth-protected-resource"');
-      expect(((await res.json()) as { error?: string }).error).toBe('unauthorized');
+      // Re-pin (delta: bearer 401 bodies → the SDK's invalid_token, not the hand-rolled unauthorized).
+      expect(((await res.json()) as { error?: string }).error).toBe('invalid_token');
     } finally {
       await close();
     }
   });
 
   test('an invalid token is challenged with error="invalid_token"', async () => {
-    const app = createApp();
+    const { app } = createApp();
     const { base, close } = await listen(app);
     try {
       const res = await fetch(`${base}/mcp`, {
@@ -143,7 +148,7 @@ describe('static bearer acceptance', () => {
     const prev = process.env.MCP_STATIC_BEARER_TOKEN;
     process.env.MCP_STATIC_BEARER_TOKEN = 'a-fixed-bearer-secret';
     try {
-      const app = createApp();
+      const { app } = createApp();
       const { base, close } = await listen(app);
       try {
         const { status, body } = await mcp(base, 'a-fixed-bearer-secret', 'initialize', {
@@ -165,7 +170,7 @@ describe('static bearer acceptance', () => {
 
 describe('JSON-RPC method gating and tool listing', () => {
   test('tools/list returns a non-empty tool set including vault_read', async () => {
-    const app = createApp();
+    const { app } = createApp();
     const { base, close } = await listen(app);
     try {
       const token = await mintToken(base);
@@ -180,7 +185,7 @@ describe('JSON-RPC method gating and tool listing', () => {
   });
 
   test('an unknown JSON-RPC method returns a -32601 error', async () => {
-    const app = createApp();
+    const { app } = createApp();
     const { base, close } = await listen(app);
     try {
       const token = await mintToken(base);
@@ -194,10 +199,11 @@ describe('JSON-RPC method gating and tool listing', () => {
 });
 
 describe('DELETE /mcp', () => {
-  test('is unrouted and returns 404 even with a valid token', async () => {
-    // The GET /mcp handler advertises `Allow: POST, DELETE`, but no DELETE route is mounted, so a
-    // DELETE lands on Express's default 404 handler. Pinned as observed behavior.
-    const app = createApp();
+  test('is method-not-allowed (405) with a valid token', async () => {
+    // Re-pin (delta: DELETE /mcp 404 → 405). The kit mounts a DELETE handler on the stateless
+    // transport that answers 405 (Allow: POST) — there is no session to delete — rather than leaving
+    // DELETE to fall through to Express's default 404.
+    const { app } = createApp();
     const { base, close } = await listen(app);
     try {
       const token = await mintToken(base);
@@ -205,7 +211,7 @@ describe('DELETE /mcp', () => {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${token}` },
       });
-      expect(res.status).toBe(404);
+      expect(res.status).toBe(405);
     } finally {
       await close();
     }
