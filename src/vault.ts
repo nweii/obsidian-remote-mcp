@@ -106,15 +106,28 @@ function resolveVaultRoot(): string {
   );
 }
 
-const VAULT_ROOT = resolveVaultRoot();
+// The vault root is resolved lazily and memoized against the env inputs it reads, rather than
+// captured once at import. Resolving on first use — and re-resolving when VAULT_PATH or
+// OBSIDIAN_VAULT_ID change — keeps the root honest when the environment is reconfigured after
+// import (notably test files that point VAULT_PATH at a temp dir), while still resolving the
+// Obsidian-config fallback at most once per distinct environment.
+let vaultRootCache: { key: string; root: string } | null = null;
+
+function vaultRootEnvKey(): string {
+  return [process.env.VAULT_PATH ?? '', process.env.OBSIDIAN_VAULT_ID ?? ''].join('\n');
+}
 
 export function getVaultRoot(): string {
-  return VAULT_ROOT;
+  const key = vaultRootEnvKey();
+  if (!vaultRootCache || vaultRootCache.key !== key) {
+    vaultRootCache = { key, root: resolveVaultRoot() };
+  }
+  return vaultRootCache.root;
 }
 
 export function getVaultDisplayName(): string {
   const fromEnv = process.env.VAULT_DISPLAY_NAME?.trim();
-  return fromEnv || path.basename(VAULT_ROOT);
+  return fromEnv || path.basename(getVaultRoot());
 }
 
 export function getContextNotePath(): string | null {
@@ -122,7 +135,7 @@ export function getContextNotePath(): string | null {
   if (fromEnv) return fromEnv;
 
   for (const candidate of DEFAULT_CONTEXT_NOTE_CANDIDATES) {
-    if (pathExists(path.join(VAULT_ROOT, candidate))) {
+    if (pathExists(path.join(getVaultRoot(), candidate))) {
       return candidate;
     }
   }
@@ -136,7 +149,7 @@ export function getContextNotePath(): string | null {
 // Lines starting with # are comments. Trailing slashes are stripped before matching.
 function loadIgnorePatterns(): string[] {
   try {
-    return readFileSync(path.join(VAULT_ROOT, '.mcpignore'), 'utf-8')
+    return readFileSync(path.join(getVaultRoot(), '.mcpignore'), 'utf-8')
       .split('\n')
       .map(l => l.trim().replace(/\/$/, ''))
       .filter(l => l && !l.startsWith('#'));
@@ -149,7 +162,7 @@ const IGNORE_PATTERNS = loadIgnorePatterns();
 
 function isIgnored(absPath: string): boolean {
   if (IGNORE_PATTERNS.length === 0) return false;
-  const rel = path.relative(VAULT_ROOT, absPath);
+  const rel = path.relative(getVaultRoot(), absPath);
   return IGNORE_PATTERNS.some(p => rel === p || rel.startsWith(p + path.sep));
 }
 
@@ -175,9 +188,10 @@ export class VaultPolicyError extends Error {
 
 // Ensure path stays within vault root and is not blocked by .mcpignore. Returns absolute path.
 export function resolveSafePath(relativePath: string): string {
-  const resolved = path.resolve(VAULT_ROOT, relativePath);
-  const root = VAULT_ROOT.endsWith(path.sep) ? VAULT_ROOT : VAULT_ROOT + path.sep;
-  if (!resolved.startsWith(root) && resolved !== VAULT_ROOT) {
+  const vaultRoot = getVaultRoot();
+  const resolved = path.resolve(vaultRoot, relativePath);
+  const root = vaultRoot.endsWith(path.sep) ? vaultRoot : vaultRoot + path.sep;
+  if (!resolved.startsWith(root) && resolved !== vaultRoot) {
     throw new VaultPolicyError('escape', `Path escapes vault root: ${relativePath}`);
   }
   if (isIgnored(resolved)) {
@@ -609,7 +623,7 @@ export async function deleteNote(relativePath: string): Promise<void> {
 export async function trashNote(relativePath: string): Promise<void> {
   assertWritable();
   const absPath = resolveSafePath(relativePath);
-  const trashDir = path.join(VAULT_ROOT, '.trash');
+  const trashDir = path.join(getVaultRoot(), '.trash');
   await fs.mkdir(trashDir, { recursive: true });
   // Avoid collisions in .trash by prefixing with a timestamp
   const trashPath = path.join(trashDir, `${Date.now()}-${path.basename(relativePath)}`);
@@ -696,7 +710,8 @@ const isMarkdownFile = (name: string): boolean => name.toLowerCase().endsWith('.
 
 async function* walkVaultFiles(options: WalkVaultOptions = {}): AsyncGenerator<WalkEntry> {
   const { folder, includeFile = isMarkdownFile, sort = false } = options;
-  const root = folder ? resolveSafePath(folder) : VAULT_ROOT;
+  const vaultRoot = getVaultRoot();
+  const root = folder ? resolveSafePath(folder) : vaultRoot;
 
   async function* walk(dir: string): AsyncGenerator<WalkEntry> {
     const entries = await fs.readdir(dir, { withFileTypes: true });
@@ -710,7 +725,7 @@ async function* walkVaultFiles(options: WalkVaultOptions = {}): AsyncGenerator<W
         continue;
       }
       if (!includeFile(entry.name)) continue;
-      yield { fullPath, relPath: path.relative(VAULT_ROOT, fullPath), name: entry.name };
+      yield { fullPath, relPath: path.relative(vaultRoot, fullPath), name: entry.name };
     }
   }
 
@@ -835,7 +850,7 @@ export async function getFolderTree(maxDepth: number): Promise<string[]> {
     return out;
   }
 
-  return buildSubtree(VAULT_ROOT, 1);
+  return buildSubtree(getVaultRoot(), 1);
 }
 
 // Immediate children of a vault folder (non-recursive). Skips dotfiles and .mcpignore-blocked paths.
@@ -856,7 +871,7 @@ export async function listVaultFolder(relativeDir = '', limit = 200): Promise<Va
     if (isIgnored(childAbs)) continue;
     out.push({
       name: entry.name,
-      path: path.relative(VAULT_ROOT, childAbs),
+      path: path.relative(getVaultRoot(), childAbs),
       kind: entry.isDirectory() ? 'directory' : 'file',
     });
   }

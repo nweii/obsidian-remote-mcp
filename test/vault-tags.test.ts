@@ -66,10 +66,12 @@ beforeAll(async () => {
   // Folder-scoped fixtures.
   await seed('Sub/scoped.md', ['#scoped tag here.', ''].join('\n'));
 
-  // Case-insensitive aggregation: first-seen casing wins. "Project" appears
-  // (alphabetically) before "project" so the Project casing is first-seen.
+  // Case-insensitive aggregation: first-seen casing wins. Both notes carrying the
+  // tag write the capitalized "#Project" as their first occurrence, so "Project" is
+  // first-seen no matter which order the notes are read from disk. case-b also carries
+  // a lowercase "#project" to exercise the case-insensitive merge.
   await seed('case-a.md', ['#Project work.', ''].join('\n'));
-  await seed('case-b.md', ['#project more work.', ''].join('\n'));
+  await seed('case-b.md', ['#Project and #project more work.', ''].join('\n'));
 
   // .mcpignore'd note — its tags must never appear.
   await seed('Private/secret.md', ['#secret hidden.', ''].join('\n'));
