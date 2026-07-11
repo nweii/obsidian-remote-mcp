@@ -45,9 +45,25 @@ API key:
 
 Cursor's OAuth redirect URI (`cursor://anysphere.cursor-mcp/oauth/callback`) is in the default allowlist. If you set **`MCP_ALLOWED_REDIRECT_URIS`** yourself, include it so Cursor can still complete OAuth.
 
-### ChatGPT
+### ChatGPT and Codex
 
-Add the server as a connector with your MCP URL and OAuth credentials. ChatGPT's legacy fixed callback (`https://chatgpt.com/connector_platform_oauth_redirect`) is in the default allowlist. Newer connectors may present a per-app callback URL (`https://chatgpt.com/connector/oauth/…`) during setup — if OAuth fails with `redirect_uri not allowed`, add the URL ChatGPT shows you to **`MCP_ALLOWED_REDIRECT_URIS`**.
+ChatGPT has two MCP setup surfaces with different authentication paths. Pick the one that matches the app you are using.
+
+#### ChatGPT desktop app and Codex
+
+Use the static bearer-token path. Set **`MCP_STATIC_BEARER_TOKEN`** on the server to a long random value, then in the ChatGPT desktop app open **Settings → MCP servers → Add server**. Choose **Streamable HTTP**, enter `https://your-host/mcp`, and add this header:
+
+```text
+Authorization: Bearer YOUR_MCP_STATIC_BEARER_TOKEN
+```
+
+The **Bearer token env var** field expects the *name* of an environment variable available to the desktop app, not the token itself. A static `Authorization` header is the straightforward option. Save the server and restart the app.
+
+`CORS_ALLOWED_ORIGINS` does not need changing for this path: the desktop app connects as an HTTP client, not browser JavaScript.
+
+#### Hosted ChatGPT connector
+
+Hosted ChatGPT connectors use OAuth. The [Apps SDK authentication guide](https://developers.openai.com/apps-sdk/build/auth) expects a server to support Client ID Metadata Documents, dynamic client registration, or a predefined OAuth client. This server accepts one fixed **`MCP_CLIENT_ID`** and does not support the first two options, so treat hosted ChatGPT OAuth as unsupported unless you have verified a predefined-client configuration end to end. The legacy callback (`https://chatgpt.com/connector_platform_oauth_redirect`) is in the default allowlist; newer connectors show their callback URL during setup, which must be added to **`MCP_ALLOWED_REDIRECT_URIS`**.
 
 ### Poke
 

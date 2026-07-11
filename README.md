@@ -124,6 +124,7 @@ services:
       CORS_ALLOWED_ORIGINS: https://claude.ai
       PORT: 3456
       # TOKEN_STORE_PATH: /app/data/tokens.json  # uncomment to persist OAuth sign-ins across restarts
+      # MCP_STATIC_BEARER_TOKEN: ${MCP_STATIC_BEARER_TOKEN}  # uncomment for ChatGPT desktop / Codex
     volumes:
       - ./:/app                                  # mounts the repo into the container
       - /path/to/your/vault:/vault               # left = path on your machine, right = path inside container
@@ -150,8 +151,8 @@ Every client needs two things: your MCP URL (`https://mcp.example.com/mcp` — b
 
 | Auth | When | Server setup |
 |------|------|--------------|
-| **OAuth** (browser sign-in) | The client walks you through a sign-in flow (Claude.ai, Cursor, ChatGPT, Poke via Kitchen) | `MCP_CLIENT_ID`, optionally `MCP_CLIENT_SECRET` |
-| **API key** (fixed bearer token) | The client's setup form has an "API key" field, or it can't open a browser (Poke, scripts, `mcp-remote`) | `MCP_STATIC_BEARER_TOKEN` set to a long random string |
+| **OAuth** (browser sign-in) | The client walks you through a sign-in flow (Claude.ai, Cursor, Poke via Kitchen) | `MCP_CLIENT_ID`, optionally `MCP_CLIENT_SECRET` |
+| **API key** (fixed bearer token) | The client's setup form has an "API key" field, or it cannot open a browser (ChatGPT desktop, Codex, Poke, scripts, `mcp-remote`) | `MCP_STATIC_BEARER_TOKEN` set to a long random string |
 
 Details for each mechanism are under [Authentication](#authentication), and per-client setup (Claude.ai, Cursor, ChatGPT, Poke, scripts) is in [clients.md](clients.md).
 
