@@ -61,10 +61,6 @@ The **Bearer token env var** field expects the *name* of an environment variable
 
 `CORS_ALLOWED_ORIGINS` does not need changing for this path: the desktop app connects as an HTTP client, not browser JavaScript.
 
-#### Hosted ChatGPT connector
-
-Hosted ChatGPT connectors use OAuth. The [Apps SDK authentication guide](https://developers.openai.com/apps-sdk/build/auth) expects a server to support Client ID Metadata Documents, dynamic client registration, or a predefined OAuth client. This server accepts one fixed **`MCP_CLIENT_ID`** and does not support the first two options, so treat hosted ChatGPT OAuth as unsupported unless you have verified a predefined-client configuration end to end. The legacy callback (`https://chatgpt.com/connector_platform_oauth_redirect`) is in the default allowlist; newer connectors show their callback URL during setup, which must be added to **`MCP_ALLOWED_REDIRECT_URIS`**.
-
 ### Poke
 
 [Poke](https://poke.com) supports both auth styles:
