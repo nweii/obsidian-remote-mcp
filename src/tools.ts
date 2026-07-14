@@ -239,6 +239,7 @@ export async function registerTools(server: McpServer) {
   registerLogged(server,
     "vault_context",
     {
+      annotations: { readOnlyHint: true, openWorldHint: false },
       title: "Vault context",
       description:
         "Returns the vault guidance note configured by VAULT_CONTEXT_PATH (falls back to AGENTS.md / CLAUDE.md), followed by a tree of vault folders for orientation. Call at the start of a session to learn vault structure/conventions.",
@@ -284,6 +285,7 @@ export async function registerTools(server: McpServer) {
   registerLogged(server,
     "vault_read",
     {
+      annotations: { readOnlyHint: true, openWorldHint: false },
       title: "Read vault note",
       description:
         'Read full note text (mode full, default) or list one folder level (mode list; path "" = vault root). In full mode, path accepts a vault-relative path (e.g. "Notes/Foo.md") or a bare note title (e.g. "Foo"); ambiguous titles return the first match with a warning. For # headings only use vault_outline; for one section under a heading use vault_read_section after vault_outline.',
@@ -340,6 +342,7 @@ export async function registerTools(server: McpServer) {
   registerLogged(server,
     "vault_batch_read",
     {
+      annotations: { readOnlyHint: true, openWorldHint: false },
       title: "Read several notes at once",
       description:
         'Read multiple notes in one call. Each entry is a vault-relative path or a bare note title (resolved like vault_read); entries that can\'t be resolved are reported under "Not found" without failing the others. Set include_content false to return only each note\'s frontmatter — cheap triage to pick which notes to open before reading bodies.',
@@ -373,6 +376,7 @@ export async function registerTools(server: McpServer) {
   registerLogged(server,
     "vault_outline",
     {
+      annotations: { readOnlyHint: true, openWorldHint: false },
       title: "Note heading outline",
       description:
         "List all markdown headings (# through ######) in one note, one per line with # prefix (like Obsidian CLI `obsidian outline`). Use before vault_read_section to get exact heading text.",
@@ -395,6 +399,7 @@ export async function registerTools(server: McpServer) {
   registerLogged(server,
     "vault_read_section",
     {
+      annotations: { readOnlyHint: true, openWorldHint: false },
       title: "Read note section under heading",
       description:
         "Return the body from one heading through the next same-or-higher-level heading. Pass heading text without # (case-insensitive). Prefer calling vault_outline first and copy the heading text after the #'s. If the heading text matches more than one section in the note, all matching sections are returned, each prefixed with a `<!-- match N of M (line X) -->` label so the caller can tell them apart.",
@@ -428,6 +433,7 @@ export async function registerTools(server: McpServer) {
   registerLogged(server,
     "vault_read_attachment",
     {
+      annotations: { readOnlyHint: true, openWorldHint: false },
       title: "Read vault attachment",
       description:
         "Read a binary attachment from the vault by vault-relative path (e.g. \"Attachments/diagram.png\"). Image types (png, jpg, gif, webp) come back as an image content block clients can render; other types (pdf and the like) come back as base64 with mime type and size. Files over the size cap are rejected — pass stat_only first to check size and mime without pulling the payload. Read-only: uploading attachments is out of scope.",
@@ -485,6 +491,7 @@ export async function registerTools(server: McpServer) {
   registerLogged(server,
     "vault_frontmatter",
     {
+      annotations: { readOnlyHint: true, openWorldHint: false },
       title: "Read note frontmatter",
       description:
         "Read YAML frontmatter from a note without loading the full body. Omit property for all keys; set property to read one key.",
@@ -523,6 +530,7 @@ export async function registerTools(server: McpServer) {
   registerLogged(server,
     "vault_links",
     {
+      annotations: { readOnlyHint: true, openWorldHint: false },
       title: "Get note links",
       description: "Get outgoing [[wikilinks]] from a note with resolved paths, and optionally backlinks (notes that link to it). Use to navigate the graph without reading full content.",
       inputSchema: z.object({
@@ -559,6 +567,7 @@ export async function registerTools(server: McpServer) {
   registerLogged(server,
     "vault_create",
     {
+      annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
       title: "Create vault note",
       description: "Create a new note. Fails if the file already exists. Follow vault conventions — call vault_context if unsure about folder or frontmatter.",
       inputSchema: z.object({
@@ -582,6 +591,7 @@ export async function registerTools(server: McpServer) {
   registerLogged(server,
     "vault_update",
     {
+      annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
       title: "Update vault note",
       description: "Replace the entire content of an existing note. For section-level changes, prefer vault_edit to avoid resending the full note. Pass base_version (from your last vault_read of this note) so the write is rejected instead of silently overwriting a concurrent edit by another session.",
       inputSchema: z.object({
@@ -610,6 +620,7 @@ export async function registerTools(server: McpServer) {
   registerLogged(server,
     "vault_set_frontmatter_property",
     {
+      annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
       title: "Set note frontmatter property",
       description:
         "Set one YAML frontmatter property on a note. Splices over just the target key's lines, so untouched keys keep their on-disk form (including bare YYYY-MM-DD dates, quoting style, blank lines, comments). " +
@@ -631,6 +642,7 @@ export async function registerTools(server: McpServer) {
   registerLogged(server,
     "vault_batch_frontmatter_update",
     {
+      annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
       title: "Set frontmatter on several notes",
       description:
         "Set frontmatter properties on multiple notes in one call. Each update is { path, fields } where fields maps property → value; every property is spliced in place so untouched keys keep their on-disk form. Per note, all fields are written in one locked read-modify-write. One note failing (e.g. missing file) is reported and does not stop the others. Paths are explicit vault-relative paths.",
@@ -666,6 +678,7 @@ export async function registerTools(server: McpServer) {
   registerLogged(server,
     "vault_edit",
     {
+      annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
       title: "Edit vault note",
       description: "Partially edit a note: append, prepend, or find-and-replace. Prefer over vault_update for section-level changes.",
       inputSchema: z.object({
@@ -693,6 +706,7 @@ export async function registerTools(server: McpServer) {
   registerLogged(server,
     "vault_edit_section",
     {
+      annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
       title: "Edit a note section under a heading",
       description:
         "Edit just one section of a note (heading line through the next same-or-higher heading). Operations: append — add to end of section, before the next heading; prepend — add right after the heading line, before existing body; replace — replace the section body and keep the heading line. Call vault_outline first to get exact heading text. If the heading text matches more than one section in the note, this tool refuses to guess and returns an AmbiguousHeadingError listing each candidate — use vault_edit with a find-anchored replace on unique text instead.",
@@ -729,6 +743,7 @@ export async function registerTools(server: McpServer) {
   registerLogged(server,
     "vault_trash",
     {
+      annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
       title: "Trash vault note",
       description: "Move a note to .trash (recoverable). Prefixes with a timestamp to avoid collisions.",
       inputSchema: z.object({
@@ -744,6 +759,7 @@ export async function registerTools(server: McpServer) {
   registerLogged(server,
     "vault_move",
     {
+      annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
       title: "Move or rename a vault file",
       description:
         "Move or rename a file within the vault and rewrite the wikilinks that point at it. source and destination are explicit vault-relative paths (with extension) — bare titles are not resolved; call vault_search_title first to find the path. Works on any file type (notes, canvases, bases, attachments). Creates missing parent folders and fails if a file already exists at the destination. dry_run defaults to true: it shows the full rewrite plan and writes nothing. Pass dry_run: false to move the file and apply the rewrites. A pure move (same name, new folder) leaves bare [[Name]] links alone; a rename rewrites every form. .base files are never edited, only flagged for review.",
@@ -796,6 +812,7 @@ export async function registerTools(server: McpServer) {
   registerLogged(server,
     "vault_search_title",
     {
+      annotations: { readOnlyHint: true, openWorldHint: false },
       title: "Search vault by note title",
       description:
         "Find notes by filename (partial or exact match). Returns relative paths — use before vault_read when you know a title fragment but not the path.",
@@ -811,6 +828,7 @@ export async function registerTools(server: McpServer) {
   registerLogged(server,
     "vault_search_content",
     {
+      annotations: { readOnlyHint: true, openWorldHint: false },
       title: "Search vault note contents",
       description:
         "Regex search across markdown bodies. Prefer folder to scope large vaults. Returns paths with matching line snippets.",
@@ -842,6 +860,7 @@ export async function registerTools(server: McpServer) {
   registerLogged(server,
     "vault_search_frontmatter",
     {
+      annotations: { readOnlyHint: true, openWorldHint: false },
       title: "Search vault by frontmatter property",
       description:
         "Find notes by a frontmatter (YAML property) value. match_type: exact = equals (for a list property, matches when any element equals the value); contains = case-insensitive substring (per element for lists); exists = the property is present, value ignored. Date properties match by their YYYY-MM-DD calendar date (e.g. exact: 2026-01-15). Use folder to scope large vaults. Returns matching paths with the property's value.",
@@ -880,6 +899,7 @@ export async function registerTools(server: McpServer) {
   registerLogged(server,
     "vault_tags",
     {
+      annotations: { readOnlyHint: true, openWorldHint: false },
       title: "List vault tags or notes by tag",
       description:
         "Without a tag, list every tag in the vault with note counts, sorted by count descending (capped by limit, with a truncation warning when the cap is hit). With a tag, return the paths of notes carrying it. Counts both frontmatter `tags` (YAML array or comma string) and inline `#tag`, including nested tags like `parent/child`. Matching is case-insensitive and displays first-seen casing; nested tags are exact — querying `parent` does not match `parent/child`. Use folder to scope large vaults.",
@@ -921,6 +941,7 @@ export async function registerTools(server: McpServer) {
   registerLogged(server,
     "vault_periodic_note",
     {
+      annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
       title: "Get or create periodic note",
       description: `Get or create a daily, weekly, monthly, quarterly, or yearly note using the cadence's configured path template. The optional date is bucketed into the week, month, quarter, or year that contains it. Defaults to today.`,
       inputSchema: z.object({
@@ -971,6 +992,7 @@ export async function registerTools(server: McpServer) {
   registerLogged(server,
     "vault_feedback",
     {
+      annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
       title: "Submit feedback about vault tools",
       description:
         "Call when you can't accomplish a vault task with the existing tools, when a tool's behavior surprised you, or when an error message wasn't actionable. Records your goal, what you tried, and where you got stuck so the vault owner can improve the tools. Optional: name a missing tool that would have helped.",

@@ -121,6 +121,7 @@ export async function registerClipTool(server: McpServer, vaultRoot: string): Pr
     server,
     "vault_clip_url",
     {
+      annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
       title: "Clip URL using a Web Clipper template",
       description:
         "Fetch a URL, render it through one of your Obsidian Web Clipper templates, and return the resulting Markdown note (frontmatter + body). Caller writes the note via vault_create. " +
