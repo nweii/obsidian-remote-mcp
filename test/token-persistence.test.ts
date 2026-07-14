@@ -45,7 +45,7 @@ async function startServer(port: number): Promise<ChildProcess> {
       MCP_CLIENT_ID: CLIENT_ID,
       MCP_BASE_URL: 'https://example.test',
       TOKEN_STORE_PATH: storePath,
-      VAULT_APPROVAL_OPEN: 'true', // satisfy the startup approval-guard without a password
+      APPROVAL_OPEN: 'true', // satisfy the startup approval-guard without a password
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });

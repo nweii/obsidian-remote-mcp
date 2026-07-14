@@ -87,11 +87,11 @@ beforeAll(async () => {
   process.env.MCP_BASE_URL = 'https://example.test';
   process.env.VAULT_MCP_TEST = '1';
   delete process.env.MCP_CLIENT_SECRET;
-  delete process.env.VAULT_APPROVAL_PASSWORD;
+  delete process.env.APPROVAL_PASSWORD;
   delete process.env.MCP_STATIC_BEARER_TOKEN;
   // createAuth now refuses to construct with /authorize unguarded; this suite mints tokens through the
   // click-to-approve (no-password) flow, so declare the page externally guarded.
-  process.env.VAULT_APPROVAL_OPEN = 'true';
+  process.env.APPROVAL_OPEN = 'true';
   createApp = (await import('../src/app.js')).createApp;
 });
 

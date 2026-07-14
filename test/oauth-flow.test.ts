@@ -73,10 +73,10 @@ beforeAll(async () => {
   process.env.VAULT_MCP_TEST = '1';
   // This file exercises the PKCE-only exchange; a stray client secret would change the token path.
   delete process.env.MCP_CLIENT_SECRET;
-  delete process.env.VAULT_APPROVAL_PASSWORD;
+  delete process.env.APPROVAL_PASSWORD;
   // createAuth now refuses to construct with /authorize unguarded; this suite characterizes the
   // click-to-approve (no-password) flow, so declare the page externally guarded.
-  process.env.VAULT_APPROVAL_OPEN = 'true';
+  process.env.APPROVAL_OPEN = 'true';
   createApp = (await import('../src/app.js')).createApp;
 });
 

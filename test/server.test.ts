@@ -67,7 +67,7 @@ beforeAll(async () => {
   // createAuth now enforces the approval guard at construction. This file's guard is the client
   // secret, but one case deletes it to exercise the PKCE-only exchange; the open flag keeps
   // construction working there (the secret is still enforced at the token endpoint when set).
-  process.env.VAULT_APPROVAL_OPEN = 'true';
+  process.env.APPROVAL_OPEN = 'true';
   // Defensive: another test file (e.g. vault-resolve.test.ts) may set a long
   // resolver TTL; clear so this file's resolver behavior is predictable.
   delete process.env.RESOLVE_INDEX_TTL_MS;
@@ -82,7 +82,7 @@ afterAll(async () => {
   delete process.env.VAULT_CONTEXT_PATH;
   delete process.env.VAULT_DISPLAY_NAME;
   delete process.env.DAILY_NOTE_PATH_TEMPLATE;
-  delete process.env.VAULT_APPROVAL_OPEN;
+  delete process.env.APPROVAL_OPEN;
   await rm(vaultPath, { recursive: true, force: true });
 });
 

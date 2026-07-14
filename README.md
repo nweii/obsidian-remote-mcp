@@ -70,7 +70,7 @@ Access to the vault is controlled in layers.
 - **[OAuth 2.1 + PKCE](#oauth-browser-sign-in)** — browser sign-in, presenting your `MCP_CLIENT_ID`.
 - **[API key](#api-key-static-bearer-token)** (`MCP_STATIC_BEARER_TOKEN`) — a fixed bearer token, for clients that can't open a browser.
 
-**Approval** — with OAuth, a client is granted access at the approval page, so the server won't start until access is guarded. Set [`VAULT_APPROVAL_PASSWORD`](#password-gate) to require a password there, or rely on a client secret (`MCP_CLIENT_SECRET`), which guards token exchange instead. If a gateway like Cloudflare Zero Trust already fronts `/authorize`, set `VAULT_APPROVAL_OPEN=true`.
+**Approval** — with OAuth, a client is granted access at the approval page, so the server won't start until access is guarded. Set [`APPROVAL_PASSWORD`](#password-gate) to require a password there, or rely on a client secret (`MCP_CLIENT_SECRET`), which guards token exchange instead. If a gateway like Cloudflare Zero Trust already fronts `/authorize`, set `APPROVAL_OPEN=true`.
 
 **Scope** — `.mcpignore` blocks paths from access, `VAULT_READ_ONLY` disables writes, and `CORS_ALLOWED_ORIGINS` limits browser origins. Paths are always confined to the vault root.
 
@@ -98,7 +98,7 @@ cd obsidian-remote-mcp
 bun install
 export VAULT_PATH=/absolute/path/to/your/vault
 export MCP_CLIENT_ID=my-vault-mcp
-export VAULT_APPROVAL_PASSWORD=pick-a-password   # or VAULT_APPROVAL_OPEN=true behind a gateway
+export APPROVAL_PASSWORD=pick-a-password   # or APPROVAL_OPEN=true behind a gateway
 bun run src/server.ts
 ```
 
@@ -203,8 +203,8 @@ The relevant variables:
 - **`MCP_CLIENT_ID`** (required) — the one client ID the server accepts.
 - **`MCP_CLIENT_SECRET`** (optional) — if set, every OAuth client must send the same value at `POST /token`. If unset, token exchange relies on PKCE alone — use HTTPS and limit who can reach `/authorize`.
 - **`MCP_BASE_URL`** — must match the public site origin (no `/mcp`).
-- **`MCP_ALLOWED_REDIRECT_URIS`** (optional) — comma-separated allowlist of OAuth callback URIs for the configured client. When unset, the server allows the callbacks for Claude.ai (`https://claude.ai/api/mcp/auth_callback`), ChatGPT connectors (`https://chatgpt.com/connector_platform_oauth_redirect`), Cursor (`cursor://anysphere.cursor-mcp/oauth/callback`), and Poke (`https://poke.com/api/v1/mcp/callback`) out of the box. Setting the env var **replaces** that default list, so include every callback you want to keep.
-- **`MCP_DCR_ENABLED`** (optional) — set `true` to let clients that can't be pre-configured (e.g. ChatGPT) register themselves at `/register` with no per-client setup. The approval password still gates every connection, so this requires `VAULT_APPROVAL_PASSWORD`. Default off.
+- **`MCP_CLIENT_ALLOWED_REDIRECT_URIS`** (optional) — comma-separated allowlist of OAuth callback URIs for the configured client. When unset, the server allows the callbacks for Claude.ai (`https://claude.ai/api/mcp/auth_callback`), ChatGPT connectors (`https://chatgpt.com/connector_platform_oauth_redirect`), Cursor (`cursor://anysphere.cursor-mcp/oauth/callback`), and Poke (`https://poke.com/api/v1/mcp/callback`) out of the box. Setting the env var **replaces** that default list, so include every callback you want to keep.
+- **`MCP_DCR_ENABLED`** (optional) — set `true` to let clients that can't be pre-configured (e.g. ChatGPT) register themselves at `/register` with no per-client setup. The approval password still gates every connection, so this requires `APPROVAL_PASSWORD`. Default off.
 - **`MCP_DCR_ALLOWED_REDIRECT_URIS`** (optional) — hardening for the above: comma-separated allowlist restricting which callbacks self-registering clients may use (exact, or host-scoped `https://host/*`). Setting it also enables DCR. Unset accepts each client's own declared redirect.
 - **`TOKEN_STORE_PATH`** (default `./tokens.json`) — stores OAuth-issued tokens after login so clients survive server restarts.
 
@@ -236,9 +236,9 @@ When set, only listed origins get a reflected `Access-Control-Allow-Origin`; oth
 
 #### Password gate
 
-The OAuth approval page must be guarded, and the server refuses to start otherwise. Set `VAULT_APPROVAL_PASSWORD` to require a password on that page before a code is issued; it's checked on every authorization. A client secret (`MCP_CLIENT_SECRET`) satisfies the guard instead, by blocking token exchange.
+The OAuth approval page must be guarded, and the server refuses to start otherwise. Set `APPROVAL_PASSWORD` to require a password on that page before a code is issued; it's checked on every authorization. A client secret (`MCP_CLIENT_SECRET`) satisfies the guard instead, by blocking token exchange.
 
-If a reverse proxy or zero-trust gateway already guards `/authorize` (the stronger control), set `VAULT_APPROVAL_OPEN=true` for the click-to-approve page instead.
+If a reverse proxy or zero-trust gateway already guards `/authorize` (the stronger control), set `APPROVAL_OPEN=true` for the click-to-approve page instead.
 
 ### Health endpoint
 
@@ -272,10 +272,10 @@ Configuration is through environment variables. There's no required `.env` file 
 ```env
 MCP_CLIENT_ID=your-client-id
 MCP_CLIENT_SECRET=your-client-secret   # optional
-VAULT_APPROVAL_PASSWORD=                # password for the OAuth approval page; required unless MCP_CLIENT_SECRET or VAULT_APPROVAL_OPEN is set
-VAULT_APPROVAL_OPEN=                    # set true to allow click-to-approve when a gateway already guards /authorize
+APPROVAL_PASSWORD=                # password for the OAuth approval page; required unless MCP_CLIENT_SECRET or APPROVAL_OPEN is set
+APPROVAL_OPEN=                    # set true to allow click-to-approve when a gateway already guards /authorize
 MCP_BASE_URL=https://mcp.example.com
-MCP_ALLOWED_REDIRECT_URIS=https://claude.ai/api/mcp/auth_callback # optional; overrides the built-in defaults
+MCP_CLIENT_ALLOWED_REDIRECT_URIS=https://claude.ai/api/mcp/auth_callback # optional; overrides the built-in defaults
 VAULT_PATH=/path/to/your/vault         # optional if obsidian.json is available
 OBSIDIAN_VAULT_ID=personal             # optional when obsidian.json contains multiple vaults
 VAULT_DISPLAY_NAME=Personal            # optional; defaults to the vault directory name

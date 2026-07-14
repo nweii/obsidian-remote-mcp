@@ -26,7 +26,7 @@ export function createApp(): { app: Express; auth: Auth } {
   const clientId = process.env.MCP_CLIENT_ID;
   if (!clientId) throw new Error('MCP_CLIENT_ID env var is required');
 
-  const redirectEnv = process.env.MCP_ALLOWED_REDIRECT_URIS;
+  const redirectEnv = process.env.MCP_CLIENT_ALLOWED_REDIRECT_URIS;
   const clientRedirectUris = redirectEnv ? redirectEnv.split(',').map(u => u.trim()).filter(Boolean) : undefined;
 
   // Dynamic client registration lets apps that can't be pre-configured (e.g. ChatGPT) register
@@ -47,8 +47,8 @@ export function createApp(): { app: Express; auth: Auth } {
     allowedRedirectUris: clientRedirectUris,
     dynamicClientRegistration: dcrEnabled ? { allowedRedirectUris: dcrRedirectUris } : undefined,
     staticBearerToken: process.env.MCP_STATIC_BEARER_TOKEN,
-    approvalPassword: process.env.VAULT_APPROVAL_PASSWORD,
-    approvalOpen: process.env.VAULT_APPROVAL_OPEN?.trim().toLowerCase() === 'true',
+    approvalPassword: process.env.APPROVAL_PASSWORD,
+    approvalOpen: process.env.APPROVAL_OPEN?.trim().toLowerCase() === 'true',
     approvalPrompt: `Allow access to your ${getVaultDisplayName()} vault?`,
     testMode,
     // The SDK's rate limiter keys on client IP; under test every request shares 127.0.0.1, so leaving

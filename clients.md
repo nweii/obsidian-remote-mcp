@@ -43,7 +43,7 @@ API key:
 }
 ```
 
-Cursor's OAuth redirect URI (`cursor://anysphere.cursor-mcp/oauth/callback`) is in the default allowlist. If you set **`MCP_ALLOWED_REDIRECT_URIS`** yourself, include it so Cursor can still complete OAuth.
+Cursor's OAuth redirect URI (`cursor://anysphere.cursor-mcp/oauth/callback`) is in the default allowlist. If you set **`MCP_CLIENT_ALLOWED_REDIRECT_URIS`** yourself, include it so Cursor can still complete OAuth.
 
 ### ChatGPT and Codex
 
@@ -59,8 +59,8 @@ Custom MCP connectors on the web app live behind developer mode (see OpenAI's [d
 
 Two ways to authenticate:
 
-- **Let it register itself** — enable dynamic client registration on the server with `MCP_DCR_ENABLED=true` (keep `VAULT_APPROVAL_PASSWORD` set — it's the gate). ChatGPT's Registration URL populates automatically and you configure no callback.
-- **Enter a client ID** — pick "User-Defined OAuth Client" and enter your `MCP_CLIENT_ID`. ChatGPT's legacy fixed callback (`https://chatgpt.com/connector_platform_oauth_redirect`) is in the default allowlist, but newer connectors present a per-app callback (`https://chatgpt.com/connector/oauth/…`); if OAuth fails with `redirect_uri not allowed`, add the URL ChatGPT shows you to **`MCP_ALLOWED_REDIRECT_URIS`**.
+- **Let it register itself** — enable dynamic client registration on the server with `MCP_DCR_ENABLED=true` (keep `APPROVAL_PASSWORD` set — it's the gate). ChatGPT's Registration URL populates automatically and you configure no callback.
+- **Enter a client ID** — pick "User-Defined OAuth Client" and enter your `MCP_CLIENT_ID`. ChatGPT's legacy fixed callback (`https://chatgpt.com/connector_platform_oauth_redirect`) is in the default allowlist, but newer connectors present a per-app callback (`https://chatgpt.com/connector/oauth/…`); if OAuth fails with `redirect_uri not allowed`, add the URL ChatGPT shows you to **`MCP_CLIENT_ALLOWED_REDIRECT_URIS`**.
 
 Then create the connector, **Authenticate**, and complete the approval-password screen.
 

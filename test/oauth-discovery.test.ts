@@ -53,8 +53,8 @@ beforeAll(async () => {
   process.env.VAULT_MCP_TEST = '1';
   // createAuth now refuses to construct with /authorize unguarded; this suite characterizes the
   // click-to-approve (no-password) discovery surface, so declare the page externally guarded.
-  process.env.VAULT_APPROVAL_OPEN = 'true';
-  delete process.env.VAULT_APPROVAL_PASSWORD;
+  process.env.APPROVAL_OPEN = 'true';
+  delete process.env.APPROVAL_PASSWORD;
   createApp = (await import('../src/app.js')).createApp;
 });
 
@@ -139,7 +139,7 @@ describe('dynamic client registration', () => {
   });
 
   test('MCP_DCR_ENABLED opens /register and accepts a self-registering ChatGPT client', async () => {
-    await withEnvs({ MCP_DCR_ENABLED: 'true', VAULT_APPROVAL_PASSWORD: 'sekret' }, async () => {
+    await withEnvs({ MCP_DCR_ENABLED: 'true', APPROVAL_PASSWORD: 'sekret' }, async () => {
       const { app } = createApp();
       const { base, close } = await listen(app);
       try {
@@ -158,8 +158,8 @@ describe('dynamic client registration', () => {
   });
 
   test('refuses to boot when DCR is enabled without an approval password', async () => {
-    // VAULT_APPROVAL_OPEN=true (from beforeAll) guards /authorize, so only the DCR password guard fires.
-    await withEnvs({ MCP_DCR_ENABLED: 'true', VAULT_APPROVAL_PASSWORD: undefined }, () => {
+    // APPROVAL_OPEN=true (from beforeAll) guards /authorize, so only the DCR password guard fires.
+    await withEnvs({ MCP_DCR_ENABLED: 'true', APPROVAL_PASSWORD: undefined }, () => {
       expect(() => createApp()).toThrow(/requires approvalPassword/);
     });
   });

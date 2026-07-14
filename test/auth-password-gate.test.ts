@@ -1,7 +1,7 @@
 // ABOUTME: Tests for the OAuth approval-page password — the page issues a code on click when no
-// password is set, requires the correct password when VAULT_APPROVAL_PASSWORD is set, and the
+// password is set, requires the correct password when APPROVAL_PASSWORD is set, and the
 // construction-time guard refuses to build the app unless an approval password, a client secret, or
-// VAULT_APPROVAL_OPEN is configured.
+// APPROVAL_OPEN is configured.
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { createHash } from 'crypto';
 import { mkdtemp, rm } from 'fs/promises';
@@ -75,8 +75,8 @@ beforeAll(async () => {
   process.env.MCP_CLIENT_ID = 'gate-client';
   process.env.MCP_BASE_URL = 'https://example.test';
   process.env.VAULT_MCP_TEST = '1';
-  delete process.env.VAULT_APPROVAL_PASSWORD;
-  delete process.env.VAULT_APPROVAL_OPEN;
+  delete process.env.APPROVAL_PASSWORD;
+  delete process.env.APPROVAL_OPEN;
   createApp = (await import('../src/app.js')).createApp;
 });
 
@@ -86,7 +86,7 @@ afterAll(async () => {
 
 describe('approval page without a password (click-to-approve)', () => {
   test('GET /authorize renders no password field', async () => {
-    await withEnvs({ VAULT_APPROVAL_PASSWORD: undefined, VAULT_APPROVAL_OPEN: 'true' }, async () => {
+    await withEnvs({ APPROVAL_PASSWORD: undefined, APPROVAL_OPEN: 'true' }, async () => {
       const { app } = createApp();
       const { base, close } = await listen(app);
       try {
@@ -100,7 +100,7 @@ describe('approval page without a password (click-to-approve)', () => {
   });
 
   test('POST /authorize issues a code with no password', async () => {
-    await withEnvs({ VAULT_APPROVAL_PASSWORD: undefined, VAULT_APPROVAL_OPEN: 'true' }, async () => {
+    await withEnvs({ APPROVAL_PASSWORD: undefined, APPROVAL_OPEN: 'true' }, async () => {
       const { app } = createApp();
       const { base, close } = await listen(app);
       try {
@@ -115,7 +115,7 @@ describe('approval page without a password (click-to-approve)', () => {
 });
 
 describe('approval page with a password', () => {
-  const PW = { VAULT_APPROVAL_PASSWORD: 'hunter2' };
+  const PW = { APPROVAL_PASSWORD: 'hunter2' };
 
   test('GET /authorize renders a password field and no username field', async () => {
     await withEnvs(PW, async () => {
@@ -208,28 +208,28 @@ describe('approval page with a password', () => {
 describe('construction-time approval guard', () => {
   test('throws when no password, client secret, or open opt-out is set', async () => {
     await withEnvs(
-      { VAULT_APPROVAL_PASSWORD: undefined, VAULT_APPROVAL_OPEN: undefined, MCP_CLIENT_SECRET: undefined },
+      { APPROVAL_PASSWORD: undefined, APPROVAL_OPEN: undefined, MCP_CLIENT_SECRET: undefined },
       () => { expect(() => createApp()).toThrow(/Refusing to start/); },
     );
   });
 
-  test('constructs when VAULT_APPROVAL_PASSWORD is set', async () => {
+  test('constructs when APPROVAL_PASSWORD is set', async () => {
     await withEnvs(
-      { VAULT_APPROVAL_PASSWORD: 'hunter2', VAULT_APPROVAL_OPEN: undefined, MCP_CLIENT_SECRET: undefined },
+      { APPROVAL_PASSWORD: 'hunter2', APPROVAL_OPEN: undefined, MCP_CLIENT_SECRET: undefined },
       () => { expect(() => createApp()).not.toThrow(); },
     );
   });
 
   test('constructs when MCP_CLIENT_SECRET is set (it guards token exchange)', async () => {
     await withEnvs(
-      { VAULT_APPROVAL_PASSWORD: undefined, VAULT_APPROVAL_OPEN: undefined, MCP_CLIENT_SECRET: 'shh' },
+      { APPROVAL_PASSWORD: undefined, APPROVAL_OPEN: undefined, MCP_CLIENT_SECRET: 'shh' },
       () => { expect(() => createApp()).not.toThrow(); },
     );
   });
 
-  test('constructs when VAULT_APPROVAL_OPEN=true', async () => {
+  test('constructs when APPROVAL_OPEN=true', async () => {
     await withEnvs(
-      { VAULT_APPROVAL_PASSWORD: undefined, VAULT_APPROVAL_OPEN: 'true', MCP_CLIENT_SECRET: undefined },
+      { APPROVAL_PASSWORD: undefined, APPROVAL_OPEN: 'true', MCP_CLIENT_SECRET: undefined },
       () => { expect(() => createApp()).not.toThrow(); },
     );
   });
