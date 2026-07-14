@@ -115,3 +115,52 @@ describe('authorization server metadata', () => {
     });
   });
 });
+
+// MCP_DCR_ENABLED opens /register so clients that can't be pre-configured (e.g. ChatGPT) register
+// themselves; the approval password stays the gate; DCR is off unless enabled.
+describe('dynamic client registration', () => {
+  const registerBody = {
+    redirect_uris: ['https://chatgpt.com/connector/oauth/abc123'],
+    token_endpoint_auth_method: 'none',
+    grant_types: ['authorization_code', 'refresh_token'],
+    response_types: ['code'],
+    client_name: 'ChatGPT',
+  };
+
+  test('is off by default — no registration_endpoint advertised', async () => {
+    const { app } = createApp();
+    const { base, close } = await listen(app);
+    try {
+      const body = (await (await fetch(`${base}/.well-known/oauth-authorization-server`)).json()) as { registration_endpoint?: string };
+      expect(body.registration_endpoint).toBeUndefined();
+    } finally {
+      await close();
+    }
+  });
+
+  test('MCP_DCR_ENABLED opens /register and accepts a self-registering ChatGPT client', async () => {
+    await withEnvs({ MCP_DCR_ENABLED: 'true', VAULT_APPROVAL_PASSWORD: 'sekret' }, async () => {
+      const { app } = createApp();
+      const { base, close } = await listen(app);
+      try {
+        const meta = (await (await fetch(`${base}/.well-known/oauth-authorization-server`)).json()) as { registration_endpoint?: string };
+        expect(meta.registration_endpoint).toMatch(/\/register$/);
+        const res = await fetch(`${base}/register`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(registerBody),
+        });
+        expect(res.status).toBe(201);
+      } finally {
+        await close();
+      }
+    });
+  });
+
+  test('refuses to boot when DCR is enabled without an approval password', async () => {
+    // VAULT_APPROVAL_OPEN=true (from beforeAll) guards /authorize, so only the DCR password guard fires.
+    await withEnvs({ MCP_DCR_ENABLED: 'true', VAULT_APPROVAL_PASSWORD: undefined }, () => {
+      expect(() => createApp()).toThrow(/requires approvalPassword/);
+    });
+  });
+});

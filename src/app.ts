@@ -27,13 +27,25 @@ export function createApp(): { app: Express; auth: Auth } {
   if (!clientId) throw new Error('MCP_CLIENT_ID env var is required');
 
   const redirectEnv = process.env.MCP_ALLOWED_REDIRECT_URIS;
+  const clientRedirectUris = redirectEnv ? redirectEnv.split(',').map(u => u.trim()).filter(Boolean) : undefined;
+
+  // Dynamic client registration lets apps that can't be pre-configured (e.g. ChatGPT) register
+  // themselves at /register — no per-client server change. MCP_DCR_ENABLED turns it on; the approval
+  // password still gates every connection. MCP_DCR_ALLOWED_REDIRECT_URIS is optional hardening (and, if
+  // set, also implies enabled) restricting which callbacks may register — exact URIs or a host-scoped
+  // "https://host/*". Left off, each client's own declared redirect is accepted and matched at /authorize.
+  const dcrRedirectEnv = process.env.MCP_DCR_ALLOWED_REDIRECT_URIS;
+  const dcrRedirectUris = dcrRedirectEnv ? dcrRedirectEnv.split(',').map(u => u.trim()).filter(Boolean) : undefined;
+  const dcrEnabled = /^(1|true)$/i.test(process.env.MCP_DCR_ENABLED?.trim() ?? '') || !!dcrRedirectUris?.length;
+
   const auth = createAuth({
     baseUrl: process.env.MCP_BASE_URL ?? `http://localhost:${port}`,
     clientId,
     displayName: 'obsidian-remote-mcp',
     tokenStorePath: process.env.TOKEN_STORE_PATH ?? './tokens.json',
     clientSecret: process.env.MCP_CLIENT_SECRET,
-    allowedRedirectUris: redirectEnv ? redirectEnv.split(',').map(u => u.trim()) : undefined,
+    allowedRedirectUris: clientRedirectUris,
+    dynamicClientRegistration: dcrEnabled ? { allowedRedirectUris: dcrRedirectUris } : undefined,
     staticBearerToken: process.env.MCP_STATIC_BEARER_TOKEN,
     approvalPassword: process.env.VAULT_APPROVAL_PASSWORD,
     approvalOpen: process.env.VAULT_APPROVAL_OPEN?.trim().toLowerCase() === 'true',

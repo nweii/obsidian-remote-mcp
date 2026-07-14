@@ -48,7 +48,9 @@ MCP endpoint: `POST /mcp` (requires Bearer token)
 | `VAULT_APPROVAL_PASSWORD` | yes\* | Password for the OAuth approval page: `/authorize` requires it before issuing a code. \*The server refuses to start with the approval path unguarded; this, `MCP_CLIENT_SECRET`, or `VAULT_APPROVAL_OPEN=true` satisfies that check. |
 | `VAULT_APPROVAL_OPEN` | no | Set `true` to allow the click-to-approve approval page when a reverse proxy / zero-trust gateway already guards `/authorize`. Satisfies the startup guard in place of an approval password. |
 | `MCP_BASE_URL` | yes (prod) | Public **site** URL (scheme + host, no `/mcp`). Used in OAuth discovery as the protected `resource` |
-| `MCP_ALLOWED_REDIRECT_URIS` | no | Comma-separated allowlist of OAuth redirect URIs. Defaults to Claude's callback URI. |
+| `MCP_ALLOWED_REDIRECT_URIS` | no | Comma-separated allowlist of OAuth redirect URIs for the configured client. Defaults to Claude's callback URI. |
+| `MCP_DCR_ENABLED` | no | `true` opens `/register` so clients that can't be pre-configured (e.g. ChatGPT) register themselves. The approval password stays the gate, so requires `VAULT_APPROVAL_PASSWORD`. Default off. |
+| `MCP_DCR_ALLOWED_REDIRECT_URIS` | no | Optional hardening for DCR: allowlist of callbacks self-registering clients may use (exact or host-scoped `https://host/*`). Setting it also enables DCR. |
 | `VAULT_PATH` | no | Absolute vault root; overrides Obsidian config when set |
 | `OBSIDIAN_VAULT_ID` | when multiple vaults | Which `vaults` entry in `obsidian.json` to use (matches id case-insensitively) |
 | `VAULT_DISPLAY_NAME` | no | Optional label shown on the OAuth approval page. Defaults to the resolved vault directory name. |

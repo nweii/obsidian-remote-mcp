@@ -196,14 +196,16 @@ Every `POST /mcp` request must send `Authorization: Bearer …`. You can offer *
 
 For clients where the user can open a browser. The server uses **OAuth 2.1**: approve on `/authorize`, exchange the short-lived code at `POST /token`, then send the issued access token in `Authorization` on `/mcp`.
 
-The server does **not** support dynamic client registration (DCR). You configure one fixed client ID, and clients present that same ID — there is no `/register` endpoint. Clients that expect DCR need their manual-credentials path (for example, Poke's Kitchen templates).
+By default you configure one fixed client ID and clients present that same ID. Dynamic client registration (DCR) is **opt-in**: set `MCP_DCR_ENABLED=true` to open a `/register` endpoint so clients that can't be pre-configured (e.g. ChatGPT, or Poke's standard OAuth path) register themselves — the approval password stays the gate. With DCR off there is no `/register`, and such clients need their manual-credentials path (for example, Poke's Kitchen templates).
 
 The relevant variables:
 
 - **`MCP_CLIENT_ID`** (required) — the one client ID the server accepts.
 - **`MCP_CLIENT_SECRET`** (optional) — if set, every OAuth client must send the same value at `POST /token`. If unset, token exchange relies on PKCE alone — use HTTPS and limit who can reach `/authorize`.
 - **`MCP_BASE_URL`** — must match the public site origin (no `/mcp`).
-- **`MCP_ALLOWED_REDIRECT_URIS`** (optional) — comma-separated allowlist of OAuth callback URIs. When unset, the server allows the callbacks for Claude.ai (`https://claude.ai/api/mcp/auth_callback`), ChatGPT connectors (`https://chatgpt.com/connector_platform_oauth_redirect`), Cursor (`cursor://anysphere.cursor-mcp/oauth/callback`), and Poke (`https://poke.com/api/v1/mcp/callback`) out of the box. Setting the env var **replaces** that default list, so include every callback you want to keep.
+- **`MCP_ALLOWED_REDIRECT_URIS`** (optional) — comma-separated allowlist of OAuth callback URIs for the configured client. When unset, the server allows the callbacks for Claude.ai (`https://claude.ai/api/mcp/auth_callback`), ChatGPT connectors (`https://chatgpt.com/connector_platform_oauth_redirect`), Cursor (`cursor://anysphere.cursor-mcp/oauth/callback`), and Poke (`https://poke.com/api/v1/mcp/callback`) out of the box. Setting the env var **replaces** that default list, so include every callback you want to keep.
+- **`MCP_DCR_ENABLED`** (optional) — set `true` to let clients that can't be pre-configured (e.g. ChatGPT) register themselves at `/register` with no per-client setup. The approval password still gates every connection, so this requires `VAULT_APPROVAL_PASSWORD`. Default off.
+- **`MCP_DCR_ALLOWED_REDIRECT_URIS`** (optional) — hardening for the above: comma-separated allowlist restricting which callbacks self-registering clients may use (exact, or host-scoped `https://host/*`). Setting it also enables DCR. Unset accepts each client's own declared redirect.
 - **`TOKEN_STORE_PATH`** (default `./tokens.json`) — stores OAuth-issued tokens after login so clients survive server restarts.
 
 #### API key (static bearer token)
