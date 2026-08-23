@@ -68,6 +68,7 @@ MCP endpoint: `POST /mcp` (requires Bearer token)
 | `MCP_STATIC_BEARER_TOKEN` | no | Optional fixed secret: requests to `/mcp` with `Authorization: Bearer <same value>` are allowed (for clients that cannot use browser OAuth). Long random string; use HTTPS. Works alongside normal OAuth tokens. |
 | `VAULT_READ_ONLY` | no | Set to `true` to block all write operations (create, update, edit, move, trash) |
 | `HEALTH_TOKEN` | no | Dedicated bearer for `GET /health`. Default-closed: unset → the route 404s. Sent as `Authorization: Bearer`; separate from the OAuth and static-bearer secrets. |
+| `HOST` | no | Bind address (default: `0.0.0.0`, so the port is reachable inside a container). Set `127.0.0.1` when running directly on a host behind a local proxy. In Docker, restrict the published port instead — `"127.0.0.1:3456:3456"`. |
 | `PORT` | no | HTTP port (default: `3456`) |
 
 ## Claude.ai custom connector (plain checklist)

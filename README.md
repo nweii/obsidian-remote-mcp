@@ -131,7 +131,7 @@ services:
       # - ./data:/app/data                       # uncomment to persist TOKEN_STORE_PATH on the host
     command: ["bun", "run", "src/server.ts"]
     ports:
-      - "3456:3456"                              # host:container — access on http://localhost:3456
+      - "127.0.0.1:3456:3456"                    # bind to loopback: reachable by a proxy on this host, not from the LAN
 ```
 
 ```bash
@@ -144,6 +144,8 @@ docker compose logs -f    # watch output
 Remote MCP and OAuth require **HTTPS**. Use a reverse proxy (Caddy, nginx, Cloudflare Tunnel, etc.) to handle TLS in front of the app and expose a public URL like `https://mcp.example.com`. Set **`MCP_BASE_URL`** on the server to that origin **without** the `/mcp` path — it must match what users see in the browser bar.
 
 If you use Cloudflare Zero Trust, a practical pattern is to put the identity gate **only** on `/authorize`, so users log in to approve access while `/.well-known/*`, `/token`, and `/mcp` stay reachable for the protocol.
+
+> **Publish the port to loopback, not to every interface.** The server binds `0.0.0.0` so it is reachable inside its container; a plain `"3456:3456"` mapping then exposes it on every host interface (and, on Linux, through the host firewall via Docker's iptables rules). Anyone who can reach that port talks to the backend directly, bypassing the proxy — including the identity gateway, which matters most with `APPROVAL_OPEN=true`, where that gateway *is* the approval gate. Use `"127.0.0.1:3456:3456"`, or set `HOST=127.0.0.1` when running the process directly on the host.
 
 ### 3. Connect a client
 
