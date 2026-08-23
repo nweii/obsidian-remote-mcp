@@ -617,6 +617,10 @@ export async function replaceInNote(relativePath: string, find: string, content:
 }
 
 export async function deleteNote(relativePath: string): Promise<void> {
+  // Every other mutating helper asserts this; deleteNote was the one that didn't. No tool
+  // currently reaches it, so VAULT_READ_ONLY was honoured in practice — but wiring up a
+  // delete tool later would have silently inherited a read-only bypass.
+  assertWritable();
   await fs.unlink(resolveSafePath(relativePath));
 }
 
@@ -708,6 +712,47 @@ interface WalkEntry {
 
 const isMarkdownFile = (name: string): boolean => name.toLowerCase().endsWith('.md');
 
+// Thrown when a caller's search pattern can't be compiled or is implausibly long. Typed so the
+// tool layer can turn it into a friendly isError result instead of letting a raw SyntaxError
+// escape the handler.
+export class InvalidSearchPatternError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'InvalidSearchPatternError';
+  }
+}
+
+// Generous enough for any real search, short enough that the pathological constructions people
+// paste from regex-golf threads don't get through.
+const MAX_SEARCH_PATTERN_LENGTH = 1000;
+
+// Compile a caller-supplied search pattern.
+//
+// This bounds two of the three failure modes. An invalid pattern used to throw a raw SyntaxError
+// out of the tool handler; it now returns a typed error the agent can act on. An absurdly long
+// pattern is refused outright.
+//
+// It does NOT solve catastrophic backtracking: JavaScript's regex engine has no execution
+// timeout, so a short pattern like /(a+)+$/ against the right note still blocks the event loop,
+// and this server is single-process. Bounding that properly needs either a linear-time engine
+// (RE2) or running the match off-thread with a kill switch — a larger change than this fix, and
+// one worth agreeing on upstream first. The exposure is limited to an authenticated caller, so
+// the effect is a stall rather than a leak.
+function compileSearchPattern(pattern: string, flags: string): RegExp {
+  if (pattern.length > MAX_SEARCH_PATTERN_LENGTH) {
+    throw new InvalidSearchPatternError(
+      `Search pattern is ${pattern.length} characters, over the ${MAX_SEARCH_PATTERN_LENGTH}-character limit. Use a shorter pattern.`,
+    );
+  }
+  try {
+    return new RegExp(pattern, flags);
+  } catch (e) {
+    throw new InvalidSearchPatternError(
+      `Invalid regular expression: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+}
+
 async function* walkVaultFiles(options: WalkVaultOptions = {}): AsyncGenerator<WalkEntry> {
   const { folder, includeFile = isMarkdownFile, sort = false } = options;
   const vaultRoot = getVaultRoot();
@@ -735,7 +780,7 @@ async function* walkVaultFiles(options: WalkVaultOptions = {}): AsyncGenerator<W
 export async function searchContent(query: string, options: SearchOptions = {}): Promise<SearchResult[]> {
   const { caseSensitive = false, folder, limit = 20 } = options;
   const results: SearchResult[] = [];
-  const regex = new RegExp(query, caseSensitive ? '' : 'i');
+  const regex = compileSearchPattern(query, caseSensitive ? '' : 'i');
   const maxResults = limit > 0 ? limit : Number.POSITIVE_INFINITY;
 
   for await (const { fullPath, relPath } of walkVaultFiles({ folder })) {
@@ -754,7 +799,7 @@ export async function searchContent(query: string, options: SearchOptions = {}):
 
 export async function searchFilename(pattern: string): Promise<string[]> {
   const results: string[] = [];
-  const regex = new RegExp(pattern, 'i');
+  const regex = compileSearchPattern(pattern, 'i');
   // includeFile: () => true so every file is tested against the pattern, not just .md.
   for await (const { relPath, name } of walkVaultFiles({ includeFile: () => true })) {
     if (regex.test(name)) results.push(relPath);

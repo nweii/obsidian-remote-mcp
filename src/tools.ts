@@ -915,7 +915,17 @@ export async function registerTools(server: McpServer) {
       outputSchema: contentSearchOutput,
     },
     async ({ query, folder, limit, case_sensitive }) => {
-      const results = await vault.searchContent(query, { folder, limit, caseSensitive: case_sensitive });
+      let results: vault.SearchResult[];
+      try {
+        results = await vault.searchContent(query, { folder, limit, caseSensitive: case_sensitive });
+      } catch (e) {
+        // A malformed pattern is the caller's mistake, not a server fault — hand back the
+        // reason so the agent can correct it, rather than letting a SyntaxError escape.
+        if (e instanceof vault.InvalidSearchPatternError) {
+          return { content: [{ type: "text" as const, text: e.message }], isError: true };
+        }
+        throw e;
+      }
       const hitLimit = limit > 0 && results.length === limit;
       return structuredResult(
         contentSearchOutput,
