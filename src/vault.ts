@@ -959,18 +959,30 @@ export class AmbiguousHeadingError extends Error {
     heading: string;
     matches: AmbiguousHeadingMatch[];
   }) {
-    const candidates = opts.matches
-      .map((m, i) => `  ${i + 1}. line ${m.startIdx + 1} — ${m.preview}`)
-      .join('\n');
+    // The message carries line numbers only — never the previews. The audit logger records
+    // error text verbatim (both the isError result's first content block and the message of
+    // any exception thrown out of a handler), so anything placed here lands in
+    // logs/tool-calls.jsonl on disk. Previews are note body text; they go to the agent
+    // through candidatesText() as a separate content block instead.
+    const lines = opts.matches.map(m => m.startIdx + 1).join(', ');
     super(
-      `Heading "${opts.heading}" matches ${opts.matches.length} sections in ${opts.relativePath}:\n${candidates}\n` +
-        `vault_edit_section can't safely guess which one to edit. Use vault_edit with a find-anchored ` +
-        `replace on text unique to the target section, or vault_update for the whole note.`,
+      `Heading "${opts.heading}" matches ${opts.matches.length} sections in ${opts.relativePath} ` +
+        `(lines ${lines}). vault_edit_section can't safely guess which one to edit. Use vault_edit ` +
+        `with a find-anchored replace on text unique to the target section, or vault_update for ` +
+        `the whole note.`,
     );
     this.name = 'AmbiguousHeadingError';
     this.heading = opts.heading;
     this.relativePath = opts.relativePath;
     this.matches = opts.matches;
+  }
+
+  // The candidate list with a one-line body preview per match, for disambiguating by eye.
+  // Kept off `message` on purpose — see the constructor.
+  candidatesText(): string {
+    return this.matches
+      .map((m, i) => `  ${i + 1}. line ${m.startIdx + 1} — ${m.preview}`)
+      .join('\n');
   }
 }
 

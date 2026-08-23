@@ -802,7 +802,17 @@ export async function registerTools(server: McpServer) {
         // Ambiguous-heading errors carry their own recovery guidance — don't append
         // the "call vault_outline first" hint, which only fits the missing-heading case.
         if (e instanceof vault.AmbiguousHeadingError) {
-          return { content: [{ type: "text", text: message }], isError: true };
+          // Two blocks on purpose. The audit logger records only the first block of an
+          // isError result, and the previews in the second are note body text — keeping
+          // them out of block one keeps them out of logs/tool-calls.jsonl while the agent
+          // still gets everything it needs to disambiguate.
+          return {
+            content: [
+              { type: "text", text: message },
+              { type: "text", text: `Candidate sections:\n${e.candidatesText()}` },
+            ],
+            isError: true,
+          };
         }
         const hint = message.startsWith("Heading ")
           ? " — call vault_outline first and copy heading text exactly (without # prefix)."

@@ -19,10 +19,39 @@ export function splitFrontmatter(content: string): { frontmatter: string | null;
   };
 }
 
+// Thrown instead of js-yaml's own YAMLException. js-yaml builds a message that quotes the
+// offending source line and its surrounding context, and the audit logger records the message
+// of any exception thrown out of a tool handler verbatim — so an unparseable note would write
+// its own frontmatter into logs/tool-calls.jsonl. This carries the reason and line number,
+// which is what an agent needs to fix the note, and none of the text.
+export class FrontmatterParseError extends Error {
+  constructor(
+    public readonly reason: string,
+    public readonly line?: number,
+  ) {
+    super(
+      `Invalid YAML frontmatter${line !== undefined ? ` at line ${line}` : ''}: ${reason}. ` +
+        `Read the note and correct the frontmatter block.`,
+    );
+    this.name = 'FrontmatterParseError';
+  }
+}
+
 export function parseFrontmatter(content: string): Record<string, unknown> | null {
   const { frontmatter } = splitFrontmatter(content);
   if (frontmatter === null) return null;
-  const parsed = parseYaml(frontmatter);
+  let parsed: unknown;
+  try {
+    parsed = parseYaml(frontmatter);
+  } catch (e) {
+    // js-yaml's YAMLException exposes the failure reason and position separately from the
+    // snippet-bearing `message`; use only those two.
+    const ex = e as { reason?: string; mark?: { line?: number } };
+    throw new FrontmatterParseError(
+      ex.reason ?? 'could not be parsed',
+      ex.mark?.line !== undefined ? ex.mark.line + 1 : undefined,
+    );
+  }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     return {};
   }
