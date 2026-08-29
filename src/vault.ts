@@ -1,6 +1,6 @@
 // ABOUTME: Filesystem operations for the configured Obsidian vault - safe path resolution, read/write/search, list folder.
 import fs from 'fs/promises';
-import { readFileSync } from 'fs';
+import { readFileSync, realpathSync, statSync } from 'fs';
 import { createHash } from 'crypto';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -145,25 +145,124 @@ export function getContextNotePath(): string | null {
 
 // --- .mcpignore --------------------------------------------------------------
 
-// Patterns from <vault>/.mcpignore — relative paths from vault root, one per line.
-// Lines starting with # are comments. Trailing slashes are stripped before matching.
-function loadIgnorePatterns(): string[] {
-  try {
-    return readFileSync(path.join(getVaultRoot(), '.mcpignore'), 'utf-8')
-      .split('\n')
-      .map(l => l.trim().replace(/\/$/, ''))
-      .filter(l => l && !l.startsWith('#'));
-  } catch {
-    return [];
+// Thrown when the vault root itself can't be read. Distinct from VaultPolicyError: that means
+// "this path is not allowed", this means "the vault is not there, so no answer can be trusted".
+export class VaultUnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'VaultUnavailableError';
   }
 }
 
-const IGNORE_PATTERNS = loadIgnorePatterns();
+// Parse the file's text into patterns — relative paths from the vault root, one per line.
+// Lines starting with # are comments. Trailing slashes are stripped before matching.
+function parseIgnorePatterns(text: string): string[] {
+  return text
+    .split('\n')
+    .map(l => l.trim().replace(/\/$/, ''))
+    .filter(l => l && !l.startsWith('#'));
+}
+
+// Refuse to proceed when the vault root isn't a readable directory. Called only on the path
+// where .mcpignore appears to be absent — see getIgnorePatterns for why that case is the
+// dangerous one.
+function assertVaultRootReadable(root: string): void {
+  let isDir = false;
+  try {
+    isDir = statSync(root).isDirectory();
+  } catch {
+    isDir = false;
+  }
+  if (!isDir) {
+    throw new VaultUnavailableError(
+      `Vault root is not a readable directory: ${root}. Refusing to serve, because a missing ` +
+        `or not-yet-mounted vault is indistinguishable from a vault with no .mcpignore — and ` +
+        `treating it as "nothing is ignored" would serve every note unfiltered.`,
+    );
+  }
+}
+
+// The ignore patterns currently on disk, cached against the vault root and the file's
+// mtime+size so an edit is picked up without a restart and without re-reading per call.
+//
+// Two bugs are fixed here versus loading once at import:
+//
+//   1. Fail-open. The old code read .mcpignore at module import inside a bare catch that
+//      returned []. Resolving the vault root does not touch the disk when VAULT_PATH is set,
+//      so a container starting before its NAS volume was ready would read no patterns, start
+//      successfully, and then serve the whole vault with no path blocking for the life of the
+//      process — including after the mount came back. A missing file now forces a check that
+//      the root is actually there, and throws if it isn't.
+//   2. Staleness. Patterns were frozen at import, so editing .mcpignore did nothing until the
+//      process was restarted — with no indication that the new rule wasn't in effect.
+let ignoreCache: { root: string; signature: string; patterns: string[] } | null = null;
+
+function getIgnorePatterns(): string[] {
+  const root = getVaultRoot();
+  const file = path.join(root, '.mcpignore');
+
+  let signature: string;
+  try {
+    const st = statSync(file);
+    signature = `${st.mtimeMs}:${st.size}`;
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code !== 'ENOENT' && code !== 'ENOTDIR') throw e;
+    assertVaultRootReadable(root);
+    signature = 'absent';
+  }
+
+  if (ignoreCache && ignoreCache.root === root && ignoreCache.signature === signature) {
+    return ignoreCache.patterns;
+  }
+
+  let patterns: string[];
+  if (signature === 'absent') {
+    patterns = [];
+  } else {
+    try {
+      patterns = parseIgnorePatterns(readFileSync(file, 'utf-8'));
+    } catch (e) {
+      // Deleted between the stat and the read. Re-check the root before concluding that
+      // nothing is ignored, for the same reason as above.
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code !== 'ENOENT' && code !== 'ENOTDIR') throw e;
+      assertVaultRootReadable(root);
+      patterns = [];
+    }
+  }
+
+  ignoreCache = { root, signature, patterns };
+  return patterns;
+}
 
 function isIgnored(absPath: string): boolean {
-  if (IGNORE_PATTERNS.length === 0) return false;
   const rel = path.relative(getVaultRoot(), absPath);
-  return IGNORE_PATTERNS.some(p => rel === p || rel.startsWith(p + path.sep));
+  return isIgnoredRelative(rel);
+}
+
+// The pattern test itself, against an already-computed vault-relative path. Split out so
+// resolveSafePath can apply it to the *canonical* relative path (symlinks resolved) while
+// the directory walks keep testing the lexical path they already hold.
+//
+// Matching folds case and normalizes to NFC. macOS and SMB shares resolve `private/journal.md`
+// to the same file as `Private/Journal.md`, so an exact comparison let any blocked path be
+// reached by respelling it — realpath does NOT fix this, because macOS returns the path as
+// asked rather than the on-disk casing. Case-folding unconditionally can over-block on a
+// case-sensitive volume (where `Private/` and `private/` really are two folders), which is the
+// correct direction to err for a control whose whole job is to keep notes out of reach.
+function ignoreKey(p: string): string {
+  return p.normalize('NFC').toLowerCase();
+}
+
+function isIgnoredRelative(rel: string): boolean {
+  const patterns = getIgnorePatterns();
+  if (patterns.length === 0) return false;
+  const key = ignoreKey(rel);
+  return patterns.some(p => {
+    const pattern = ignoreKey(p);
+    return key === pattern || key.startsWith(pattern + path.sep);
+  });
 }
 
 // --- Read-only mode ----------------------------------------------------------
@@ -186,17 +285,109 @@ export class VaultPolicyError extends Error {
   }
 }
 
-// Ensure path stays within vault root and is not blocked by .mcpignore. Returns absolute path.
+// True when `candidate` is the root itself or sits underneath it. Both arguments must already
+// be absolute and normalized; neither is canonicalized here.
+function isWithin(root: string, candidate: string): boolean {
+  const rootWithSep = root.endsWith(path.sep) ? root : root + path.sep;
+  return candidate === root || candidate.startsWith(rootWithSep);
+}
+
+// The vault root with every symlink resolved, memoized against the configured root. The
+// containment check has to compare like with like: if the vault root is itself reached through
+// a symlink (a very common Docker bind-mount and /var → /private/var on macOS), comparing a
+// canonicalized target against the *un*-canonicalized root would reject every legitimate path.
+let vaultRealRootCache: { root: string; realRoot: string } | null = null;
+
+function getVaultRealRoot(): string {
+  const root = getVaultRoot();
+  if (vaultRealRootCache?.root === root) return vaultRealRootCache.realRoot;
+  try {
+    const realRoot = realpathSync(root);
+    vaultRealRootCache = { root, realRoot };
+    return realRoot;
+  } catch {
+    // The root isn't there — an unmounted volume, or a directory not created yet. Falling back
+    // to the *lexical* root would canonicalize only one side of the containment check below:
+    // realpathOrNearestExisting still resolves the root's existing ancestors for every child, so
+    // on any system where an ancestor is a symlink (macOS puts /var -> /private/var, and a Docker
+    // bind mount can do the same) every path is reported as escaping through a symlink. That is
+    // the wrong diagnosis for the commonest cause by far — a vault that simply isn't mounted.
+    //
+    // Canonicalizing the same way keeps both sides comparable, so containment passes and the
+    // caller's own I/O (or the .mcpignore fail-closed guard) produces the accurate error.
+    //
+    // Deliberately not cached: the root may appear later (late mount), and if it turns out to be
+    // a symlink itself this approximation would be wrong for the life of the process.
+    return realpathOrNearestExisting(root);
+  }
+}
+
+// Canonicalize as much of `absPath` as exists, then re-append the segments that don't.
+//
+// realpathSync throws ENOENT for a path that isn't there yet, which is the normal case for a
+// create. Walking up to the deepest existing ancestor and canonicalizing *that* still resolves
+// every symlink standing between the vault root and the new file — which is the part that
+// matters, since a symlinked parent directory is how a write escapes the vault.
+function realpathOrNearestExisting(absPath: string): string {
+  const pending: string[] = [];
+  let current = absPath;
+
+  while (true) {
+    try {
+      const real = realpathSync(current);
+      return pending.length === 0 ? real : path.join(real, ...pending.slice().reverse());
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code !== 'ENOENT' && code !== 'ENOTDIR') throw e;
+      const parent = path.dirname(current);
+      // Reached the filesystem root without finding anything that exists. Nothing to
+      // canonicalize, so the lexical path is the best answer available.
+      if (parent === current) return absPath;
+      pending.push(path.basename(current));
+      current = parent;
+    }
+  }
+}
+
+// Ensure a path stays within the vault root and is not blocked by .mcpignore. Returns the
+// absolute (lexical) path for the caller to read or write.
+//
+// The check runs twice, on purpose:
+//
+//   1. Lexically, on the resolved path. Catches `../` traversal cheaply, and is the only check
+//      that can be made about a path whose parents don't exist yet.
+//   2. Canonically, on the path with symlinks resolved. A lexical check alone is satisfied by
+//      any symlink sitting inside the vault, while the subsequent read/write follows that link
+//      wherever it points — so `Notes/link.md → ~/.ssh/id_rsa` passed step 1 and escaped.
+//
+// Running .mcpignore against the *canonical* relative path closes the same hole for the ignore
+// policy: a link at `Public/Shortcut.md` pointing into an ignored `Private/` folder is tested as
+// `Private/...`, not as `Public/...`. (The separate case-folding problem is handled inside
+// isIgnoredRelative — realpath does not normalize casing on macOS.)
+//
+// In-vault symlinks keep working: the test is where a link *lands*, not whether it is a link.
 export function resolveSafePath(relativePath: string): string {
   const vaultRoot = getVaultRoot();
   const resolved = path.resolve(vaultRoot, relativePath);
-  const root = vaultRoot.endsWith(path.sep) ? vaultRoot : vaultRoot + path.sep;
-  if (!resolved.startsWith(root) && resolved !== vaultRoot) {
+
+  if (!isWithin(vaultRoot, resolved)) {
     throw new VaultPolicyError('escape', `Path escapes vault root: ${relativePath}`);
   }
-  if (isIgnored(resolved)) {
+
+  const realRoot = getVaultRealRoot();
+  const realResolved = realpathOrNearestExisting(resolved);
+
+  if (!isWithin(realRoot, realResolved)) {
+    throw new VaultPolicyError(
+      'escape',
+      `Path escapes vault root: ${relativePath} (resolves outside the vault through a symlink)`,
+    );
+  }
+
+  if (isIgnoredRelative(path.relative(realRoot, realResolved))) {
     throw new VaultPolicyError('mcpignore', `Path is blocked by .mcpignore: ${relativePath}`);
   }
+
   return resolved;
 }
 
@@ -718,6 +909,11 @@ async function* walkVaultFiles(options: WalkVaultOptions = {}): AsyncGenerator<W
     if (sort) entries.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
     for (const entry of entries) {
       if (entry.name.startsWith('.')) continue;
+      // Never traverse or yield a symlink. A symlinked `.md` would otherwise be read by every
+      // content search, and its bytes could live anywhere on the host — the walk has no cheap
+      // way to know. Direct access still follows in-vault links via resolveSafePath, which
+      // canonicalizes and re-checks containment; a bulk scan doesn't need that latitude.
+      if (entry.isSymbolicLink()) continue;
       const fullPath = path.join(dir, entry.name);
       if (isIgnored(fullPath)) continue;
       if (entry.isDirectory()) {
