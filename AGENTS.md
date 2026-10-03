@@ -66,7 +66,7 @@ MCP endpoint: `POST /mcp` (requires Bearer token)
 | `LOG_ENABLED` | no | Set to `false` to disable tool-call logging and skip registering `vault_feedback`. Defaults to `true`. |
 | `LOG_DIR` | no | Directory for JSONL logs (`tool-calls.jsonl`, `feedback.jsonl`). Defaults to `./logs`. Created on first write. Skipped when `VAULT_MCP_TEST=1` or `LOG_ENABLED=false`. |
 | `MCP_STATIC_BEARER_TOKEN` | no | Optional fixed secret: requests to `/mcp` with `Authorization: Bearer <same value>` are allowed (for clients that cannot use browser OAuth). Long random string; use HTTPS. Works alongside normal OAuth tokens. |
-| `VAULT_READ_ONLY` | no | Set to `true` to block all write operations. Write-only tools (create, update, edit, edit section, set and batch frontmatter, move, trash) are not advertised at all; tools that read or write depending on their arguments (`vault_periodic_note`, `vault_clip_url`) stay listed and refuse the write. |
+| `VAULT_READ_ONLY` | no | Set to `true` to block all write operations. Write-only tools (create, update, edit, edit section, set and batch frontmatter, trash) are not advertised at all; tools that read or write depending on their arguments (`vault_periodic_note`, `vault_clip_url`, and `vault_move`, whose default dry run only plans) stay listed and refuse the write. |
 | `HEALTH_TOKEN` | no | Dedicated bearer for `GET /health`. Default-closed: unset → the route 404s. Sent as `Authorization: Bearer`; separate from the OAuth and static-bearer secrets. |
 | `PORT` | no | HTTP port (default: `3456`) |
 

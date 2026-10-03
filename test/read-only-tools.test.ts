@@ -1,6 +1,7 @@
 // ABOUTME: Pins which tools tools/list advertises in read-only mode — write-only tools are hidden,
-// read tools and read-or-write tools stay — and that the optional clipper is probed once per
-// process rather than once per request. Uses the static bearer so the OAuth flow stays out of scope.
+// read tools and read-or-write tools (including vault_move, whose default dry run only plans) stay —
+// and that the optional clipper is probed once per process rather than once per request. Uses the
+// static bearer so the OAuth flow stays out of scope.
 import { afterAll, afterEach, beforeAll, describe, expect, spyOn, test } from 'bun:test';
 import { mkdtemp, rm, writeFile } from 'fs/promises';
 import os from 'os';
@@ -20,7 +21,6 @@ const WRITE_ONLY_TOOLS = [
   'vault_edit',
   'vault_edit_section',
   'vault_trash',
-  'vault_move',
 ];
 
 async function listen(app: Express): Promise<{ base: string; close: () => Promise<void> }> {
@@ -85,7 +85,7 @@ describe('read-only mode', () => {
     try {
       const names = await listToolNames(base);
       for (const name of WRITE_ONLY_TOOLS) expect(names).not.toContain(name);
-      for (const name of ['vault_read', 'vault_search_content', 'vault_periodic_note']) {
+      for (const name of ['vault_read', 'vault_search_content', 'vault_periodic_note', 'vault_move']) {
         expect(names).toContain(name);
       }
     } finally {

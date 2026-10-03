@@ -287,7 +287,8 @@ function renderFrontmatterBlock(fm: Record<string, unknown> | null): string {
 export async function registerTools(server: McpServer) {
   // Tools whose only job is writing the vault. In read-only mode they are not registered, so agents
   // never see a tool that can only fail. Tools that read or write depending on their arguments
-  // (vault_periodic_note, vault_clip_url) stay registered; the vault layer refuses their writes.
+  // (vault_periodic_note, vault_clip_url, and vault_move, whose default dry run only plans) stay
+  // registered; the vault layer refuses their writes.
   const registerWrite: typeof registerLogged = vault.isReadOnly() ? () => {} : registerLogged;
 
   // Optional: vault_clip_url. Wrapped in try/catch so a failure in the optional clip layer
@@ -834,7 +835,7 @@ export async function registerTools(server: McpServer) {
     },
   );
 
-  registerWrite(server,
+  registerLogged(server,
     "vault_move",
     {
       annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
