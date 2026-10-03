@@ -398,7 +398,7 @@ YEARLY_NOTE_PATH_TEMPLATE=Yearly/{YYYY}.md
 
 - All vault paths are validated against the resolved vault root to prevent directory traversal.
 - `.mcpignore` in the vault root can block paths from all MCP access.
-- `VAULT_READ_ONLY=true` blocks all write operations.
+- `VAULT_READ_ONLY=true` blocks all write operations. Write-only tools are left out of the tool list entirely, so agents never see a tool that can only fail; `vault_periodic_note`, `vault_clip_url`, and `vault_move` (whose default dry run only plans) stay listed and refuse the write.
 - `vault_search_title` defaults to `limit=50`; `vault_search_content` defaults to `limit=20`. Limits are adjustable; `0` means no limit.
 - `vault_tags` defaults to `limit=100` when listing all tags; passing a `tag` returns the matching note paths without a limit. Counts are case-insensitive (displayed in first-seen casing) and nested tags match exactly — `parent` does not include `parent/child`.
 - `vault_frontmatter` and `vault_set_frontmatter_property` let agents work with frontmatter properties without reading or rewriting the whole note body.
