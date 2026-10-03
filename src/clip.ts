@@ -62,6 +62,22 @@ async function tryLoadClipper(): Promise<ClipperLib | null> {
   }
 }
 
+// The server builds a fresh McpServer for every request, so registerClipTool runs per request.
+// Loading the module, installing polyfills, and reporting its absence happen once per process.
+let clipperOnce: Promise<ClipperLib | null> | undefined;
+
+function loadClipperOnce(): Promise<ClipperLib | null> {
+  clipperOnce ??= tryLoadClipper().then((clipper) => {
+    if (!clipper) {
+      console.error(
+        "[obsidian-remote-mcp] web-clipper-headless not available; skipping vault_clip_url registration. Run `bun install && bun run setup:clipper` if you want this tool."
+      );
+    }
+    return clipper;
+  });
+  return clipperOnce;
+}
+
 async function resolveSettingsPath(vaultRoot: string): Promise<string | null> {
   const fromEnv = process.env.WEB_CLIPPER_SETTINGS_PATH?.trim();
   if (fromEnv) return path.isAbsolute(fromEnv) ? fromEnv : path.join(vaultRoot, fromEnv);
@@ -109,13 +125,8 @@ async function scanVaultForSettings(
 }
 
 export async function registerClipTool(server: McpServer, vaultRoot: string): Promise<void> {
-  const clipper = await tryLoadClipper();
-  if (!clipper) {
-    console.error(
-      "[obsidian-remote-mcp] web-clipper-headless not available; skipping vault_clip_url registration. Run `bun install && bun run setup:clipper` if you want this tool."
-    );
-    return;
-  }
+  const clipper = await loadClipperOnce();
+  if (!clipper) return;
 
   registerLogged(
     server,

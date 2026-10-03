@@ -168,9 +168,15 @@ function isIgnored(absPath: string): boolean {
 
 // --- Read-only mode ----------------------------------------------------------
 
+// Whether VAULT_READ_ONLY=true is set. Read live, so the tool layer (which hides write-only
+// tools) and assertWritable (which refuses writes) always agree.
+export function isReadOnly(): boolean {
+  return process.env.VAULT_READ_ONLY === 'true';
+}
+
 // Throws if VAULT_READ_ONLY=true is set in the environment.
 function assertWritable() {
-  if (process.env.VAULT_READ_ONLY === 'true') {
+  if (isReadOnly()) {
     throw new Error('Vault is in read-only mode (VAULT_READ_ONLY=true)');
   }
 }

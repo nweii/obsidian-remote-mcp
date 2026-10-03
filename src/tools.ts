@@ -285,6 +285,11 @@ function renderFrontmatterBlock(fm: Record<string, unknown> | null): string {
 }
 
 export async function registerTools(server: McpServer) {
+  // Tools whose only job is writing the vault. In read-only mode they are not registered, so agents
+  // never see a tool that can only fail. Tools that read or write depending on their arguments
+  // (vault_periodic_note, vault_clip_url) stay registered; the vault layer refuses their writes.
+  const registerWrite: typeof registerLogged = vault.isReadOnly() ? () => {} : registerLogged;
+
   // Optional: vault_clip_url. Wrapped in try/catch so a failure in the optional clip layer
   // can never break registration of the core vault tools.
   try {
@@ -637,7 +642,7 @@ export async function registerTools(server: McpServer) {
     },
   );
 
-  registerLogged(server,
+  registerWrite(server,
     "vault_create",
     {
       annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
@@ -661,7 +666,7 @@ export async function registerTools(server: McpServer) {
     },
   );
 
-  registerLogged(server,
+  registerWrite(server,
     "vault_update",
     {
       annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
@@ -690,7 +695,7 @@ export async function registerTools(server: McpServer) {
     },
   );
 
-  registerLogged(server,
+  registerWrite(server,
     "vault_set_frontmatter_property",
     {
       annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
@@ -712,7 +717,7 @@ export async function registerTools(server: McpServer) {
     },
   );
 
-  registerLogged(server,
+  registerWrite(server,
     "vault_batch_frontmatter_update",
     {
       annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
@@ -748,7 +753,7 @@ export async function registerTools(server: McpServer) {
     },
   );
 
-  registerLogged(server,
+  registerWrite(server,
     "vault_edit",
     {
       annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
@@ -776,7 +781,7 @@ export async function registerTools(server: McpServer) {
     },
   );
 
-  registerLogged(server,
+  registerWrite(server,
     "vault_edit_section",
     {
       annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
@@ -813,7 +818,7 @@ export async function registerTools(server: McpServer) {
     },
   );
 
-  registerLogged(server,
+  registerWrite(server,
     "vault_trash",
     {
       annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
@@ -829,7 +834,7 @@ export async function registerTools(server: McpServer) {
     },
   );
 
-  registerLogged(server,
+  registerWrite(server,
     "vault_move",
     {
       annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
