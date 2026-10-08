@@ -49,20 +49,24 @@ Cursor's OAuth redirect URI (`cursor://anysphere.cursor-mcp/oauth/callback`) is 
 
 ChatGPT has two MCP setup surfaces with different authentication paths. Pick the one for the app you are using.
 
-#### ChatGPT web (developer mode)
+#### ChatGPT web
 
-Custom MCP connectors on the web app live behind developer mode (see OpenAI's [developer mode guide](https://help.openai.com/en/articles/12584461-developer-mode-and-mcp-apps-in-chatgpt)):
+Use OpenAI's current [custom MCP server flow](https://developers.openai.com/api/docs/guides/custom-mcp-server). It does not require enabling developer mode. Adding and using custom plugins remains subject to workspace permissions and security restrictions.
 
-1. At [chatgpt.com](https://chatgpt.com): **Settings → Plugins → Developer mode**, enable it.
-2. Go to [chatgpt.com/plugins](https://chatgpt.com/plugins), click **+**, enter your `…/mcp` URL.
-3. Pick **OAuth**, then open **Advanced OAuth settings**.
+1. Go to [ChatGPT Plugins](https://chatgpt.com/plugins), select **+ → Add custom MCP server**.
+2. Enter a name and your server URL, including `/mcp` (for example, `https://your-host/mcp`).
+3. Choose **OAuth** and configure one of the authentication options below.
+4. Review the connection warning, select **I understand and want to continue**, then **Create as a plugin**. Complete browser authentication when prompted, using your approval password if configured.
+5. Find the plugin in your personal plugins or the workspace where you created it, and install it. In a conversation, type `@` and select it.
 
-Two ways to authenticate:
+Two ways to configure OAuth:
 
-- **Let it register itself** — enable dynamic client registration on the server with `MCP_DCR_ENABLED=true` (keep `APPROVAL_PASSWORD` set — it's the gate). ChatGPT's Registration URL populates automatically and you configure no callback.
-- **Enter a client ID** — pick "User-Defined OAuth Client" and enter your `MCP_CLIENT_ID`. ChatGPT's legacy fixed callback (`https://chatgpt.com/connector_platform_oauth_redirect`) is in the default allowlist, but newer connectors present a per-app callback (`https://chatgpt.com/connector/oauth/…`); if OAuth fails with `redirect_uri not allowed`, add the URL ChatGPT shows you to **`MCP_CLIENT_ALLOWED_REDIRECT_URIS`**.
+- **Dynamic client registration** — enable `MCP_DCR_ENABLED=true` on the server and keep `APPROVAL_PASSWORD` set. Select DCR in ChatGPT's OAuth settings; the server's discovery metadata advertises its registration endpoint. ChatGPT registers its own client and callback. You can restrict accepted callbacks with `MCP_DCR_ALLOWED_REDIRECT_URIS`.
+- **User-defined OAuth client** — enter your `MCP_CLIENT_ID` and, if configured, `MCP_CLIENT_SECRET` in ChatGPT's OAuth settings. The legacy callback (`https://chatgpt.com/connector_platform_oauth_redirect`) is in the server's default allowlist. For a per-app callback (`https://chatgpt.com/connector/oauth/…`), add the exact URL ChatGPT shows to `MCP_CLIENT_ALLOWED_REDIRECT_URIS` if it is not already allowed. Setting this variable replaces the default list, so retain callbacks needed by other clients.
 
-Then create the connector, **Authenticate**, and complete the approval-password screen.
+Set `MCP_BASE_URL` to the public origin without `/mcp`. Use the DCR or user-defined client options above; do not select CIMD unless the server supports and advertises it.
+
+ChatGPT supports this server's read and write tools without requiring tools named `search` or `fetch`. Write actions are subject to ChatGPT's confirmation settings. To pick up changed tools or server instructions, refresh its MCP connection in the plugin settings.
 
 #### ChatGPT desktop app and Codex
 
