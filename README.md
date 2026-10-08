@@ -2,7 +2,7 @@
 
 A self-hosted [MCP](https://modelcontextprotocol.io) server that gives remote MCP clients (Claude, ChatGPT, Notion etc.) secure access to your Obsidian vault over HTTPS without requiring the Obsidian desktop app to be running on the same machine.
 
-It runs as an HTTP service on the machine where your vault lives (an NAS, VPS, or always-on PC/Mac). You keep a copy of your vault on that machine; clients reach them through your deployment of this repo, secured behind OAuth 2.1 authentication. 
+It runs as an HTTP service on the machine where your vault lives (an NAS, VPS, or always-on PC/Mac). You keep a copy of your vault on that machine; clients reach it through your deployment of this repo, secured behind OAuth 2.1 authentication. 
 
 ## Features
 
@@ -139,6 +139,29 @@ docker compose up -d      # start in background
 docker compose logs -f    # watch output
 ```
 
+#### Optional: sync a vault with Obsidian Headless
+
+On a server or NAS without the desktop app, [Obsidian Headless](https://obsidian.md/help/headless) can keep a local vault folder synced through Obsidian Sync. It is currently in open beta, requires Node.js 22 or later, and needs an active Obsidian Sync subscription. This MCP server reads and edits that folder; Headless handles syncing those changes to your other devices.
+
+Back up your vault before setting up sync. On the machine that will hold the vault:
+
+```bash
+npm install -g obsidian-headless
+ob login
+ob sync-list-remote
+mkdir -p ~/vaults/personal
+cd ~/vaults/personal
+ob sync-setup --vault "Your Vault Name"
+ob sync
+ob sync --continuous
+```
+
+Replace `Your Vault Name` with a vault from `ob sync-list-remote`. Login and vault encryption credentials are prompted interactively. After the initial sync, keep `ob sync --continuous` running in a separate terminal or background service, alongside the MCP server.
+
+Set `VAULT_PATH` to the absolute path of that same folder when starting the MCP server. With Docker, mount the host folder at `/vault` as shown above. Both processes need access to the same files; Obsidian Headless does not run the MCP server.
+
+Use only one Obsidian Sync client for this vault on the machine: do not run desktop Sync and Headless Sync against it together. See the [Headless Sync guide](https://obsidian.md/help/sync/headless) for configuration and sync options. Git, rsync, or another sync system can also maintain the local folder without Obsidian Headless.
+
 ### 2. Expose it over HTTPS
 
 Remote MCP and OAuth require **HTTPS**. Use a reverse proxy (Caddy, nginx, Cloudflare Tunnel, etc.) to handle TLS in front of the app and expose a public URL like `https://mcp.example.com`. Set **`MCP_BASE_URL`** on the server to that origin **without** the `/mcp` path — it must match what users see in the browser bar.
@@ -151,8 +174,10 @@ Every client needs two things: your MCP URL (`https://mcp.example.com/mcp` — b
 
 | Auth | When | Server setup |
 |------|------|--------------|
-| **OAuth** (browser sign-in) | The client walks you through a sign-in flow (Claude.ai, Cursor, Poke via Kitchen) | `MCP_CLIENT_ID`, optionally `MCP_CLIENT_SECRET` |
+| **OAuth** (browser sign-in) | The client walks you through a sign-in flow (ChatGPT web, Claude.ai, Cursor, Poke via Kitchen) | `MCP_CLIENT_ID`, optionally `MCP_CLIENT_SECRET` |
 | **API key** (fixed bearer token) | The client's setup form has an "API key" field, or it cannot open a browser (ChatGPT desktop, Codex, Poke, scripts, `mcp-remote`) | `MCP_STATIC_BEARER_TOKEN` set to a long random string |
+
+On ChatGPT web, go to [Plugins](https://chatgpt.com/plugins) → **+ → Add custom MCP server**, enter your MCP URL, and choose **OAuth**. The current custom-plugin flow does not require enabling developer mode; workspace permissions and security restrictions still apply. See [clients.md](clients.md#chatgpt-web) for registration, authentication, and installation steps.
 
 Details for each mechanism are under [Authentication](#authentication), and per-client setup (Claude.ai, Cursor, ChatGPT, Poke, scripts) is in [clients.md](clients.md).
 
