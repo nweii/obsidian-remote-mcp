@@ -203,7 +203,7 @@ The server currently exposes these tools:
 | `vault_edit` | Append, prepend, or replace exact text within a note |
 | `vault_edit_section` | Append, prepend, or replace the body under one heading |
 | `vault_trash` | Move a note to `.trash` |
-| `vault_move` | Move or rename any vault file by explicit path and rewrite the wikilinks that point at it; defaults to a dry run that shows the plan and writes nothing |
+| `vault_move` | Move or rename a vault file or validated folder by explicit path and rewrite the wikilinks that point at it; defaults to a dry run that shows the plan and writes nothing |
 | `vault_search_title` | Find notes by filename (partial or exact); returns paths for `vault_read` |
 | `vault_search_content` | Regex search in note bodies; optional `folder` to scope large vaults |
 | `vault_search_frontmatter` | Find notes by a frontmatter property (match type `exact`, `contains`, or `exists`) |
@@ -469,7 +469,7 @@ YEARLY_NOTE_PATH_TEMPLATE=Yearly/{YYYY}.md
 - `.mcpignore` is owner-managed: agents may read it when allowed by the rules, but cannot create, edit, delete, or move it through MCP, including through aliases. Edit the file directly to change access.
 - `.obsidian` and `.git` (at any depth) are never accessible through MCP, with or without a `.mcpignore`. They hold app settings, plugin data (often API keys), and version history.
 - `.trash` stays readable by explicit path, so an agent can read or restore what `vault_trash` moved there. Add `.trash` to `.mcpignore` to hide deleted notes; trashing still works.
-- `vault_move` and `vault_trash` act on single files and refuse folders, so moving a folder can't carry notes hidden by a path-specific rule somewhere the rule no longer applies.
+- `vault_move` and `vault_trash` also support folders. The entire subtree (including hidden entries) must pass access checks before anything moves; a protected descendant rejects the whole operation. Folder trees containing symlinks or special files are refused; use the real source folder path rather than a symlinked parent shortcut. Every mapped destination is checked too. For `vault_move`, write folder paths with trailing slashes, such as `Projects/` → `Archive/Projects/`; dry runs validate and preview without creating directories. Folder moves update path-qualified wikilinks and canvas paths, including references inside the moved folder; bare note names stay unchanged. As with file moves, relative `./`/`../` links and standard Markdown links are not rewritten and need manual review. Trash does not rewrite links.
 - Other hidden entries are omitted from ordinary searches and listings, but explicit paths (including `VAULT_CONTEXT_PATH=.claude/CLAUDE.md`) remain accessible unless blocked by `.mcpignore`.
 - `VAULT_READ_ONLY=true` blocks all write operations. Write-only tools are left out of the tool list entirely, so agents never see a tool that can only fail; `vault_periodic_note`, `vault_clip_url`, and `vault_move` (whose default dry run only plans) stay listed and refuse the write.
 - `vault_search_title` defaults to `limit=50`; `vault_search_content` defaults to `limit=20`. Limits are adjustable; `0` means no limit.
@@ -489,3 +489,5 @@ YEARLY_NOTE_PATH_TEMPLATE=Yearly/{YYYY}.md
 ```bash
 bun test
 ```
+
+Folder-operation performance checks are opt-in: `VAULT_MCP_TEST=1 VAULT_FOLDER_BENCH=1 bun test test/vault-folder-operations.test.ts`. They report timings and verify one content read per rewrite candidate; they do not impose machine-dependent timing thresholds.

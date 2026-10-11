@@ -210,14 +210,10 @@ describe('ignore configuration can be read but cannot be mutated through vault o
       files: [{ path: 'Public/Policy.md', rewrites: [{ before: '[[Private]]', after: '[[Public]]' }] }],
       baseFilesToReview: [], skippedLinks: [],
     };
-    try {
-      const result = await vault.applyReferenceRewrite(plan);
-      expect(result.modified).toEqual([]);
-      expect(result.failures).toHaveLength(1);
-      expect(result.failures[0]?.error).toMatch(/mcpignore|policy/i);
-    } catch (error) {
-      expect(error).toBeInstanceOf(vault.VaultPolicyError);
-    }
+    const result = await vault.applyReferenceRewrite(plan);
+    expect(result.modified).toEqual([]);
+    expect(result.failures).toHaveLength(1);
+    expect(result.failures[0]?.error).toMatch(/mcpignore|policy/i);
     expect(await readFile(path.join(vaultPath, '.mcpignore'), 'utf-8')).toBe(POLICY);
   });
 });
@@ -232,9 +228,9 @@ describe('folder moves', () => {
   });
 
   test('trash, move and the move plan refuse a folder', async () => {
-    await expect(vault.trashNote('Projects/Alpha')).rejects.toThrow('is a folder');
-    await expect(vault.moveFile('Projects/Alpha', 'Public/Alpha')).rejects.toThrow('is a folder');
-    await expect(vault.planReferenceRewrite('Projects/Alpha', 'Public/Alpha')).rejects.toThrow('is a folder');
+    await expect(vault.trashNote('Projects/Alpha')).rejects.toThrow(vault.VaultPolicyError);
+    await expect(vault.moveFile('Projects/Alpha', 'Public/Alpha')).rejects.toThrow(vault.VaultPolicyError);
+    await expect(vault.planReferenceRewrite('Projects/Alpha', 'Public/Alpha')).rejects.toThrow(vault.VaultPolicyError);
     expect(existsSync(path.join(vaultPath, 'Projects/Alpha/secret.md'))).toBe(true);
     expect(existsSync(path.join(vaultPath, '.trash'))).toBe(false);
     expect(existsSync(path.join(vaultPath, 'Public/Alpha'))).toBe(false);
