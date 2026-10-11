@@ -868,31 +868,18 @@ export async function registerTools(server: McpServer) {
         return { content: [{ type: "text", text: bareTitle }], isError: true };
       }
 
-      // Dry run: plan only, write nothing — not even the move. The plan reports every file it
-      // would touch, .base files to review, and ambiguous links it would skip.
-      if (dry_run) {
-        try {
+      // Use the same actionable errors for previews and writes. The write workflow holds
+      // endpoint locks across planning and rename so queued edits cannot stale the plan.
+      try {
+        if (dry_run) {
           const plan = await vault.planReferenceRewrite(source, destination);
           return { content: [{ type: "text", text: formatMovePlan(plan) }] };
-        } catch (e) {
-          if (e instanceof vault.VaultPolicyError) {
-            return { content: [{ type: "text", text: e.message }], isError: true };
-          }
-          throw e;
         }
-      }
-
-      // Write mode: plan, move the file (the near-infallible step), then apply the rewrites (the
-      // many-failure-point step). Planning before the move means link matching sees the file at its
-      // old path; the rewrite recomputes against current text under each file's lock.
-      try {
-        const plan = await vault.planReferenceRewrite(source, destination);
-        await vault.moveFile(source, destination);
-        const result = await vault.applyReferenceRewrite(plan);
+        const result = await vault.moveWithReferences(source, destination);
         return { content: [{ type: "text", text: formatMoveReport(result) }] };
       } catch (e) {
         if (e instanceof vault.NoteExistsError) {
-          return { content: [{ type: "text", text: `Error: file already exists at ${destination}. Choose a different destination or trash the existing file first.` }], isError: true };
+          return { content: [{ type: "text", text: `Error: a file or folder already exists at ${destination}. Choose a different destination or trash the existing entry first.` }], isError: true };
         }
         if (e instanceof vault.VaultPolicyError) {
           return { content: [{ type: "text", text: e.message }], isError: true };

@@ -1145,6 +1145,37 @@ describe('Title resolution via tool round-trips', () => {
     }
   });
 
+  test('vault_move previews report occupied file and folder destinations without changing anything', async () => {
+    const dir = path.join(vaultPath, 'OccupiedMove');
+    await mkdir(path.join(dir, 'Source'), { recursive: true });
+    await mkdir(path.join(dir, 'Destination'), { recursive: true });
+    await writeFile(path.join(dir, 'Source.md'), 'source');
+    await writeFile(path.join(dir, 'Destination.md'), 'destination');
+    const { app, auth } = createApp();
+    const { base, close } = await listen(app);
+    try {
+      const token = auth.seedTestToken();
+      for (const suffix of ['.md', '/']) {
+        for (const dry_run of [true, false]) {
+          const result = await callTool(base, token, 'vault_move', {
+            source: `OccupiedMove/Source${suffix}`,
+            destination: `OccupiedMove/Destination${suffix}`,
+            ...(dry_run ? {} : { dry_run }),
+          });
+          expect(result.isError).toBe(true);
+          const message = result.content?.map(c => c.text).join('\n');
+          expect(message).toContain('already exists');
+          expect(message).toContain('Choose a different destination');
+        }
+      }
+      expect(await readFile(path.join(dir, 'Source.md'), 'utf8')).toBe('source');
+      expect(await readFile(path.join(dir, 'Destination.md'), 'utf8')).toBe('destination');
+    } finally {
+      await close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   test('vault_move plans and applies a folder move, then vault_trash accepts the folder', async () => {
     const dir = path.join(vaultPath, 'FolderTool');
     await mkdir(path.join(dir, 'Before'), { recursive: true });

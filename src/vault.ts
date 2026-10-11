@@ -959,6 +959,16 @@ export async function trashNote(relativePath: string): Promise<void> {
   });
 }
 
+// Caller holds both endpoint locks. Recheck live policy immediately before committing.
+function commitFileMove(source: string, destination: string): MoveResult {
+  assertWritable();
+  const checked = checkFileMove(source, destination);
+  mkdirSync(path.dirname(checked.toAbs), { recursive: true });
+  renameSync(checked.fromAbs, checked.toAbs);
+  invalidateResolverCache();
+  return { from: checked.from, to: checked.to };
+}
+
 // Move or rename a file within the vault. source and destination are explicit vault-relative
 // paths — bare titles are not resolved here, since a move is a mutation and title ambiguity is
 // exactly what we don't want at the destination. Works on any file type (notes, canvases, bases,
@@ -970,14 +980,24 @@ export async function moveFile(source: string, destination: string): Promise<Mov
   assertWritable();
   const fromAbs = resolveWritePath(source);
   const toAbs = resolveWritePath(destination);
-  return withPathsLock([fromAbs, toAbs], async () => {
+  return withPathsLock([fromAbs, toAbs], async () => commitFileMove(source, destination));
+}
+
+// Production move workflow: queued descendant writes finish BEFORE planning starts, then
+// the endpoint locks prevent further descendant writes until rename completes. Calling the
+// separately exported plan/move helpers in sequence cannot provide this snapshot guarantee.
+// Link writes remain per-file and nontransactional, as with existing single-file moves.
+export async function moveWithReferences(source: string, destination: string): Promise<RewriteResult> {
+  assertWritable();
+  const fromAbs = resolveWritePath(source);
+  const toAbs = resolveWritePath(destination);
+  const plan = await withPathsLock([fromAbs, toAbs], async () => {
     assertWritable();
-    const checked = checkFileMove(source, destination);
-    mkdirSync(path.dirname(checked.toAbs), { recursive: true });
-    renameSync(checked.fromAbs, checked.toAbs);
-    invalidateResolverCache();
-    return { from: checked.from, to: checked.to };
+    const freshPlan = await planReferenceRewrite(source, destination);
+    commitFileMove(source, destination);
+    return freshPlan;
   });
+  return applyReferenceRewrite(plan);
 }
 
 export interface SearchResult {
