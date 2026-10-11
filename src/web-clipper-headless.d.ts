@@ -1,7 +1,5 @@
-// Treat web-clipper-headless as opaque to TS — clip.ts declares the shape it needs locally.
-// The package's source uses .ts extension imports that aren't compatible with this tsconfig;
-// at runtime Bun handles them natively.
-declare module "web-clipper-headless" {
-  const value: unknown;
-  export = value;
-}
+// Typecheck stand-in for the optional web-clipper-headless package, wired in through `paths` in
+// tsconfig.json so tsc never checks the package's raw .ts sources. clip.ts loads it dynamically
+// and declares the shape it needs locally; at runtime Bun resolves the real package.
+declare const value: unknown;
+export default value;

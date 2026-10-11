@@ -14,6 +14,11 @@ const hasClipper = existsSync(join(installedModules, 'obsidian-clipper', 'src', 
 
 // Optional dependencies may be intentionally omitted. Always test the missing-source failure,
 // while the build/render integration tests run only when the optional sources are installed.
+// CI sets REQUIRE_CLIPPER=1 so a missing install fails instead of silently skipping them.
+test('optional clipper sources are installed when REQUIRE_CLIPPER=1', () => {
+  if (process.env.REQUIRE_CLIPPER === '1') expect(hasClipper).toBe(true);
+});
+
 test('clipper setup reports missing optional sources without installing anything', async () => {
   const root = await mkdtemp(join(tmpdir(), 'orm-clipper-missing-'));
   try {

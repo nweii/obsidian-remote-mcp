@@ -1,0 +1,27 @@
+# ABOUTME: Runs the same checks a contributor runs locally: frozen install with the optional
+# clipper, typecheck, the full test suite with no skipped clipper tests, and the dependency audit.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    env:
+      REQUIRE_CLIPPER: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: package.json
+      - run: bun install --frozen-lockfile
+      - run: bun run setup:clipper
+      - run: bun run typecheck
+      - run: bun run test
+      - run: bun run audit
