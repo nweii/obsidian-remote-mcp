@@ -13,6 +13,16 @@ describe('.mcpignore rules', () => {
     }
   });
 
+  test('a leading / or ./ anchors at the root instead of matching nothing', () => {
+    const ignored = compileIgnoreRules('/Private\n./Notes/Secret.md\n//Archive//\n/**/*.bak\n/');
+    for (const name of ['Private', 'private/Journal.md', 'Notes/Secret.md', 'Archive/Old.md', 'Deep/x.bak']) {
+      expect(ignored(name)).toBe(true);
+    }
+    for (const name of ['', 'Other/Private/Note.md', 'Notes/Public.md']) {
+      expect(ignored(name)).toBe(false);
+    }
+  });
+
   test('* and ? match within one path segment, and matched parents block descendants', () => {
     const ignored = compileIgnoreRules('Notes/draft?.md\nPrivate/*\n*.bak');
     for (const name of ['Notes/draft1.md', 'Private/Project/Deep/Note.md', 'backup.bak']) {

@@ -8,8 +8,10 @@ export function compileIgnoreRules(text: string): (relativePath: string) => bool
   // Conservative across filesystems: the same spelling/case rules apply on Linux and on
   // case-insensitive macOS/SMB volumes. Never allow a case change to bypass an exclusion.
   const key = (value: string) => value.normalize('NFC').toLowerCase();
+  // Leading `/` and `./` are accepted as root anchors, the way .gitignore writes them. Every
+  // rule is already rooted, so dropping them only prevents a rule that silently matches nothing.
   const rules = text.split('\n')
-    .map(line => line.trim().replace(/\/$/, ''))
+    .map(line => line.trim().replace(/^(?:\.?\/)+/, '').replace(/\/+$/, ''))
     .filter(line => line && !line.startsWith('#'))
     .map(key)
     .map(literal => ({
