@@ -637,15 +637,16 @@ describe('Vault-derived defaults', () => {
 });
 
 describe('CORS', () => {
-  test('allows all origins by default', async () => {
+  test('allows the configured site origin by default', async () => {
     delete process.env.CORS_ALLOWED_ORIGINS;
     const { app, auth } = createApp();
     const { base, close } = await listen(app);
     try {
-      const res = await fetch(`${base}/.well-known/oauth-protected-resource`, {
-        headers: { Origin: 'https://claude.ai' },
+      const res = await fetch(`${base}/mcp`, {
+        headers: { Origin: 'https://example.test' },
       });
-      expect(res.headers.get('access-control-allow-origin')).toBe('*');
+      expect(res.status).toBe(401);
+      expect(res.headers.get('access-control-allow-origin')).toBe('https://example.test');
     } finally {
       await close();
     }

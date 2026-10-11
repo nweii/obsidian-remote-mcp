@@ -1,27 +1,12 @@
 #!/usr/bin/env bash
-# ABOUTME: Ensures web-clipper-headless's upstream bundle (obsidian-clipper/dist/api.mjs) is built
-# and patched. Idempotent. Workaround for `bun install` failing inside a hoisted node_modules subtree.
+# ABOUTME: Build the optional clipper using the root project's audited lockfile and dependencies.
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-CLIPPER="$ROOT/node_modules/web-clipper-headless"
-UPSTREAM="$ROOT/node_modules/obsidian-clipper"
-BUNDLE="$UPSTREAM/dist/api.mjs"
-
-if [ ! -d "$CLIPPER" ] || [ ! -d "$UPSTREAM" ]; then
-  echo "[bootstrap-clipper] web-clipper-headless or obsidian-clipper not installed; skipping."
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+if [ ! -d "$REPO_ROOT/node_modules/web-clipper-headless" ] || [ ! -d "$REPO_ROOT/node_modules/obsidian-clipper" ]; then
+  echo "[bootstrap-clipper] Optional clipper is not installed; skipping."
   exit 0
 fi
 
-if [ ! -f "$BUNDLE" ]; then
-  echo "[bootstrap-clipper] Building obsidian-clipper API bundle in /tmp (bun install fails inside hoisted node_modules)…"
-  WORK="$(mktemp -d)"
-  cp -r "$UPSTREAM"/. "$WORK/"
-  (cd "$WORK" && bun install --silent && bun run build:api)
-  mkdir -p "$UPSTREAM/dist"
-  cp "$WORK/dist/api.mjs" "$BUNDLE"
-  rm -rf "$WORK"
-fi
-
-cd "$CLIPPER"
-bun run scripts/build-upstream.ts
+cd "$REPO_ROOT"
+exec bun run setup:clipper

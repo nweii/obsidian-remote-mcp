@@ -19,10 +19,118 @@ export function splitFrontmatter(content: string): { frontmatter: string | null;
   };
 }
 
+// Only exact, fixed parser diagnostics are safe to retain. Even YAMLException.reason can quote
+// source text (alias names, tags, and tag handles), so unknown/new diagnostics fail closed.
+const SAFE_YAML_REASONS = new Set([
+  'duplication of %YAML directive',
+  'YAML directive accepts exactly one argument',
+  'ill-formed argument of the YAML directive',
+  'unacceptable YAML version of the document',
+  'TAG directive accepts exactly two arguments',
+  'ill-formed tag handle (first argument) of the TAG directive',
+  'ill-formed tag prefix (second argument) of the TAG directive',
+  'expected valid JSON character',
+  'the stream contains non-printable characters',
+  'cannot merge mappings; the provided source object is unacceptable',
+  'nested arrays are not supported inside keys',
+  'duplicated mapping key',
+  'a line break is expected',
+  'unexpected end of the document within a single quoted scalar',
+  'unexpected end of the stream within a single quoted scalar',
+  'expected hexadecimal character',
+  'unknown escape sequence',
+  'unexpected end of the document within a double quoted scalar',
+  'unexpected end of the stream within a double quoted scalar',
+  'missed comma between flow collection entries',
+  "expected the node content, but found ','",
+  'unexpected end of the stream within a flow collection',
+  'repeat of a chomping mode identifier',
+  'bad explicit indentation width of a block scalar; it cannot be less than one',
+  'repeat of an indentation width identifier',
+  'missing indentation for block scalar',
+  'tab characters must not be used in indentation',
+  'bad indentation of a sequence entry',
+  'incomplete explicit mapping pair; a key node is missed; or followed by a non-tabulated empty line',
+  'a whitespace character is expected after the key-value separator within a block mapping',
+  'can not read an implicit mapping pair; a colon is missed',
+  'can not read a block mapping entry; a multiline key may not be an implicit key',
+  'bad indentation of a mapping entry',
+  'duplication of a tag property',
+  'unexpected end of the stream within a verbatim tag',
+  'named tag handle cannot contain such characters',
+  'tag suffix cannot contain exclamation marks',
+  'tag suffix cannot contain flow indicator characters',
+  'duplication of an anchor property',
+  'name of an anchor node must contain at least one character',
+  'name of an alias node must contain at least one character',
+  'alias node should not have any properties',
+  'directive name must not be less than one character in length',
+  'directives end mark is expected',
+  'end of the stream or a document separator is expected',
+  'null byte is not allowed in input',
+]);
+
+const YAML_REASON_CATEGORIES: Array<[string, string]> = [
+  ['unidentified alias ', 'unidentified alias'],
+  ['unknown tag ', 'unknown tag'],
+  ['undeclared tag handle ', 'undeclared tag handle'],
+  ['there is a previously declared suffix for ', 'duplicated tag handle'],
+  ['tag prefix is malformed: ', 'malformed tag prefix'],
+  ['tag name cannot contain such characters: ', 'invalid tag name'],
+  ['tag name is malformed: ', 'malformed tag name'],
+  ['unacceptable node kind for ', 'unacceptable node kind for explicit tag'],
+  ['cannot resolve a node with ', 'cannot resolve a node with explicit tag'],
+  ['nesting exceeded maxDepth (', 'maximum YAML nesting depth exceeded'],
+  ['merge keys exceeded maxTotalMergeKeys (', 'maximum YAML merge keys exceeded'],
+];
+
+function safeYamlReason(reason: string): string {
+  if (SAFE_YAML_REASONS.has(reason)) return reason;
+  for (const [prefix, category] of YAML_REASON_CATEGORIES) {
+    if (reason.startsWith(prefix)) return category;
+  }
+  return 'could not be parsed';
+}
+
+// Thrown instead of js-yaml's own YAMLException. js-yaml builds a message that quotes the
+// offending source line and its surrounding context, and the audit logger records the message
+// of any exception thrown out of a tool handler verbatim — so an unparseable note would write
+// its own frontmatter into logs/tool-calls.jsonl. This carries the reason and line number,
+// which is what an agent needs to fix the note, and none of the text.
+export class FrontmatterParseError extends Error {
+  readonly reason: string;
+
+  constructor(
+    reason: string,
+    public readonly line?: number,
+  ) {
+    const safeReason = safeYamlReason(reason);
+    super(
+      `Invalid YAML frontmatter${line !== undefined ? ` at line ${line}` : ''}: ${safeReason}. ` +
+        `Read the note and correct the frontmatter block.`,
+    );
+    this.name = 'FrontmatterParseError';
+    this.reason = safeReason;
+  }
+}
+
 export function parseFrontmatter(content: string): Record<string, unknown> | null {
   const { frontmatter } = splitFrontmatter(content);
   if (frontmatter === null) return null;
-  const parsed = parseYaml(frontmatter);
+  let parsed: unknown;
+  try {
+    parsed = parseYaml(frontmatter);
+  } catch (e) {
+    // Use the position separately from the snippet-bearing message. The error constructor
+    // sanitizes reason too: js-yaml includes source-derived names in some diagnostics.
+    // js-yaml's line is zero-based within the block, which starts after the opening `---`
+    // (note line 1), so +2 gives the note's own one-based line.
+    const ex = e as { reason?: string; mark?: { line?: number } };
+    throw new FrontmatterParseError(
+      ex.reason ?? 'could not be parsed',
+      ex.mark?.line !== undefined ? ex.mark.line + 2 : undefined,
+    );
+  }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     return {};
   }

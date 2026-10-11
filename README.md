@@ -121,7 +121,6 @@ services:
       MCP_CLIENT_SECRET: your-client-secret     # optional
       MCP_BASE_URL: https://mcp.example.com
       VAULT_PATH: /vault                         # path inside the container (mapped by volumes below)
-      CORS_ALLOWED_ORIGINS: https://claude.ai
       PORT: 3456
       # TOKEN_STORE_PATH: /app/data/tokens.json  # uncomment to persist OAuth sign-ins across restarts
       # MCP_STATIC_BEARER_TOKEN: ${MCP_STATIC_BEARER_TOKEN}  # uncomment for ChatGPT desktop / Codex
@@ -131,7 +130,7 @@ services:
       # - ./data:/app/data                       # uncomment to persist TOKEN_STORE_PATH on the host
     command: ["bun", "run", "src/server.ts"]
     ports:
-      - "3456:3456"                              # host:container — access on http://localhost:3456
+      - "127.0.0.1:3456:3456"                    # bind to loopback: reachable by a proxy on this host, not from the LAN
 ```
 
 ```bash
@@ -167,6 +166,8 @@ Use only one Obsidian Sync client for this vault on the machine: do not run desk
 Remote MCP and OAuth require **HTTPS**. Use a reverse proxy (Caddy, nginx, Cloudflare Tunnel, etc.) to handle TLS in front of the app and expose a public URL like `https://mcp.example.com`. Set **`MCP_BASE_URL`** on the server to that origin **without** the `/mcp` path — it must match what users see in the browser bar.
 
 If you use Cloudflare Zero Trust, a practical pattern is to put the identity gate **only** on `/authorize`, so users log in to approve access while `/.well-known/*`, `/token`, and `/mcp` stay reachable for the protocol.
+
+> **Publish the port to loopback, not to every interface.** The server binds `0.0.0.0` so it is reachable inside its container; a plain `"3456:3456"` mapping then exposes it on every host interface (and, on Linux, through the host firewall via Docker's iptables rules). Anyone who can reach that port talks to the backend directly, bypassing the proxy — including the identity gateway, which matters most with `APPROVAL_OPEN=true`, where that gateway *is* the approval gate. Use `"127.0.0.1:3456:3456"`, or set `HOST=127.0.0.1` when running the process directly on the host.
 
 ### 3. Connect a client
 
@@ -248,16 +249,30 @@ To generate a random, secure API key, run this in your terminal:
 openssl rand -base64 48
 ```
 
-#### CORS
+#### Browser origins (CORS)
 
-`CORS_ALLOWED_ORIGINS` limits which **browser origins** may call the API from JavaScript. It is separate from OAuth and from `MCP_STATIC_BEARER_TOKEN`, and irrelevant to server-side clients like Poke. Default is `*` (allow all). To restrict:
+With `CORS_ALLOWED_ORIGINS` unset or empty, `/mcp` accepts:
+
+- Requests without an `Origin` header (cloud, CLI, and native clients still need a valid token).
+- Your configured `MCP_BASE_URL` origin, or `http://localhost:PORT` when it is unset.
+
+Other supplied origins receive `403` before MCP tools run, even with a valid token. This applies to ongoing tool requests as well as initial MCP connection requests, and implements the [MCP transport's Origin check](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#security-warning). It is an additional browser-request boundary, not an identity check: allowing an origin never grants access without authentication.
+
+[Anthropic documents](https://support.claude.com/en/articles/11175166-get-started-with-custom-connectors-using-remote-mcp) that remote custom connectors call from its cloud, including when used from Claude Desktop. [OpenAI documents](https://developers.openai.com/plugins/build/auth) the OAuth code/PKCE exchange and authenticated subsequent MCP calls. These documents do not guarantee the exact Origin headers sent by every client version. OAuth callback URLs are separate from browser origins: authorizing a client does not add its website to this allowlist. No client-specific browser origins are built in.
+
+OAuth discovery, registration, and token exchange keep their SDK CORS behavior so a client can complete sign-in. The approval password, PKCE, and token checks still apply. The origin allowlist does not replace the approval gate or protect an unrestricted backend port; follow the deployment guidance above.
+
+For a client that calls directly from a browser page, add its exact origin. An explicit list **replaces all defaults**, so include each origin you want to retain:
 
 ```env
-CORS_ALLOWED_ORIGINS=https://claude.ai
-CORS_ALLOWED_ORIGINS=https://claude.ai,http://localhost:3000
+CORS_ALLOWED_ORIGINS=https://vault.example,https://my-vault-chat.example,http://localhost:3000
 ```
 
-When set, only listed origins get a reflected `Access-Control-Allow-Origin`; other browser preflights fail.
+Use HTTP(S) origins without paths, trailing slashes, or credentials. Subdomains and ports must match exactly; partial wildcards and `null` entries are rejected at startup. Trust is never inferred from a request's Host or forwarded headers. An unlisted browser client needs its origin added even if OAuth sign-in succeeded.
+
+`CORS_ALLOWED_ORIGINS=*` remains an explicit compatibility override accepting every origin, including opaque origins (`Origin: null`). It disables this Origin restriction; authentication remains required. Use `*` alone. **Migration:** an existing explicit `*` keeps working, but unset/empty configurations now use the bounded defaults above instead of allowing every website.
+
+The integration tests exercise password approval, PKCE exchange, MCP initialization, tool listing, and note reads with no Origin under the default policy and with explicitly configured browser origins; they also verify that OAuth does not implicitly allow a client website and reject unlisted origins with otherwise valid tokens. These are protocol tests, not live sessions in the proprietary Claude or ChatGPT applications.
 
 #### Password gate
 
@@ -310,14 +325,38 @@ WEEKLY_NOTE_PATH_TEMPLATE=Weekly/{GGGG}-W{WW}.md       # optional; opt-in cadenc
 MONTHLY_NOTE_PATH_TEMPLATE=Monthly/{YYYY}-{MM}.md      # optional; opt-in cadence
 QUARTERLY_NOTE_PATH_TEMPLATE=Quarterly/{YYYY}-Q{Q}.md  # optional; opt-in cadence
 YEARLY_NOTE_PATH_TEMPLATE=Yearly/{YYYY}.md             # optional; opt-in cadence
-CORS_ALLOWED_ORIGINS=https://claude.ai # optional; defaults to *
+# CORS_ALLOWED_ORIGINS=https://vault.example,https://my-vault-chat.example # optional; replaces the site-origin default
 TOKEN_STORE_PATH=./tokens.json         # optional
 MCP_STATIC_BEARER_TOKEN=               # optional; API key for /mcp (see Authentication)
 HEALTH_TOKEN=                          # optional; enables GET /health (see Health endpoint)
 VAULT_READ_ONLY=true                   # optional
 VAULT_ATTACHMENT_MAX_BYTES=10485760    # optional; vault_read_attachment size cap, defaults to 10 MB
 PORT=3456
+# HOST=127.0.0.1                    # optional for a host-local proxy; in Docker restrict the published port instead
 ```
+
+### Dependency installation and optional clipping
+
+Install from the committed lockfile with `bun install --frozen-lockfile`. If you do not use URL clipping, a fresh installation can omit its dependency tree:
+
+```bash
+bun install --frozen-lockfile --omit=optional
+```
+
+Core vault tools work without the optional clipper. To enable clipping, install optional dependencies normally and build the integration:
+
+```bash
+bun install --frozen-lockfile
+bun run setup:clipper
+```
+
+Run setup again after dependency updates: it rebuilds the clipper bundle using this repo's locked, patched dependencies. Do not run separate installs inside `node_modules/web-clipper-headless` or `node_modules/obsidian-clipper`; those installs would bypass this repo's overrides and lockfile. `scripts/bootstrap-clipper.sh` calls the same setup command.
+
+`bunfig.toml` retains the three-day minimum release age and frozen-lockfile defaults. The release-age check applies to registry packages, not Git dependencies. Changes to the locked `mcp-server-kit`, `web-clipper-headless`, or transitive `obsidian-clipper` commits require source review. Run `bun audit` after dependency changes; the root overrides pin patched versions where upstream dependencies still request vulnerable releases.
+
+### Audit-log privacy
+
+With logging enabled, paths, titles, search queries, tags, and frontmatter field names can appear in logs in clear text. Note-body arguments and frontmatter values are redacted, and known parser/section errors are sanitized, but these metadata can still be sensitive. Feedback text is stored as written. Set `LOG_ENABLED=false` to disable tool-call and feedback logging. Logs do not rotate automatically.
 
 ### Vault path
 
@@ -421,8 +460,17 @@ YEARLY_NOTE_PATH_TEMPLATE=Yearly/{YYYY}.md
 
 ### Vault access and tool defaults
 
-- All vault paths are validated against the resolved vault root to prevent directory traversal.
-- `.mcpignore` in the vault root can block paths from all MCP access.
+- Vault paths are checked both as requested and after resolving filesystem shortcuts (symlinks). Both paths must stay inside the vault and comply with `.mcpignore`; dangling shortcuts are refused. Searches apply the same checks when started through a shortcut folder. Internal trash destinations must also remain inside the vault.
+- `.mcpignore` in the vault root blocks matching paths and their contents from MCP reads, writes, searches, and listings. Rules are relative to the vault root, one per line; blank lines and lines starting with `#` are ignored. Edits take effect on subsequent calls without restarting, including cached title and link results. An unavailable vault or unreadable policy causes access to be refused.
+  - Existing literal rules still work: `Private` or `Private/` blocks that path and everything beneath it.
+  - `*` matches within one path segment; `?` matches one character; `**` as a whole path segment matches zero or more directory levels. For example, `Notes/draft?.md` blocks `Notes/draft1.md`, and `**/*.bak` blocks `.bak` files at any depth.
+  - `.*/` blocks hidden entries at the vault root; `**/.*` blocks hidden files and folders at every depth, including their contents. A trailing slash is optional and does not restrict a rule to directories. A leading `/` or `./` is also optional, since every rule already starts at the vault root.
+  - This is an exclusion list, not full `.gitignore` syntax: matching ignores case and normalizes Unicode, all rules are rooted at the vault, and `!` does not re-include paths. Brackets and braces are literal characters.
+- `.mcpignore` is owner-managed: agents may read it when allowed by the rules, but cannot create, edit, delete, or move it through MCP, including through aliases. Edit the file directly to change access.
+- `.obsidian` and `.git` (at any depth) are never accessible through MCP, with or without a `.mcpignore`. They hold app settings, plugin data (often API keys), and version history.
+- `.trash` stays readable by explicit path, so an agent can read or restore what `vault_trash` moved there. Add `.trash` to `.mcpignore` to hide deleted notes; trashing still works.
+- `vault_move` and `vault_trash` act on single files and refuse folders, so moving a folder can't carry notes hidden by a path-specific rule somewhere the rule no longer applies.
+- Other hidden entries are omitted from ordinary searches and listings, but explicit paths (including `VAULT_CONTEXT_PATH=.claude/CLAUDE.md`) remain accessible unless blocked by `.mcpignore`.
 - `VAULT_READ_ONLY=true` blocks all write operations. Write-only tools are left out of the tool list entirely, so agents never see a tool that can only fail; `vault_periodic_note`, `vault_clip_url`, and `vault_move` (whose default dry run only plans) stay listed and refuse the write.
 - `vault_search_title` defaults to `limit=50`; `vault_search_content` defaults to `limit=20`. Limits are adjustable; `0` means no limit.
 - `vault_tags` defaults to `limit=100` when listing all tags; passing a `tag` returns the matching note paths without a limit. Counts are case-insensitive (displayed in first-seen casing) and nested tags match exactly — `parent` does not include `parent/child`.
