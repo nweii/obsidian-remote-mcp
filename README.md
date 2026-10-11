@@ -121,7 +121,6 @@ services:
       MCP_CLIENT_SECRET: your-client-secret     # optional
       MCP_BASE_URL: https://mcp.example.com
       VAULT_PATH: /vault                         # path inside the container (mapped by volumes below)
-      CORS_ALLOWED_ORIGINS: https://claude.ai
       PORT: 3456
       # TOKEN_STORE_PATH: /app/data/tokens.json  # uncomment to persist OAuth sign-ins across restarts
       # MCP_STATIC_BEARER_TOKEN: ${MCP_STATIC_BEARER_TOKEN}  # uncomment for ChatGPT desktop / Codex
@@ -252,29 +251,28 @@ openssl rand -base64 48
 
 #### Browser origins (CORS)
 
-No CORS configuration is needed for the built-in Claude and ChatGPT origins. With `CORS_ALLOWED_ORIGINS` unset or empty, `/mcp` accepts:
+With `CORS_ALLOWED_ORIGINS` unset or empty, `/mcp` accepts:
 
 - Requests without an `Origin` header (cloud, CLI, and native clients still need a valid token).
-- The exact origins `https://claude.ai` and `https://chatgpt.com`.
 - Your configured `MCP_BASE_URL` origin, or `http://localhost:PORT` when it is unset.
 
 Other supplied origins receive `403` before MCP tools run, even with a valid token. This applies to ongoing tool requests as well as initial MCP connection requests, and implements the [MCP transport's Origin check](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#security-warning). It is an additional browser-request boundary, not an identity check: allowing an origin never grants access without authentication.
 
-[Anthropic documents](https://support.claude.com/en/articles/11175166-get-started-with-custom-connectors-using-remote-mcp) that remote custom connectors call from its cloud, including when used from Claude Desktop. [OpenAI documents](https://developers.openai.com/plugins/build/auth) the OAuth code/PKCE exchange and authenticated subsequent MCP calls. These documents do not guarantee the exact Origin headers sent by every client version. The first-party web origins above are explicit compatibility allowances; requests without Origin work independently of them.
+[Anthropic documents](https://support.claude.com/en/articles/11175166-get-started-with-custom-connectors-using-remote-mcp) that remote custom connectors call from its cloud, including when used from Claude Desktop. [OpenAI documents](https://developers.openai.com/plugins/build/auth) the OAuth code/PKCE exchange and authenticated subsequent MCP calls. These documents do not guarantee the exact Origin headers sent by every client version. OAuth callback URLs are separate from browser origins: authorizing a client does not add its website to this allowlist. No client-specific browser origins are built in.
 
 OAuth discovery, registration, and token exchange keep their SDK CORS behavior so a client can complete sign-in. The approval password, PKCE, and token checks still apply. The origin allowlist does not replace the approval gate or protect an unrestricted backend port; follow the deployment guidance above.
 
-For a different client that calls directly from a browser page, add its exact origin. An explicit list **replaces all defaults**, so include each origin you want to retain:
+For a client that calls directly from a browser page, add its exact origin. An explicit list **replaces all defaults**, so include each origin you want to retain:
 
 ```env
-CORS_ALLOWED_ORIGINS=https://claude.ai,https://chatgpt.com,https://vault.example,http://localhost:3000
+CORS_ALLOWED_ORIGINS=https://vault.example,https://my-vault-chat.example,http://localhost:3000
 ```
 
 Use HTTP(S) origins without paths, trailing slashes, or credentials. Subdomains and ports must match exactly; partial wildcards and `null` entries are rejected at startup. Trust is never inferred from a request's Host or forwarded headers. An unlisted browser client needs its origin added even if OAuth sign-in succeeded.
 
 `CORS_ALLOWED_ORIGINS=*` remains an explicit compatibility override accepting every origin, including opaque origins (`Origin: null`). It disables this Origin restriction; authentication remains required. Use `*` alone. **Migration:** an existing explicit `*` keeps working, but unset/empty configurations now use the bounded defaults above instead of allowing every website.
 
-The integration tests exercise password approval, PKCE exchange, MCP initialization, tool listing, and note reads with no Origin and with the two built-in client origins; they also reject an unrelated origin with an otherwise valid token. These are protocol tests, not live sessions in the proprietary Claude or ChatGPT applications.
+The integration tests exercise password approval, PKCE exchange, MCP initialization, tool listing, and note reads with no Origin under the default policy and with explicitly configured browser origins; they also verify that OAuth does not implicitly allow a client website and reject unlisted origins with otherwise valid tokens. These are protocol tests, not live sessions in the proprietary Claude or ChatGPT applications.
 
 #### Password gate
 
@@ -327,7 +325,7 @@ WEEKLY_NOTE_PATH_TEMPLATE=Weekly/{GGGG}-W{WW}.md       # optional; opt-in cadenc
 MONTHLY_NOTE_PATH_TEMPLATE=Monthly/{YYYY}-{MM}.md      # optional; opt-in cadence
 QUARTERLY_NOTE_PATH_TEMPLATE=Quarterly/{YYYY}-Q{Q}.md  # optional; opt-in cadence
 YEARLY_NOTE_PATH_TEMPLATE=Yearly/{YYYY}.md             # optional; opt-in cadence
-CORS_ALLOWED_ORIGINS=https://claude.ai # optional; replaces built-in site/Claude/ChatGPT origins
+# CORS_ALLOWED_ORIGINS=https://vault.example,https://my-vault-chat.example # optional; replaces the site-origin default
 TOKEN_STORE_PATH=./tokens.json         # optional
 MCP_STATIC_BEARER_TOKEN=               # optional; API key for /mcp (see Authentication)
 HEALTH_TOKEN=                          # optional; enables GET /health (see Health endpoint)

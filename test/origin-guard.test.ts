@@ -90,11 +90,11 @@ describe('MCP Origin guard', () => {
   });
 
   for (const setting of [undefined, '', '   ']) {
-    test(`default origins with setting ${JSON.stringify(setting)} allow supported sites and reject others`, async () => {
+    test(`default origins with setting ${JSON.stringify(setting)} allow only the configured site and reject others`, async () => {
       if (setting === undefined) delete process.env.CORS_ALLOWED_ORIGINS;
       else process.env.CORS_ALLOWED_ORIGINS = setting;
       await withServer(async base => {
-        for (const origin of ['https://vault.example', 'https://claude.ai', 'https://chatgpt.com']) {
+        for (const origin of ['https://vault.example']) {
           const response = await request(base, 'POST', origin);
           expect(response.status).toBe(200);
           expect(response.headers.get('access-control-allow-origin')).toBe(origin);
@@ -106,7 +106,7 @@ describe('MCP Origin guard', () => {
           expect(denied.status).toBe(401);
           await denied.text();
         }
-        for (const origin of ['https://other.example', 'null', '', 'https://claude.ai.evil.example',
+        for (const origin of ['https://other.example', 'https://claude.ai', 'https://chatgpt.com', 'null', '', 'https://claude.ai.evil.example',
           'https://sub.chatgpt.com', 'http://claude.ai', 'https://chatgpt.com:8443']) {
           const denied = await request(base, 'POST', origin);
           expect(denied.status).toBe(403);
@@ -241,7 +241,7 @@ describe('MCP Origin guard', () => {
           await response.text();
         }
         const mcp = await request(base, 'OPTIONS', 'https://claude.ai');
-        expect(mcp.status).toBe(allowlist === undefined ? 204 : 403);
+        expect(mcp.status).toBe(403);
         await mcp.text();
       });
     }

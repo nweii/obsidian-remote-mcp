@@ -192,10 +192,11 @@ async function rpcResult(response: Response) {
   return body.result;
 }
 
-describe('OAuth and MCP protocol simulations with default browser origins', () => {
+describe('OAuth and MCP with site-only defaults and explicit browser opt-in', () => {
   for (const client of clients) {
     for (const origin of [undefined, client.origin]) {
-      test(`${client.name}: password + PKCE + MCP ${origin ? `with Origin ${origin}` : 'without Origin'}`, async () => {
+      test(`${client.name}: password + PKCE + MCP ${origin ? `with explicitly allowed Origin ${origin}` : 'without Origin'}`, async () => {
+        if (origin) process.env.CORS_ALLOWED_ORIGINS = `${siteOrigin},${origin}`;
         if (client.dynamic) {
           process.env.MCP_DCR_ENABLED = 'true';
           process.env.MCP_DCR_ALLOWED_REDIRECT_URIS = 'https://chatgpt.com/*';
@@ -203,6 +204,14 @@ describe('OAuth and MCP protocol simulations with default browser origins', () =
         await withServer(async base => {
           await checkDiscoveryAndPreflights(base, client.origin, client.dynamic);
           const token = await mintToken(base, client, origin);
+          if (origin === undefined) {
+            // Successful OAuth does not implicitly trust the client's website origin.
+            for (const browserOrigin of clients.map(value => value.origin)) {
+              const blocked = await mcp(base, token, browserOrigin, 'tools/list');
+              expect(blocked.status).toBe(403);
+              await blocked.text();
+            }
+          }
           const initResponse = await mcp(base, token, origin, 'initialize', {
             protocolVersion: '2025-11-25', capabilities: {},
             clientInfo: { name: 'Local origin protocol simulation', version: '1.0.0' },
@@ -225,7 +234,7 @@ describe('OAuth and MCP protocol simulations with default browser origins', () =
           expect(unrelated.status).toBe(403);
           expect(unrelated.headers.get('access-control-allow-origin')).toBeNull();
           await unrelated.text();
-          for (const trustedOrigin of [undefined, siteOrigin, ...clients.map(value => value.origin)]) {
+          for (const trustedOrigin of [undefined, siteOrigin, ...(origin ? [origin] : [])]) {
             const unauthorized = await mcp(base, undefined, trustedOrigin, 'tools/list');
             expect(unauthorized.status).toBe(401);
             expect(unauthorized.headers.get('www-authenticate')).toContain('Bearer');
