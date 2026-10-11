@@ -131,7 +131,7 @@ services:
       # - ./data:/app/data                       # uncomment to persist TOKEN_STORE_PATH on the host
     command: ["bun", "run", "src/server.ts"]
     ports:
-      - "3456:3456"                              # host:container — access on http://localhost:3456
+      - "127.0.0.1:3456:3456"                    # bind to loopback: reachable by a proxy on this host, not from the LAN
 ```
 
 ```bash
@@ -167,6 +167,8 @@ Use only one Obsidian Sync client for this vault on the machine: do not run desk
 Remote MCP and OAuth require **HTTPS**. Use a reverse proxy (Caddy, nginx, Cloudflare Tunnel, etc.) to handle TLS in front of the app and expose a public URL like `https://mcp.example.com`. Set **`MCP_BASE_URL`** on the server to that origin **without** the `/mcp` path — it must match what users see in the browser bar.
 
 If you use Cloudflare Zero Trust, a practical pattern is to put the identity gate **only** on `/authorize`, so users log in to approve access while `/.well-known/*`, `/token`, and `/mcp` stay reachable for the protocol.
+
+> **Publish the port to loopback, not to every interface.** The server binds `0.0.0.0` so it is reachable inside its container; a plain `"3456:3456"` mapping then exposes it on every host interface (and, on Linux, through the host firewall via Docker's iptables rules). Anyone who can reach that port talks to the backend directly, bypassing the proxy — including the identity gateway, which matters most with `APPROVAL_OPEN=true`, where that gateway *is* the approval gate. Use `"127.0.0.1:3456:3456"`, or set `HOST=127.0.0.1` when running the process directly on the host.
 
 ### 3. Connect a client
 
@@ -317,6 +319,7 @@ HEALTH_TOKEN=                          # optional; enables GET /health (see Heal
 VAULT_READ_ONLY=true                   # optional
 VAULT_ATTACHMENT_MAX_BYTES=10485760    # optional; vault_read_attachment size cap, defaults to 10 MB
 PORT=3456
+# HOST=127.0.0.1                    # optional for a host-local proxy; in Docker restrict the published port instead
 ```
 
 ### Vault path
@@ -421,8 +424,14 @@ YEARLY_NOTE_PATH_TEMPLATE=Yearly/{YYYY}.md
 
 ### Vault access and tool defaults
 
-- All vault paths are validated against the resolved vault root to prevent directory traversal.
-- `.mcpignore` in the vault root can block paths from all MCP access.
+- Vault paths are checked both as requested and after resolving filesystem shortcuts (symlinks). Both paths must stay inside the vault and comply with `.mcpignore`; dangling shortcuts are refused. Searches apply the same checks when started through a shortcut folder. Internal trash destinations must also remain inside the vault.
+- `.mcpignore` in the vault root blocks matching paths and their contents from MCP reads, writes, searches, and listings. Rules are relative to the vault root, one per line; blank lines and lines starting with `#` are ignored. Edits take effect on subsequent calls without restarting, including cached title and link results. An unavailable vault or unreadable policy causes access to be refused.
+  - Existing literal rules still work: `Private` or `Private/` blocks that path and everything beneath it.
+  - `*` matches within one path segment; `?` matches one character; `**` as a whole path segment matches zero or more directory levels. For example, `Notes/draft?.md` blocks `Notes/draft1.md`, and `**/*.bak` blocks `.bak` files at any depth.
+  - `.*/` blocks hidden entries at the vault root; `**/.*` blocks hidden files and folders at every depth, including their contents. A trailing slash is optional and does not restrict a rule to directories.
+  - This is an exclusion list, not full `.gitignore` syntax: matching ignores case and normalizes Unicode, all rules are rooted at the vault, and `!` does not re-include paths. Brackets and braces are literal characters.
+- `.mcpignore` is owner-managed: agents may read it when allowed by the rules, but cannot create, edit, delete, or move it through MCP, including through aliases. Edit the file directly to change access.
+- Hidden entries remain omitted from ordinary searches and listings, but explicit paths (including `VAULT_CONTEXT_PATH=.claude/CLAUDE.md`) remain accessible unless blocked by `.mcpignore`.
 - `VAULT_READ_ONLY=true` blocks all write operations. Write-only tools are left out of the tool list entirely, so agents never see a tool that can only fail; `vault_periodic_note`, `vault_clip_url`, and `vault_move` (whose default dry run only plans) stay listed and refuse the write.
 - `vault_search_title` defaults to `limit=50`; `vault_search_content` defaults to `limit=20`. Limits are adjustable; `0` means no limit.
 - `vault_tags` defaults to `limit=100` when listing all tags; passing a `tag` returns the matching note paths without a limit. Counts are case-insensitive (displayed in first-seen casing) and nested tags match exactly — `parent` does not include `parent/child`.

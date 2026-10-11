@@ -808,7 +808,17 @@ export async function registerTools(server: McpServer) {
         // Ambiguous-heading errors carry their own recovery guidance — don't append
         // the "call vault_outline first" hint, which only fits the missing-heading case.
         if (e instanceof vault.AmbiguousHeadingError) {
-          return { content: [{ type: "text", text: message }], isError: true };
+          // Two blocks on purpose. The audit logger records only the first block of an
+          // isError result, and the previews in the second are note body text — keeping
+          // them out of block one keeps them out of logs/tool-calls.jsonl while the agent
+          // still gets everything it needs to disambiguate.
+          return {
+            content: [
+              { type: "text", text: message },
+              { type: "text", text: `Candidate sections:\n${e.candidatesText()}` },
+            ],
+            isError: true,
+          };
         }
         const hint = message.startsWith("Heading ")
           ? " — call vault_outline first and copy heading text exactly (without # prefix)."
@@ -921,7 +931,17 @@ export async function registerTools(server: McpServer) {
       outputSchema: contentSearchOutput,
     },
     async ({ query, folder, limit, case_sensitive }) => {
-      const results = await vault.searchContent(query, { folder, limit, caseSensitive: case_sensitive });
+      let results: vault.SearchResult[];
+      try {
+        results = await vault.searchContent(query, { folder, limit, caseSensitive: case_sensitive });
+      } catch (e) {
+        // A malformed pattern is the caller's mistake, not a server fault — hand back the
+        // reason so the agent can correct it, rather than letting a SyntaxError escape.
+        if (e instanceof vault.InvalidSearchPatternError) {
+          return { content: [{ type: "text" as const, text: e.message }], isError: true };
+        }
+        throw e;
+      }
       const hitLimit = limit > 0 && results.length === limit;
       return structuredResult(
         contentSearchOutput,
