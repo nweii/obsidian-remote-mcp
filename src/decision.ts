@@ -179,7 +179,6 @@ const STATUS_MESSAGES: Record<number, string> = {
   429: 'rate limit reached',
 };
 
-const RETRYABLE = new Set([429, 502, 503, 504, 529]);
 const MAX_ATTEMPTS = 3;
 const REQUEST_TIMEOUT_MS = 60_000;
 
@@ -192,7 +191,7 @@ async function evaluate(provider: DecisionProvider, body: unknown, transport: Tr
       throw new Error(`${provider.label} could not be reached (${e instanceof Error ? e.message : String(e)})`);
     }
     if (result.status >= 200 && result.status < 300) return result.json;
-    if (RETRYABLE.has(result.status) && attempt < MAX_ATTEMPTS - 1) {
+    if ((result.status === 429 || (result.status >= 500 && result.status < 600)) && attempt < MAX_ATTEMPTS - 1) {
       const seconds = Number(result.retryAfter);
       const wait = Number.isFinite(seconds) ? seconds * 1000 : 1000 * 2 ** attempt;
       if (wait > 30_000) break;
@@ -255,7 +254,7 @@ export async function judgeChunks(
   const failures: string[] = [];
   let requests = 0;
 
-  const queue = planBatches(items);
+  const queue = planBatches(items).map(indexes => ({ indexes, splits: 0 }));
 
   async function runBatch(indexes: number[], splits = 0): Promise<void> {
     const batchItems = indexes.map(i => items[i]!);
@@ -267,11 +266,10 @@ export async function judgeChunks(
       });
     } catch (e) {
       if (e instanceof QuestionLimitError && e.limit < indexes.length && splits < 3) {
-        const parts: Promise<void>[] = [];
+        // Split work returns to the same queue, so it cannot bypass the worker bound.
         for (let start = 0; start < indexes.length; start += e.limit) {
-          parts.push(runBatch(indexes.slice(start, start + e.limit), splits + 1));
+          queue.push({ indexes: indexes.slice(start, start + e.limit), splits: splits + 1 });
         }
-        await Promise.all(parts);
         return;
       }
       failures.push(e instanceof Error ? e.message : String(e));
@@ -282,7 +280,7 @@ export async function judgeChunks(
   async function worker(): Promise<void> {
     while (next < queue.length) {
       const batch = queue[next++]!;
-      await runBatch(batch);
+      await runBatch(batch.indexes, batch.splits);
     }
   }
   await Promise.all(Array.from({ length: Math.min(CONCURRENCY, queue.length) }, worker));

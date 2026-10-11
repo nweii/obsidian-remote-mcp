@@ -4,6 +4,7 @@
 
 import type { McpServer } from "@modelcontextprotocol/server";
 import { createHash } from "node:crypto";
+import path from "node:path";
 import { z } from "zod";
 import * as vault from "./vault.js";
 import { chunkText, type Chunk } from "./chunk.js";
@@ -29,7 +30,7 @@ const splitList = (raw: string | undefined): string[] =>
   (raw ?? "").split(",").map(s => s.trim()).filter(Boolean);
 
 const normalizeTag = (tag: string) => tag.trim().replace(/^#/, "").toLowerCase();
-const normalizePath = (p: string) => p.trim().replace(/^\/+|\/+$/g, "");
+const normalizePath = (p: string) => path.posix.normalize(p.trim().replace(/^\/+|\/+$/g, "") || ".").normalize("NFC");
 
 // Config rules come from SKIM_EXCLUDE_TAGS / SKIM_EXCLUDE_PATHS; request rules are added on top and
 // can never remove a config rule.
@@ -46,8 +47,8 @@ export function exclusionRules(
     ].filter(r => r.pattern !== "" && r.pattern !== "*"),
     paths: [
       ...splitList(env.SKIM_EXCLUDE_PATHS).map(path("server config")),
-      ...(request.exclude_paths ?? []).map(path("this request")),
-    ].filter(r => r.pattern !== ""),
+      ...(request.exclude_paths ?? []).filter(p => p.trim() !== "").map(path("this request")),
+    ],
   };
 }
 
@@ -63,9 +64,9 @@ export function tagMatches(tag: string, pattern: string): boolean {
 
 // A path rule matches the path itself or anything under it, case-insensitively.
 export function pathMatches(relPath: string, pattern: string): boolean {
-  const p = relPath.toLowerCase();
-  const rule = pattern.toLowerCase();
-  return p === rule || p.startsWith(rule + "/");
+  const p = normalizePath(relPath).toLowerCase();
+  const rule = normalizePath(pattern).toLowerCase();
+  return rule === "." || p === rule || p.startsWith(rule + "/");
 }
 
 function pathExclusion(relPath: string, rules: ExclusionRules): string | null {
@@ -130,8 +131,7 @@ async function candidatePaths(req: SkimRequest): Promise<{ selection: string; pa
 
   const scope = req.folder ? ` in ${req.folder}` : " across the vault";
   if (req.query) {
-    const results = await vault.searchContent(req.query, { folder: req.folder, limit: 0 });
-    return { selection: `notes matching /${req.query}/${scope}`, paths: results.map(r => r.path), missing };
+    return { selection: `notes matching /${req.query}/${scope}`, paths: await vault.listNotePaths(req.folder), missing };
   }
   return { selection: `every note in ${req.folder}`, paths: await vault.listNotePaths(req.folder), missing };
 }
@@ -150,10 +150,13 @@ export async function planSkim(req: SkimRequest, provider: DecisionProvider, env
   const rules = exclusionRules(req, env);
   const maxNotes = Math.min(MAX_NOTES_CAP, Math.max(1, req.max_notes ?? DEFAULT_MAX_NOTES));
   const { selection, paths, missing } = await candidatePaths(req);
+  // Match as vault_search_content does, but only after skim path exclusions have been applied.
+  const query = !(req.paths && req.paths.length > 0) && req.query ? new RegExp(req.query, "i") : null;
 
   const notes: PlannedNote[] = [];
   const excluded: SkimPlan["excluded"] = [];
   let moreMatched = false;
+  const seen = new Set<string>();
 
   for (const relPath of paths) {
     // Path rules are checked before the note is read.
@@ -162,13 +165,28 @@ export async function planSkim(req: SkimRequest, provider: DecisionProvider, env
       excluded.push({ path: relPath, reason: byPath });
       continue;
     }
-    let content: string;
+    let notePath: string;
     try {
-      content = await vault.readNote(relPath);
+      notePath = await vault.canonicalNotePath(relPath);
     } catch (e) {
       missing.push({ input: relPath, reason: e instanceof Error ? e.message : String(e) });
       continue;
     }
+    const byTarget = pathExclusion(notePath, rules);
+    if (byTarget) {
+      excluded.push({ path: relPath, reason: byTarget });
+      continue;
+    }
+    if (seen.has(notePath)) continue;
+    seen.add(notePath);
+    let content: string;
+    try {
+      content = await vault.readNote(notePath);
+    } catch (e) {
+      missing.push({ input: relPath, reason: e instanceof Error ? e.message : String(e) });
+      continue;
+    }
+    if (query && !content.split("\n").some(line => query.test(line))) continue;
     const byTag = tagExclusion(vault.getNoteTags(content), rules);
     if (byTag) {
       excluded.push({ path: relPath, reason: byTag });
@@ -180,7 +198,7 @@ export async function planSkim(req: SkimRequest, provider: DecisionProvider, env
     }
     const chunks = chunkText(content);
     if (chunks.length === 0) continue;
-    notes.push({ path: relPath, chunks, chars: chunks.reduce((n, c) => n + c.text.length, 0), version: vault.versionOf(content) });
+    notes.push({ path: notePath, chunks, chars: chunks.reduce((n, c) => n + c.text.length, 0), version: vault.versionOf(content) });
   }
 
   return {

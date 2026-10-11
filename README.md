@@ -445,6 +445,8 @@ Notes are withheld in layers, and each layer can only withhold more:
 2. `SKIM_EXCLUDE_TAGS` and `SKIM_EXCLUDE_PATHS` (comma-separated), which apply to every `vault_skim` call. `private` matches only `#private`; `work/*` matches `#work` and every tag nested under it. Tags are read from frontmatter and inline `#tag`. A path rule covers that path and everything under it.
 3. `exclude_tags` and `exclude_paths` on a call, which add to the server's rules for that call only.
 
+Path exclusions are checked against normalized requested paths and resolved file locations before note text is read, including during query selection. Equivalent spellings and symlinks cannot bypass an excluded folder. Plans list allowed aliases once, using the resolved vault-relative path. A path-excluded note in a query's scope is reported as withheld without reading it to test the query.
+
 A chunk the model couldn't judge (a failed request, a malformed answer) is kept and marked `unjudged`, so a provider failure can return more text than expected but never silently drops any.
 
 ## Notes

@@ -210,6 +210,16 @@ export async function readNote(relativePath: string): Promise<string> {
   return fs.readFile(resolveSafePath(relativePath), 'utf-8');
 }
 
+// Resolve a note's actual vault-relative location without reading its body. Both the requested
+// path and the canonical target must satisfy vault containment and .mcpignore.
+export async function canonicalNotePath(relativePath: string): Promise<string> {
+  const target = await fs.realpath(resolveSafePath(relativePath));
+  const root = await fs.realpath(getVaultRoot());
+  const canonical = path.relative(root, target);
+  resolveSafePath(canonical);
+  return canonical;
+}
+
 // --- Attachments (binary reads) ----------------------------------------------
 
 // Extension → MIME type for attachment reads. Explicit and small on purpose — no

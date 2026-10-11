@@ -1,7 +1,7 @@
 // ABOUTME: Tests for vault_skim — chunking, provider resolution, request shapes per provider, batching and
 // failure handling with a fake transport, exclusion rules, and the dry-run → confirm flow over MCP.
-import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
-import { mkdir, mkdtemp, rm, writeFile } from 'fs/promises';
+import { afterAll, beforeAll, describe, expect, spyOn, test } from 'bun:test';
+import fs, { mkdir, mkdtemp, rm, symlink, writeFile } from 'fs/promises';
 import os from 'os';
 import path from 'path';
 import { McpServer } from '@modelcontextprotocol/server';
@@ -66,6 +66,36 @@ describe('chunkText', () => {
     const chunks = chunkText(`intro\n${'y'.repeat(5000)}\noutro`, { chunkChars: 1000, overlap: 0 });
     expect(chunks.every(c => c.text.length <= 1000)).toBe(true);
     expect(chunks.some(c => c.startLine === 2 && c.endLine === 2)).toBe(true);
+  });
+
+  test('overlaps long paragraphs by 200 source characters with accurate line citations', () => {
+    const lines = Array.from({ length: 6 }, (_, i) => `paragraph ${i}: ${String(i).repeat(900)}`);
+    const text = lines.join('\n');
+    const chunks = chunkText(text);
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(chunks[0]!.text).toBe(`${lines[0]}\n${lines[1]}`);
+    for (let i = 1; i < chunks.length; i++) {
+      expect(chunks[i]!.text.slice(0, 200)).toBe(chunks[i - 1]!.text.slice(-200));
+      expect(chunks[i]!.text.length).toBeLessThanOrEqual(2000);
+    }
+    expect(chunks[1]!.startLine).toBe(2);
+    expect(chunks.at(-1)!.endLine).toBe(6);
+  });
+
+  test('overlaps a huge single line without adding newlines or exceeding the chunk bound', () => {
+    const text = Array.from({ length: 1000 }, (_, i) => String(i).padStart(5, '0')).join('');
+    const chunks = chunkText(text, { chunkChars: 1000, overlap: 0.1 });
+    expect(chunks.length).toBeGreaterThan(1);
+    for (const chunk of chunks) {
+      expect(chunk.startLine).toBe(1);
+      expect(chunk.endLine).toBe(1);
+      expect(chunk.text.length).toBeLessThanOrEqual(1000);
+      expect(chunk.text).not.toContain('\n');
+    }
+    for (let i = 1; i < chunks.length; i++) {
+      expect(chunks[i]!.text.slice(0, 100)).toBe(chunks[i - 1]!.text.slice(-100));
+    }
+    expect(chunks[0]!.text + chunks.slice(1).map(c => c.text.slice(100)).join('')).toBe(text);
   });
 });
 
@@ -148,6 +178,16 @@ describe('judgeChunks', () => {
     expect(result.probabilities).toEqual([0.1, 0.9]);
   });
 
+  test('retries a transient HTTP 500 and returns the judged chunks', async () => {
+    let attempts = 0;
+    const ok = scoringTransport('needle');
+    const transport: Transport = async (...args) => (++attempts === 1 ? { status: 500, json: {} } : ok(...args));
+    const result = await judgeChunks(typesafe, 'g', items.slice(0, 2), { transport, sleep: noSleep });
+    expect(attempts).toBe(2);
+    expect(result.failures).toEqual([]);
+    expect(result.probabilities).toEqual([0.1, 0.9]);
+  });
+
   test('splits a batch when the provider names a question limit', async () => {
     const ok = scoringTransport('needle');
     const sizes: number[] = [];
@@ -163,6 +203,29 @@ describe('judgeChunks', () => {
     expect(result.failures).toEqual([]);
     expect(result.probabilities.every(p => p !== null)).toBe(true);
     expect(sizes).toEqual([12, 5, 5, 2]);
+  });
+
+  test('split batches share the four-request concurrency bound and preserve every judgment', async () => {
+    const many = Array.from({ length: 96 }, (_, i) => ({ source: 'A.md', lines: `${i + 1}-${i + 1}`, text: i % 2 ? 'needle' : 'hay' }));
+    const ok = scoringTransport('needle');
+    let active = 0;
+    let peak = 0;
+    const transport: Transport = async (...args) => {
+      active++;
+      peak = Math.max(peak, active);
+      try {
+        await new Promise(resolve => setTimeout(resolve, 1));
+        const count = Object.keys((args[2] as any).questions).length;
+        if (count > 1) return { status: 422, json: { detail: [{ type: 'too_long', loc: ['body', 'questions'], msg: 'Dictionary should have at most 1 items after validation' }] } };
+        return await ok(...args);
+      } finally {
+        active--;
+      }
+    };
+    const result = await judgeChunks(typesafe, 'g', many, { transport, sleep: noSleep });
+    expect(peak).toBeLessThanOrEqual(4);
+    expect(result.failures).toEqual([]);
+    expect(result.probabilities).toEqual(many.map(it => it.text === 'needle' ? 0.9 : 0.1));
   });
 });
 
@@ -207,6 +270,7 @@ describe('vault_skim over a temp vault', () => {
     await seed('Notes/Secret.md', '---\ntags: [private]\n---\nneedle in a private note\n');
     await seed('Notes/Draft.md', 'Draft mentions needle #draft\n');
     await seed('Journal/2026-10-11.md', 'needle in the journal\n');
+    await symlink('../Journal/2026-10-11.md', path.join(vaultPath, 'Notes/Journal-link.md'));
   });
 
   afterAll(async () => {
@@ -230,6 +294,61 @@ describe('vault_skim over a temp vault', () => {
     await seed('Notes/Draft.md', 'Draft mentions needle twice #draft\n');
     const after = await planSkim({ goal: 'g', paths: ['Notes/Draft.md'] }, typesafe, {});
     expect(after.planId).not.toBe(before.planId);
+  });
+
+  test('allowed aliases share one canonical note in the disclosure plan', async () => {
+    process.env.VAULT_PATH = vaultPath;
+    await symlink('Garden.md', path.join(vaultPath, 'Notes/Garden-link.md'));
+    const plan = await planSkim({ goal: 'stakes', paths: ['Notes/Garden.md', './Notes/Garden.md', 'Notes/Garden-link.md'] }, typesafe, env);
+    expect(plan.notes.map(n => n.path)).toEqual(['Notes/Garden.md']);
+    expect(plan.missing).toEqual([]);
+    const excluded = await planSkim({ goal: 'stakes', paths: ['Notes/Garden-link.md'], exclude_paths: ['Notes/Garden-link.md'] }, typesafe, env);
+    expect(excluded.notes).toEqual([]);
+    expect(excluded.excluded).toEqual([{ path: 'Notes/Garden-link.md', reason: 'path Notes/Garden-link.md (this request)' }]);
+  });
+
+  test('tool withholds excluded notes reached through equivalent paths or symlinks', async () => {
+    process.env.VAULT_PATH = vaultPath;
+    const previous = process.env.SKIM_EXCLUDE_PATHS;
+    process.env.SKIM_EXCLUDE_PATHS = 'Journal';
+    const calls: unknown[] = [];
+    const server = new McpServer({ name: 'skim-policy-test', version: '0' });
+    registerSkimTool(server, { provider: typesafe, transport: scoringTransport('needle', calls), sleep: noSleep });
+    const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverSide);
+    const client = new Client({ name: 'skim-policy-client', version: '0' });
+    await client.connect(clientSide);
+    try {
+      const args = {
+        goal: 'needle',
+        paths: ['Notes/Garden.md', './Journal/2026-10-11.md', 'Notes/../Journal/2026-10-11.md', 'Notes/Journal-link.md'],
+      };
+      const dry = await client.callTool({ name: 'vault_skim', arguments: args }) as any;
+      expect(calls).toEqual([]);
+      expect(dry.content[0].text).toContain('from 1 note(s)');
+      const planId = dry.content[0].text.match(/confirm: "([0-9a-f]{12})"/)![1]!;
+      const run = await client.callTool({ name: 'vault_skim', arguments: { ...args, confirm: planId } }) as any;
+      expect(run.isError).toBeFalsy();
+      expect(calls.length).toBeGreaterThan(0);
+      expect(JSON.stringify(calls)).not.toContain('needle in the journal');
+    } finally {
+      await client.close();
+      if (previous === undefined) delete process.env.SKIM_EXCLUDE_PATHS;
+      else process.env.SKIM_EXCLUDE_PATHS = previous;
+    }
+  });
+
+  test('query selection never reads a path-excluded note, including through a symlink', async () => {
+    process.env.VAULT_PATH = vaultPath;
+    const read = spyOn(fs, 'readFile');
+    try {
+      const plan = await planSkim({ goal: 'stakes', query: 'needle' }, typesafe, env);
+      expect(plan.notes.map(n => n.path)).toEqual(['Notes/Draft.md', 'Notes/Garden.md']);
+      const pathsRead = read.mock.calls.map(([file]) => String(file));
+      expect(pathsRead.some(file => file.includes('/Journal/') || file.endsWith('/Journal-link.md'))).toBe(false);
+    } finally {
+      read.mockRestore();
+    }
   });
 
   test('runSkim keeps only relevant chunks, cited by line range', async () => {
@@ -274,7 +393,12 @@ describe('vault_skim over a temp vault', () => {
     expect(stale.isError).toBe(true);
     expect(calls.length).toBe(0);
 
-    const run = await client.callTool({ name: 'vault_skim', arguments: { ...args, confirm: planId } }) as any;
+    await seed('Notes/Garden.md', `${await fs.readFile(path.join(vaultPath, 'Notes/Garden.md'), 'utf-8')}\nThe stakes plan changed.\n`);
+    const changed = await client.callTool({ name: 'vault_skim', arguments: { ...args, confirm: planId } }) as any;
+    expect(changed.isError).toBe(true);
+    expect(calls.length).toBe(0);
+    const currentId = changed.content[0].text.match(/confirm: "([0-9a-f]{12})"/)![1]!;
+    const run = await client.callTool({ name: 'vault_skim', arguments: { ...args, confirm: currentId } }) as any;
     expect(run.isError).toBeFalsy();
     expect(run.content[0].text).toContain('tomatoes need needle-thin stakes');
     expect(calls.length).toBeGreaterThan(0);
