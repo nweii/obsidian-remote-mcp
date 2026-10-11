@@ -252,14 +252,16 @@ openssl rand -base64 48
 
 #### CORS
 
-`CORS_ALLOWED_ORIGINS` limits which **browser origins** may call the API from JavaScript. It is separate from OAuth and from `MCP_STATIC_BEARER_TOKEN`, and irrelevant to server-side clients like Poke. Default is `*` (allow all). To restrict:
+`CORS_ALLOWED_ORIGINS` lists the exact **browser origins** allowed to call `/mcp`. By default, only the origin of `MCP_BASE_URL` is trusted (or `http://localhost:PORT` for local development). To allow a browser client on another origin, set an explicit list:
 
 ```env
 CORS_ALLOWED_ORIGINS=https://claude.ai
 CORS_ALLOWED_ORIGINS=https://claude.ai,http://localhost:3000
 ```
 
-When set, only listed origins get a reflected `Access-Control-Allow-Origin`; other browser preflights fail.
+Only listed origins receive `Access-Control-Allow-Origin`. Requests to `/mcp` with an unlisted or invalid `Origin` receive `403`, including actual requests, not just preflights. Use HTTP(S) origins without paths or credentials; `*` and `null` are rejected at startup. The list replaces the default, so include your own site origin too if needed. Requests without an `Origin` header, such as server-to-server MCP clients, continue to work and still require authentication. OAuth discovery and browser sign-in retain their protocol-specific behavior.
+
+If an existing deployment sets `CORS_ALLOWED_ORIGINS=*`, replace it with the exact browser origins you trust or remove it to use the site-origin default.
 
 #### Password gate
 
@@ -312,7 +314,7 @@ WEEKLY_NOTE_PATH_TEMPLATE=Weekly/{GGGG}-W{WW}.md       # optional; opt-in cadenc
 MONTHLY_NOTE_PATH_TEMPLATE=Monthly/{YYYY}-{MM}.md      # optional; opt-in cadence
 QUARTERLY_NOTE_PATH_TEMPLATE=Quarterly/{YYYY}-Q{Q}.md  # optional; opt-in cadence
 YEARLY_NOTE_PATH_TEMPLATE=Yearly/{YYYY}.md             # optional; opt-in cadence
-CORS_ALLOWED_ORIGINS=https://claude.ai # optional; defaults to *
+CORS_ALLOWED_ORIGINS=https://claude.ai # optional; defaults to MCP_BASE_URL origin
 TOKEN_STORE_PATH=./tokens.json         # optional
 MCP_STATIC_BEARER_TOKEN=               # optional; API key for /mcp (see Authentication)
 HEALTH_TOKEN=                          # optional; enables GET /health (see Health endpoint)
@@ -321,6 +323,29 @@ VAULT_ATTACHMENT_MAX_BYTES=10485760    # optional; vault_read_attachment size ca
 PORT=3456
 # HOST=127.0.0.1                    # optional for a host-local proxy; in Docker restrict the published port instead
 ```
+
+### Dependency installation and optional clipping
+
+Install from the committed lockfile with `bun install --frozen-lockfile`. If you do not use URL clipping, a fresh installation can omit its dependency tree:
+
+```bash
+bun install --frozen-lockfile --omit=optional
+```
+
+Core vault tools work without the optional clipper. To enable clipping, install optional dependencies normally and build the integration:
+
+```bash
+bun install --frozen-lockfile
+bun run setup:clipper
+```
+
+Run setup again after dependency updates: it rebuilds the clipper bundle using this repo's locked, patched dependencies. Do not run separate installs inside `node_modules/web-clipper-headless` or `node_modules/obsidian-clipper`; those installs would bypass this repo's overrides and lockfile. `scripts/bootstrap-clipper.sh` calls the same setup command.
+
+`bunfig.toml` retains the three-day minimum release age and frozen-lockfile defaults. The release-age check applies to registry packages, not Git dependencies. Changes to the locked `mcp-server-kit`, `web-clipper-headless`, or transitive `obsidian-clipper` commits require source review. Run `bun audit` after dependency changes; the root overrides pin patched versions where upstream dependencies still request vulnerable releases.
+
+### Audit-log privacy
+
+With logging enabled, paths, titles, search queries, tags, and frontmatter field names can appear in logs in clear text. Note-body arguments and frontmatter values are redacted, and known parser/section errors are sanitized, but these metadata can still be sensitive. Feedback text is stored as written. Set `LOG_ENABLED=false` to disable tool-call and feedback logging. Logs do not rotate automatically.
 
 ### Vault path
 

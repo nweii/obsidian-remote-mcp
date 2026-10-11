@@ -2,7 +2,7 @@
 // logging, a bearer-gated /health with a vault-liveness probe, the Claude-facing OAuth surface, and
 // the stateless /mcp mount) and registers the vault tools. createApp() returns the Express app plus
 // the auth instance, whose saveTokens() the entry point persists on shutdown.
-import type { Express } from 'express';
+import express, { type Express } from 'express';
 import { stat } from 'fs/promises';
 import { createApp as createKitApp, createAuth } from 'mcp-server-kit';
 import type { Auth } from 'mcp-server-kit';
@@ -10,10 +10,30 @@ import { getVaultRoot, getVaultDisplayName } from './vault.js';
 import { registerTools } from './tools.js';
 import pkg from '../package.json' with { type: 'json' };
 
-function getAllowedOrigins(): string[] | null {
+function parseOrigin(value: string, setting: string, allowTrailingSlash = false): string {
+  const invalid = () => new Error(
+    `${setting} must contain explicit HTTP(S) origins (scheme, host, optional port), without credentials, paths, queries, fragments, or wildcards.`,
+  );
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw invalid();
+  }
+  // URL parsing alone is permissive (e.g. backslashes and missing slashes). Require an
+  // origin-shaped value before normalizing host casing and default ports for browser headers.
+  if (!/^https?:\/\/[^/?#\s\\@*]+\/?$/i.test(value) ||
+      (!allowTrailingSlash && value.endsWith('/')) ||
+      url.hostname.includes('*') || url.username || url.password || url.pathname !== '/' || url.search || url.hash) {
+    throw invalid();
+  }
+  return url.origin;
+}
+
+function getAllowedOrigins(baseUrl: string): string[] {
   const env = process.env.CORS_ALLOWED_ORIGINS?.trim();
-  if (!env || env === '*') return null;
-  return env.split(',').map(origin => origin.trim()).filter(Boolean);
+  if (!env) return [baseUrl];
+  return [...new Set(env.split(',').map(origin => parseOrigin(origin.trim(), 'CORS_ALLOWED_ORIGINS')))];
 }
 
 // Builds the server. Returns the app and its auth instance; the entry point persists tokens via
@@ -22,6 +42,11 @@ function getAllowedOrigins(): string[] | null {
 export function createApp(): { app: Express; auth: Auth } {
   const testMode = process.env.VAULT_MCP_TEST === '1';
   const port = process.env.PORT ?? '3456';
+  const baseUrl = parseOrigin(process.env.MCP_BASE_URL?.trim() ?? `http://localhost:${port}`, 'MCP_BASE_URL', true);
+  // Browser origins are trusted configuration, never inferred from Host or proxy headers.
+  // The kit rejects origins outside this list on /mcp and permits non-browser clients
+  // without an Origin header. OAuth/discovery retain the SDK's interoperability behavior.
+  const allowedOrigins = getAllowedOrigins(baseUrl);
 
   const clientId = process.env.MCP_CLIENT_ID;
   if (!clientId) throw new Error('MCP_CLIENT_ID env var is required');
@@ -39,7 +64,7 @@ export function createApp(): { app: Express; auth: Auth } {
   const dcrEnabled = /^(1|true)$/i.test(process.env.MCP_DCR_ENABLED?.trim() ?? '') || !!dcrRedirectUris?.length;
 
   const auth = createAuth({
-    baseUrl: process.env.MCP_BASE_URL ?? `http://localhost:${port}`,
+    baseUrl,
     clientId,
     displayName: 'obsidian-remote-mcp',
     tokenStorePath: process.env.TOKEN_STORE_PATH ?? './tokens.json',
@@ -56,7 +81,7 @@ export function createApp(): { app: Express; auth: Auth } {
     disableRateLimit: testMode,
   });
 
-  const app = createKitApp({
+  const kitApp = createKitApp({
     name: 'obsidian-remote-mcp',
     version: pkg.version,
     auth,
@@ -68,16 +93,35 @@ export function createApp(): { app: Express; auth: Auth } {
     // One stat of the vault root catches the realistic NAS failure where the process is up but the
     // volume mount is broken. Throwing marks the server unhealthy: the kit answers /health with 503.
     healthProbe: () => stat(getVaultRoot()).then(() => undefined),
-    corsOrigins: getAllowedOrigins(),
+    corsOrigins: allowedOrigins,
     registerTools,
     testMode,
   });
+
+  // The kit's guard skips a present-but-empty Origin header. Mount it behind an explicit
+  // /mcp check so every supplied Origin must match; only an absent header is exempt.
+  // OAuth/discovery routes remain outside this guard for normal browser sign-in/discovery.
+  const app = express();
+  app.use('/mcp', (req, res, next) => {
+    const origin = req.headers.origin;
+    if (origin !== undefined && !allowedOrigins.includes(origin)) {
+      res.status(403).end();
+      return;
+    }
+    next();
+  });
+  // Let the SDK answer OAuth/discovery preflights before the kit's global MCP CORS
+  // middleware; otherwise browser clients cannot preflight /register or /token.
+  // Ordinary requests still pass through the kit's parsers and request logger.
+  app.options('*', auth.routes);
+  app.use(kitApp);
 
   // Deployed behind a reverse proxy / tunnel on the loopback interface. Trust that single loopback hop
   // so req.ip resolves to the real client from X-Forwarded-For; otherwise the SDK's per-IP rate limiter
   // buckets every request under 127.0.0.1. 'loopback' (not `true`) keeps the trust boundary at the
   // local tunnel and does not trust arbitrary upstream proxies.
   app.set('trust proxy', 'loopback');
+  kitApp.set('trust proxy', 'loopback');
 
   return { app, auth };
 }
