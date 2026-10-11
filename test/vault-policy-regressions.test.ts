@@ -222,6 +222,16 @@ describe('ignore configuration can be read but cannot be mutated through vault o
   });
 });
 
+describe('reserved policy path', () => {
+  test('nothing can be created beneath .mcpignore when the policy file is absent', async () => {
+    await rm(path.join(vaultPath, '.mcpignore'));
+    await expect(vault.writeNote('.mcpignore/Note.md', 'x')).rejects.toBeInstanceOf(vault.VaultPolicyError);
+    await expect(vault.moveFile('Public/Open.md', '.MCPIGNORE/Open.md')).rejects.toBeInstanceOf(vault.VaultPolicyError);
+    expect(existsSync(path.join(vaultPath, '.mcpignore'))).toBe(false);
+    expect(await vault.readNote('Public/Open.md')).toContain('public body');
+  });
+});
+
 describe('Obsidian internal folders', () => {
   test('are blocked by default at any depth, by alias, and in any case', async () => {
     await mkdir(path.join(vaultPath, '.obsidian/plugins/ai'), { recursive: true });

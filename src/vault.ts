@@ -371,7 +371,9 @@ function resolveWritePath(relativePath: string, allowIgnored = false): string {
   const policyTarget = realpathOrNearestExisting(policy);
   const key = (value: string) => value.normalize('NFC').toLowerCase();
   // Moving a containing directory would remove a symlinked policy just as surely as moving
-  // the file. Hardlinks need an inode check because realpath cannot identify those aliases.
+  // the file, and a path beneath an absent policy would create it as a directory, which the
+  // policy loader then cannot read. Hardlinks need an inode check because realpath cannot
+  // identify those aliases.
   let sameFile = false;
   try {
     const targetStat = statSync(resolved);
@@ -381,7 +383,8 @@ function resolveWritePath(relativePath: string, allowIgnored = false): string {
     const code = (e as NodeJS.ErrnoException).code;
     if (code !== 'ENOENT' && code !== 'ENOTDIR') throw e;
   }
-  if (isWithin(key(resolved), key(policy)) || isWithin(key(realResolved), key(policyTarget)) || sameFile) {
+  const overlaps = (a: string, b: string) => isWithin(key(a), key(b)) || isWithin(key(b), key(a));
+  if (overlaps(resolved, policy) || overlaps(realResolved, policyTarget) || sameFile) {
     throw new VaultPolicyError('mcpignore', 'The .mcpignore access policy cannot be modified through MCP. Edit it directly as the vault owner.');
   }
   return resolved;
