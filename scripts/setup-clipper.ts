@@ -32,20 +32,28 @@ export async function setupClipper(projectRoot = resolve(import.meta.dir, '..'))
 
   // Mirror upstream scripts/build-api.mjs: ESM, external Defuddle/dayjs, DEBUG_MODE disabled,
   // and the browser extension stub. Bun's browser target serves the environment-neutral API.
+  const external = ['defuddle', 'defuddle/full', 'dayjs'];
   const result = await Bun.build({
     entrypoints: [entrypoint],
     target: 'browser',
     format: 'esm',
-    external: ['defuddle', 'defuddle/full', 'dayjs'],
+    external,
     define: { DEBUG_MODE: 'false' },
     plugins: [{
       name: 'clipper-root-dependencies',
       setup(build) {
-        build.onResolve({ filter: /^[^./]/ }, ({ path }) => ({
-          path: path === 'webextension-polyfill'
-            ? join(upstreamRoot, 'src', 'utils', 'cli-stubs.ts')
-            : Bun.resolveSync(path, projectRoot),
-        }));
+        // A plugin's resolved path overrides `external`, so externals must be returned as such
+        // here or Bun embeds them.
+        build.onResolve({ filter: /^[^./]/ }, ({ path }) => {
+          if (external.some(name => path === name || path.startsWith(`${name}/`))) {
+            return { path, external: true };
+          }
+          return {
+            path: path === 'webextension-polyfill'
+              ? join(upstreamRoot, 'src', 'utils', 'cli-stubs.ts')
+              : Bun.resolveSync(path, projectRoot),
+          };
+        });
       },
     }],
   });

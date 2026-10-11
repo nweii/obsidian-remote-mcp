@@ -51,6 +51,10 @@ async function makeBuildRoot(): Promise<string> {
     try {
       const bundle = await setupClipper(root);
       expect(existsSync(bundle)).toBe(true);
+      // Like upstream's build, Defuddle and dayjs stay imports resolved at runtime, not inlined.
+      const built = await readFile(bundle, 'utf8');
+      expect(built).toMatch(/from\s*["']defuddle(\/full)?["']/);
+      expect(built).toMatch(/from\s*["']dayjs["']/);
       // Setup must refresh embedded dependencies even when a previous bundle exists.
       await writeFile(bundle, 'throw new Error("stale unaudited bundle");');
       expect(await setupClipper(root)).toBe(bundle);
