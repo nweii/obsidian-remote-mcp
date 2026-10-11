@@ -1517,6 +1517,9 @@ export async function getNoteLinks(relativePath: string): Promise<LinkResult[]> 
 // Uses a content search for [[title pattern, so it may include false positives
 // from notes that mention the title in non-link contexts.
 export async function getBacklinks(relativePath: string, limit = 20): Promise<string[]> {
+  // The search below only reads allowed notes, but a protected note's backlinks are still
+  // refused, the same as every other operation that names a vault path.
+  resolveSafePath(relativePath);
   const title = path.basename(relativePath, '.md');
   const escaped = title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const results = await searchContent(`\\[\\[${escaped}`, { limit });
