@@ -221,3 +221,30 @@ describe('ignore configuration can be read but cannot be mutated through vault o
     expect(await readFile(path.join(vaultPath, '.mcpignore'), 'utf-8')).toBe(POLICY);
   });
 });
+
+describe('Obsidian internal folders', () => {
+  test('are blocked by default at any depth, by alias, and in any case', async () => {
+    await mkdir(path.join(vaultPath, '.obsidian/plugins/ai'), { recursive: true });
+    await writeFile(path.join(vaultPath, '.obsidian/plugins/ai/data.json'), '{"apiKey":"sk-x"}');
+    await mkdir(path.join(vaultPath, 'Nested/.git'), { recursive: true });
+    await writeFile(path.join(vaultPath, 'Nested/.git/config'), '[core]');
+    await symlink(path.join(vaultPath, '.obsidian'), path.join(vaultPath, 'Public/Config'));
+    await writeFile(path.join(vaultPath, '.mcpignore'), '');
+    for (const p of ['.obsidian/plugins/ai/data.json', '.OBSIDIAN/plugins/ai/data.json',
+      'Nested/.git/config', 'Public/Config/plugins/ai/data.json']) {
+      expect(() => vault.resolveSafePath(p)).toThrow(vault.VaultPolicyError);
+    }
+    await expect(vault.writeNote('.obsidian/new.md', 'x')).rejects.toBeInstanceOf(vault.VaultPolicyError);
+  });
+
+  test('other hidden paths stay readable by explicit path', async () => {
+    expect(await vault.readNote('.context.md')).toBe('hidden context\n');
+  });
+
+  test('trashed notes stay readable unless .mcpignore hides .trash', async () => {
+    await vault.trashNote('Public/Open.md');
+    const trashed = await readdir(path.join(vaultPath, '.trash'));
+    expect(trashed).toHaveLength(1);
+    expect(await vault.readNote(path.join('.trash', trashed[0]!))).toContain('public body');
+  });
+});

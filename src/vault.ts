@@ -229,6 +229,18 @@ function isIgnoredRelative(rel: string): boolean {
   return getIgnoreRules()(rel.split(path.sep).join('/'));
 }
 
+// App state rather than user context: Obsidian settings and plugin data (where plugins keep
+// API keys), and version history. Excluded at any depth before .mcpignore is consulted, so no
+// policy file is needed to protect them. Other hidden folders, .trash included, stay reachable
+// by explicit path; vault owners keep context and workflow files in them, and an agent can
+// restore what it trashed. A .mcpignore rule hides any of those.
+const INTERNAL_FOLDERS = ['.obsidian', '.git'];
+const matchesInternalFolder = compileIgnoreRules(INTERNAL_FOLDERS.map(name => `**/${name}`).join('\n'));
+
+function isInternalRelative(rel: string): boolean {
+  return matchesInternalFolder(rel.split(path.sep).join('/'));
+}
+
 // --- Read-only mode ----------------------------------------------------------
 
 // Whether VAULT_READ_ONLY=true is set. Read live, so the tool layer (which hides write-only
@@ -249,7 +261,7 @@ function assertWritable() {
 // Thrown by resolveSafePath when a path is rejected for security/policy reasons.
 // Carries a typed `kind` so callers can match without parsing error text.
 export class VaultPolicyError extends Error {
-  constructor(public readonly kind: 'escape' | 'mcpignore', message: string) {
+  constructor(public readonly kind: 'escape' | 'mcpignore' | 'internal', message: string) {
     super(message);
     this.name = 'VaultPolicyError';
   }
@@ -326,8 +338,17 @@ function resolveVaultPath(relativePath: string, enforceIgnore: boolean): string 
     );
   }
 
-  if (enforceIgnore && (isIgnoredRelative(path.relative(vaultRoot, resolved)) ||
-      isIgnoredRelative(path.relative(realRoot, realResolved)))) {
+  const lexicalRel = path.relative(vaultRoot, resolved);
+  const canonicalRel = path.relative(realRoot, realResolved);
+
+  if (enforceIgnore && (isInternalRelative(lexicalRel) || isInternalRelative(canonicalRel))) {
+    throw new VaultPolicyError(
+      'internal',
+      `Path is inside an Obsidian internal folder (${INTERNAL_FOLDERS.join(', ')}), which MCP cannot access: ${relativePath}`,
+    );
+  }
+
+  if (enforceIgnore && (isIgnoredRelative(lexicalRel) || isIgnoredRelative(canonicalRel))) {
     throw new VaultPolicyError('mcpignore', `Path is blocked by .mcpignore: ${relativePath}`);
   }
 
