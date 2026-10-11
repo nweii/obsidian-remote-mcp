@@ -335,6 +335,8 @@ PORT=3456
 # HOST=127.0.0.1                    # optional for a host-local proxy; in Docker restrict the published port instead
 ```
 
+Every variable, with its default and constraints, is listed in [docs/server.md](docs/server.md#environment-variables).
+
 ### Dependency installation and optional clipping
 
 Install from the committed lockfile with `bun install --frozen-lockfile`. If you do not use URL clipping, a fresh installation can omit its dependency tree:
@@ -487,5 +489,6 @@ YEARLY_NOTE_PATH_TEMPLATE=Yearly/{YYYY}.md
 ## Tests
 
 ```bash
-bun test
+bun run test
+bun run typecheck
 ```

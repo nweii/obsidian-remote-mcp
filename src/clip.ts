@@ -89,6 +89,8 @@ async function resolveSettingsPath(vaultRoot: string): Promise<string | null> {
   return candidates[0]!.path;
 }
 
+// Deliberately ignores .mcpignore: the settings file holds interpreter API keys, so owners may
+// hide it from agents while clipping still uses it. The agent never reads the file itself.
 async function scanVaultForSettings(
   root: string,
   depth = 4

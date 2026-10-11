@@ -18,112 +18,52 @@ References:
 
 ```
 src/
-  server.ts   — Builds the app via createApp() and starts it with the kit's startServer (persists tokens on shutdown)
-  app.ts      — createApp() — maps env vars to the kit's createAuth / createApp and registers the vault tools; returns { app, auth }
-  vault.ts    — Vault filesystem operations, frontmatter helpers, vault discovery, and config-derived defaults
-  tools.ts    — MCP tool definitions (context, read, batch read, outline, read section, read attachment, frontmatter, links, create/update/edit/edit section/trash, set frontmatter, batch set frontmatter, move/rename, search title, search content, search frontmatter, tags, periodic note, clip URL, feedback)
-  ignore.ts   — Compiles the vault's literal/glob exclusions with case and Unicode normalization
-  lock.ts     — Per-path async mutex; serializes read-modify-write so concurrent edits to one note can't interleave
-  log.ts      — Configures the kit's audit logger for this vault (LOG_DIR default ./logs; redacts note-content arg fields) and re-exports the wired helpers
-test/
-  server.test.ts — HTTP checks for discovery, GET /mcp, POST initialize
+  server.ts       — Builds the app via createApp() and starts it with the kit's startServer (persists tokens on shutdown)
+  app.ts          — createApp(): maps env vars to the kit's createAuth / createApp, guards /mcp origins, registers the vault tools
+  vault.ts        — Vault filesystem operations, path policy, search and link indices, vault discovery, config-derived defaults
+  tools.ts        — MCP tool definitions; converts vault errors into tool results
+  frontmatter.ts  — Frontmatter parsing and the textual key splice
+  ignore.ts       — Compiles .mcpignore literal/glob rules with case and Unicode normalization
+  lock.ts         — Per-path async mutex for read-modify-write
+  clip.ts         — Registers vault_clip_url when the optional web-clipper-headless is installed
+  log.ts          — Configures the kit's audit logger and its redaction
+  date.ts         — Local-timezone date helpers for periodic notes (parsing, ISO weeks, period buckets)
+  *.d.ts          — Type stand-ins: js-yaml, and the optional web-clipper-headless (mapped in tsconfig paths)
+scripts/          — setup-clipper.ts builds the optional clipper from the root lockfile
+test/             — One file per area; vault-policy-matrix.test.ts covers every vault export against hostile paths
+docs/             — Design notes, reached through the pointers below
 ```
 
-## Running locally
+## Commands
 
 ```bash
-bun install
+bun install                 # add --omit=optional for a core-only install
+bun run setup:clipper       # build the optional clipper after install
 MCP_CLIENT_ID=dev bun run src/server.ts
+bun run test
+bun run typecheck
+bun run audit
 ```
 
-OAuth discovery: `GET /.well-known/oauth-authorization-server`
-Token endpoint: `POST /token`
-MCP endpoint: `POST /mcp` (requires Bearer token)
+CI (`.github/workflows/ci.yml`) runs install, `setup:clipper`, typecheck, tests and audit on every pull request, with `REQUIRE_CLIPPER=1` so missing clipper sources fail instead of skipping their tests.
 
-## Environment variables
+Endpoints: OAuth discovery `GET /.well-known/oauth-authorization-server`, token `POST /token`, MCP `POST /mcp` (Bearer token; `GET /mcp` returns 405).
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `MCP_CLIENT_ID` | yes | OAuth client ID |
-| `MCP_CLIENT_SECRET` | no | Optional OAuth client secret. If set on the server, clients must send the same `client_secret` to `/token`. If unset, PKCE-only clients can sign in without one. |
-| `APPROVAL_PASSWORD` | yes\* | Password for the OAuth approval page: `/authorize` requires it before issuing a code. \*The server refuses to start with the approval path unguarded; this, `MCP_CLIENT_SECRET`, or `APPROVAL_OPEN=true` satisfies that check. |
-| `APPROVAL_OPEN` | no | Set `true` to allow the click-to-approve approval page when a reverse proxy / zero-trust gateway already guards `/authorize`. Satisfies the startup guard in place of an approval password. |
-| `MCP_BASE_URL` | yes (prod) | Public **site** URL (scheme + host, no `/mcp`). Used in OAuth discovery as the protected `resource` |
-| `MCP_CLIENT_ALLOWED_REDIRECT_URIS` | no | Comma-separated allowlist of OAuth redirect URIs for the configured client. Defaults to Claude's callback URI. |
-| `MCP_DCR_ENABLED` | no | `true` opens `/register` so clients that can't be pre-configured (e.g. ChatGPT) register themselves. The approval password stays the gate, so requires `APPROVAL_PASSWORD`. Default off. |
-| `MCP_DCR_ALLOWED_REDIRECT_URIS` | no | Optional hardening for DCR: allowlist of callbacks self-registering clients may use (exact or host-scoped `https://host/*`). Setting it also enables DCR. |
-| `VAULT_PATH` | no | Absolute vault root; overrides Obsidian config when set |
-| `OBSIDIAN_VAULT_ID` | when multiple vaults | Which `vaults` entry in `obsidian.json` to use (matches id case-insensitively) |
-| `VAULT_DISPLAY_NAME` | no | Optional label shown on the OAuth approval page. Defaults to the resolved vault directory name. |
-| `VAULT_CONTEXT_PATH` | no | Relative path for the note returned by `vault_context`. Defaults to `AGENTS.md`, then `CLAUDE.md`. |
-| `DAILY_NOTE_PATH_TEMPLATE` | no | Daily-cadence path template for `vault_periodic_note`. Defaults to `Daily/{YYYY}-{MM}-{DD}.md`. |
-| `WEEKLY_NOTE_PATH_TEMPLATE` | no | Weekly-cadence path template. Opt-in; `period: weekly` errors until set. |
-| `MONTHLY_NOTE_PATH_TEMPLATE` | no | Monthly-cadence path template. Opt-in; `period: monthly` errors until set. |
-| `QUARTERLY_NOTE_PATH_TEMPLATE` | no | Quarterly-cadence path template. Opt-in; `period: quarterly` errors until set. |
-| `YEARLY_NOTE_PATH_TEMPLATE` | no | Yearly-cadence path template. Opt-in; `period: yearly` errors until set. |
-| `VAULT_ATTACHMENT_MAX_BYTES` | no | Max bytes `vault_read_attachment` will read before rejecting. Defaults to `10485760` (10 MB). |
-| `CORS_ALLOWED_ORIGINS` | no | Exact comma-separated HTTP(S) browser-origin allowlist for `/mcp`. Unset/empty allows only the MCP_BASE_URL origin (local fallback http://localhost:PORT). An explicit list replaces those defaults. A standalone `*` opts into any origin; partial/mixed wildcards, `null` entries, paths, and credentials are refused at startup. Requests without Origin remain authenticated normally. |
-| `TOKEN_STORE_PATH` | no | Path to the persisted bearer token store. Defaults to `./tokens.json`. |
-| `LOG_ENABLED` | no | Set to `false` to disable tool-call logging and skip registering `vault_feedback`. Defaults to `true`. |
-| `LOG_DIR` | no | Directory for JSONL logs (`tool-calls.jsonl`, `feedback.jsonl`). Defaults to `./logs`. Created on first write. Skipped when `VAULT_MCP_TEST=1` or `LOG_ENABLED=false`. |
-| `MCP_STATIC_BEARER_TOKEN` | no | Optional fixed secret: requests to `/mcp` with `Authorization: Bearer <same value>` are allowed (for clients that cannot use browser OAuth). Long random string; use HTTPS. Works alongside normal OAuth tokens. |
-| `VAULT_READ_ONLY` | no | Set to `true` to block all write operations. Write-only tools (create, update, edit, edit section, set and batch frontmatter, trash) are not advertised at all; tools that read or write depending on their arguments (`vault_periodic_note`, `vault_clip_url`, and `vault_move`, whose default dry run only plans) stay listed and refuse the write. |
-| `HEALTH_TOKEN` | no | Dedicated bearer for `GET /health`. Default-closed: unset → the route 404s. Sent as `Authorization: Bearer`; separate from the OAuth and static-bearer secrets. |
-| `PORT` | no | HTTP port (default: `3456`) |
-| `HOST` | no | Bind address (default: `0.0.0.0`). Use `127.0.0.1` for a process behind a proxy on the same host; in Docker, restrict the published port instead. |
+## Before changing code
 
-## Claude.ai custom connector (plain checklist)
-
-1. **Public URL** — In Claude, set the connector to your MCP endpoint, e.g. `https://your-domain.com/mcp` (include `https://`).
-
-2. **`MCP_BASE_URL`** — In your server env, set this to the **same host** as that URL, **without** the `/mcp` path — e.g. `https://your-domain.com`. Do **not** point it at a different subdomain or path than the site users use for the connector; OAuth clients compare this to the connector URL.
-
-3. **Client ID / secret** — Set `MCP_CLIENT_ID` to the connector's client ID. `MCP_CLIENT_SECRET` is optional, but if you set it on the server, Claude must send the same value.
-
-4. **After changing env** — Redeploy or restart the container so discovery (`/.well-known/...`) returns the new `resource` value.
-
-`GET /mcp` returns **405** (not 404) so streamable-HTTP clients that probe for SSE know this server only answers MCP on **POST**.
-
-## Notes
-
-- The server is stateless — a fresh `McpServer` and transport are created per request. This is intentional and correct for this use case.
-- **Concurrent edits to the same note** are handled in two layers. (1) A per-path async mutex (`lock.ts`, `withPathLock`) wraps every write that touches existing content (`appendNote`, `prependToNote`, `replaceInNote`, `editNoteSection`, `setFrontmatterProperty`, `updateNote`) so two tool calls on the same note can't interleave. Different notes never block each other. (`appendNote` takes the lock too — `O_APPEND` is atomic against other appends, but not against a read-modify-write writer that read the file before the append landed.) (2) Optimistic versioning: `vault_read` returns a content-addressed `version` (a hash of the note text, `versionOf`). `vault_update` accepts that version as `base_version`; if the note changed since the caller read it (or was deleted), the update is rejected with a `ConcurrentEditError` ("re-read and reapply") instead of silently overwriting the other session's edit. Omitting `base_version` keeps the old last-writer-wins overwrite. (A fuller version that auto-merges non-overlapping concurrent edits via line-based diff3 lives on the `archive/concurrent-edit-diff3-merge` branch.)
-- **Note writes are atomic.** Every truncating write (`writeNote`, `updateNote`, `prependToNote`, `replaceInNote`, `editNoteSection`, and the move/rename link rewrite) goes through `atomicWriteFile`: content is written to a hidden temp file in the same directory, fsynced, then renamed over the target. A same-directory rename is atomic on POSIX, so a reader — Obsidian, Obsidian Sync, another tool call — never sees a half-written or zero-length file. The target's mode is preserved across the inode swap, and the temp file is removed on any failure. `appendNote` deliberately stays on `O_APPEND` — append never truncates, so it can't produce the partial-file corruption atomic-rename guards against.
-- If `VAULT_PATH` is unset, the server reads `.config/obsidian/obsidian.json` (walks up from cwd and from the package directory). With a single vault entry that has a `path`, that path is used; with several, set `OBSIDIAN_VAULT_ID` to the vault id. If neither config nor `VAULT_PATH` is available, startup fails.
-- The OAuth approval page uses `VAULT_DISPLAY_NAME` when set, otherwise the resolved vault directory name.
-- Allowed OAuth redirect targets come from `MCP_CLIENT_ALLOWED_REDIRECT_URIS`, defaulting to Claude's callback URI.
-- `vault_context` reads `VAULT_CONTEXT_PATH` when set, otherwise falls back to `AGENTS.md` and then `CLAUDE.md` if present. It also appends a folder-only tree of the vault (default depth 3, configurable per call via `max_depth`; pass 0 to skip). The tree honours `.mcpignore` and skips dotfiles. Subtrees at each level are walked in parallel, and the whole tree is bounded by a 1.5s timeout — if it can't finish in time the context note is returned without the tree.
-- `vault_periodic_note` reads or creates a note for a `period` (`daily`, `weekly`, `monthly`, `quarterly`, `yearly`), each driven by its own path template env var (`DAILY_NOTE_PATH_TEMPLATE`, `WEEKLY_NOTE_PATH_TEMPLATE`, and so on). Supported tokens `{YYYY}`, `{YY}`, `{GGGG}`, `{GG}`, `{WW}`, `{Q}`, `{MM}`, `{M}`, `{DD}`, `{D}`, `{MMM}`, `{MMMM}`, `{dd}`, `{ddd}`, and `{dddd}`. Only `daily` has a built-in default; other cadences return an error naming their env var until it is set.
-- MCP defaults to the exact configured site origin; `CORS_ALLOWED_ORIGINS` replaces all defaults with an explicit allowlist, or standalone `*` to accept any origin. No client-specific website origins are built in; OAuth callback permissions do not grant browser-origin access. When restricted, invalid/disallowed Origin headers are refused before MCP handling, including non-preflight requests. Server-to-server clients without Origin remain supported. Origin trust never derives from request Host/forwarded headers; OAuth/discovery retain the SDK behavior.
-- Vault paths are validated lexically and canonically against the resolved vault root and `.mcpignore`. Dangling links are refused, and scoped walks apply the same policy to canonical descendants. Internal `.trash` destinations are checked for containment and policy-file protection even when `.trash` is ignored. `.obsidian` and `.git` (app settings, plugin data, and history, at any depth) are always excluded, before `.mcpignore` is consulted. Other hidden files, `.trash` included, remain readable/writable by explicit path unless excluded. `vault_move` and `vault_trash` refuse folders: moving one could carry descendants hidden by a location-specific rule to a path the rule no longer matches.
-- Place a `.mcpignore` file in the vault root to block paths from MCP access. `src/ignore.ts` compiles the rules using Bun's glob matcher. One vault-root-relative rule per line; blank lines and lines starting with `#` are ignored. Literal paths retain their behavior: `03-Records/Journaling` blocks that path and every descendant. `*` and `?` match within a segment; a whole `**` segment spans zero or more directories. `.*/` blocks root-level hidden entries; `**/.*` blocks hidden files/folders and their descendants at any depth. Trailing slashes are optional, not directory-only assertions. A leading `/` or `./` is accepted and ignored, since every rule is already rooted. Matching folds case and NFC-normalizes Unicode conservatively across filesystems; there is no negation, brace expansion or character-class syntax (those characters stay literal). Rules reload whenever the policy file's contents change (it is re-read on every check, since file metadata can miss a same-length rewrite) and invalidate cached title/link results; no restart is needed. An unavailable vault, unreadable policy, or dangling policy link fails closed. The policy file is owner-managed: all mutation helpers reject its lexical/canonical paths, hardlink aliases, and containing directories. Reads remain allowed unless excluded by the rules. Direct access to hidden context notes outside the internal folders remains allowed unless a rule excludes them; ordinary walks/listings still skip hidden entries.
-- Tokens persist to `TOKEN_STORE_PATH` (default `./tokens.json`) and expire after 30 days.
-- When logging is enabled (default), every tool call is recorded to `LOG_DIR/tool-calls.jsonl` with `{ ts, tool, args, ok, duration_ms, error? }`. The `error` field captures the suggestion text returned to the client on `isError` responses, so review can show both the failure and what the agent was told to try next.
-- YAML parser errors expose only fixed safe diagnostic categories and line numbers. `AmbiguousHeadingError.message` carries line numbers but no note previews; `candidatesText()` provides previews in the tool response’s second content block, which the logger does not record.
-- Args are summarized before logging: strings over 80 chars become `<str:Nchars>`, and the fields `content`, `value`, `template`, and `find` are always redacted to `<redacted:Nchars>` regardless of length so note bodies and frontmatter values never land on disk. Tool names, paths, titles, search queries, tags, frontmatter field names, and structural args remain visible and can reveal sensitive metadata. Use `LOG_ENABLED=false` when that metadata must not be stored.
-- Agents can call `vault_feedback` to log a structured note when they get stuck or want a tool that doesn't exist; entries land in `LOG_DIR/feedback.jsonl`. The tool is only registered when logging is enabled. Feedback fields (`goal`, `attempted`, `stuck_on`, `suggested_tool`) are agent-authored and stored verbatim.
-- No automatic rotation — log files grow forever. Mount `LOG_DIR` as a persistent volume in production and rotate or truncate manually if size becomes a concern.
-- Set `LOG_ENABLED=false` to disable both — useful for forks that don't want disk writes recording agent activity, or for ephemeral deployments without a persistent volume.
-- `setFrontmatterProperty` (and the `vault_set_frontmatter_property` tool) does a textual single-key splice on the frontmatter block instead of round-tripping the whole block through js-yaml. Untouched keys keep their on-disk byte form — including bare `YYYY-MM-DD` dates (which the YAML parser would otherwise normalize to full ISO datetimes), quoting style, key order, blank lines, and comments. JSON-shaped frontmatter (`---\n{ ... }\n---`) falls back to parse-and-reserialize, which converts to YAML — matching Obsidian's own behavior documented at `help.obsidian.md/properties#JSON+properties`. Values that arrive as JSON-stringified arrays or objects (e.g. from a client whose schema lost the array shape) are defensively parsed back; literal strings that happen to start with `[` or `{` but aren't valid JSON pass through unchanged.
-- `vault_search_frontmatter` finds notes by a frontmatter property. `match_type` is `exact` (equals), `contains` (case-insensitive substring), or `exists` (property present, value ignored). For a list-valued property the predicate runs per element, so it is real membership — `exact: draft` matches `tags: [draft, idea]` — rather than a substring test against the stringified list. A property js-yaml parsed into a `Date` (an unquoted ISO-8601 scalar like `2026-01-15`) is matched by its `YYYY-MM-DD` UTC calendar date, not the timezone-shifted `String(Date)` form, so `exact: 2026-01-15` matches and the day never drifts; non-ISO date conventions stay plain strings and match verbatim. It is a single stateless walk that parses each note's frontmatter, keeping the per-request, no-index design. Every search/index/scan in `vault.ts` (content, filename, title, frontmatter, tags, the resolver and link-graph indices, rewrite-target collection) shares one traversal — `walkVaultFiles` — which skips dotfiles, honours `.mcpignore`, and reads `.md` by default, so the ignore policy is enforced in one place for all of them.
-- `vault_batch_read` reads several notes in one call (paths or bare titles, resolved like `vault_read`); entries that can't be resolved are reported under "missing" without failing the rest. `include_content: false` returns only each note's frontmatter, for cheap triage before opening bodies. `vault_batch_frontmatter_update` sets frontmatter on several notes; each note's fields are applied in one locked read-modify-write via `setFrontmatterProperties` — the multi-key generalization of `setFrontmatterProperty`, which now delegates to it so the splice + lock logic has one implementation. Both batch tools are per-item and non-transactional (one bad note is reported, the rest still run) and capped at 50 entries.
-- The OAuth approval page must be guarded, and the server refuses to start otherwise: the kit's `createAuth` throws at construction (in `createApp`, so `server.ts` exits before listening) when the approval page is unguarded. Any one of three satisfies the check: `APPROVAL_PASSWORD` (a password on `/authorize`, compared constant-time, re-rendering the page with a 401 on a wrong guess), `MCP_CLIENT_SECRET` (which guards token exchange instead), or `APPROVAL_OPEN=true` (for deployments fronted by a reverse proxy / zero-trust gateway). There is no username — the password is the whole secret.
-- `editNoteSection` and `readNoteSection` are asymmetric on duplicate headings, by design. **Writes refuse to guess**: `editNoteSection` throws an `AmbiguousHeadingError` (carrying every match's line number and a one-line preview) and points the caller at `vault_edit` with a find-anchored `replace` on text unique to the target section. **Reads return everything**: `readNoteSection` joins all matching sections with `<!-- match N of M (line X) -->` labels so the agent can tell candidates apart. The asymmetry tracks the difference in stakes — a write to the wrong section is data loss; a read of all candidates is a couple extra tokens.
-
-## Tests
-
-```bash
-bun test
-```
-
-Uses a temporary `VAULT_PATH` and `VAULT_MCP_TEST=1` (see `package.json` `test` script). Covers discovery metadata, `GET /mcp` → 405 with a valid token, and a minimal `POST ... initialize` MCP round-trip.
+- Path checks, `.mcpignore`, hidden folders, or anything that reads, writes or walks vault files: read [docs/vault-access-policy.md](docs/vault-access-policy.md).
+- Write paths, locking, atomic writes, frontmatter or section edits: [docs/writes.md](docs/writes.md).
+- Tool behaviour (context note, periodic notes, frontmatter search, batch tools): [docs/tools.md](docs/tools.md).
+- Server setup, OAuth, origins, environment variables: [docs/server.md](docs/server.md).
+- Audit log contents and redaction: [docs/audit-logging.md](docs/audit-logging.md).
+- Reviewing a diff: apply [CODING_STANDARDS.md](CODING_STANDARDS.md).
 
 ## Install policy
 
 `bunfig.toml` gates installs. Don't remove it.
 
 - New package versions younger than 3 days aren't eligible — defends against malicious-publish supply-chain attacks (the May 2026 npm incident and its family).
-- `frozenLockfile = true` — commit `bun.lock` and never run `--no-frozen-lockfile` unless you have a reason.
+- `frozenLockfile = true` — commit `bun.lock`. The setting overrides the `--no-frozen-lockfile` flag, so adding a dependency means setting it to `false` for that one install and restoring it.
 - `exact = true` — `bun add <pkg>` saves the version without a caret.
 
 - Release-age gating covers registry packages only. Git dependencies (`mcp-server-kit`, `web-clipper-headless`, and transitive `obsidian-clipper`) must keep reviewed lockfile commits; updating them requires source review, not just a version bump.
