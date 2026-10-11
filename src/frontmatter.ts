@@ -123,10 +123,12 @@ export function parseFrontmatter(content: string): Record<string, unknown> | nul
   } catch (e) {
     // Use the position separately from the snippet-bearing message. The error constructor
     // sanitizes reason too: js-yaml includes source-derived names in some diagnostics.
+    // js-yaml's line is zero-based within the block, which starts after the opening `---`
+    // (note line 1), so +2 gives the note's own one-based line.
     const ex = e as { reason?: string; mark?: { line?: number } };
     throw new FrontmatterParseError(
       ex.reason ?? 'could not be parsed',
-      ex.mark?.line !== undefined ? ex.mark.line + 1 : undefined,
+      ex.mark?.line !== undefined ? ex.mark.line + 2 : undefined,
     );
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {

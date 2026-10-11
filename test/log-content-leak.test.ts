@@ -75,6 +75,17 @@ describe('frontmatter parse errors keep the offending text out of the message', 
     }
   });
 
+  test('the line number counts from the top of the note, not the frontmatter block', () => {
+    // The duplicate key is the note's third line: the opening --- is line 1.
+    try {
+      parseFrontmatter('---\na: 1\na: 2\n---\nbody\n');
+      throw new Error('expected a parse error');
+    } catch (e) {
+      expect((e as FrontmatterParseError).line).toBe(3);
+      expect((e as Error).message).toContain('at line 3:');
+    }
+  });
+
   test('well-formed frontmatter still parses', () => {
     expect(parseFrontmatter('---\ntitle: Fine\n---\nbody\n')).toEqual({ title: 'Fine' });
   });
