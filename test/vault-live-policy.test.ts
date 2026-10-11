@@ -53,6 +53,20 @@ test('an atomically replaced policy reloads even when size and mtime are preserv
   await expect(vault.readNote('SecretB/NoteB.md')).rejects.toBeInstanceOf(vault.VaultPolicyError);
 });
 
+test('an in-place, same-length rewrite reloads even when the timestamps are restored', async () => {
+  // Coarse-timestamp volumes can leave every stat field unchanged across such a rewrite, so the
+  // policy must be compared by content rather than metadata.
+  const policy = path.join(root, '.mcpignore');
+  await writeFile(policy, 'SecretA\n');
+  const original = await stat(policy);
+  expect((await vault.getNoteLinks('Open.md')).map(link => link.path)).toEqual([null, 'SecretB/NoteB.md']);
+  await writeFile(policy, 'SecretB\n');
+  await utimes(policy, original.atime, original.mtime);
+  expect((await stat(policy)).ino).toBe(original.ino);
+  await expect(vault.readNote('SecretB/NoteB.md')).rejects.toBeInstanceOf(vault.VaultPolicyError);
+  expect((await vault.getNoteLinks('Open.md')).map(link => link.path)).toEqual(['SecretA/NoteA.md', null]);
+});
+
 test('an unreadable policy shape fails closed instead of reusing permissive cached rules', async () => {
   expect((await vault.getNoteLinks('Open.md'))[0]?.path).toBe('SecretA/NoteA.md');
   await rm(path.join(root, '.mcpignore'));

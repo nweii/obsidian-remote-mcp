@@ -166,17 +166,19 @@ function assertVaultRootReadable(root: string): void {
 }
 
 type IgnoreMatcher = ReturnType<typeof compileIgnoreRules>;
-let ignoreCache: { root: string; signature: string; matches: IgnoreMatcher } | null = null;
+let ignoreCache: { root: string; text: string | null; matches: IgnoreMatcher } | null = null;
 
-// Check file identity as well as timestamps: editors/sync can replace a file while preserving
-// its mtime and size. Failure to read an existing policy must never mean "allow everything".
+// Keyed on the policy text itself, re-read on every check. File metadata cannot prove the
+// policy unchanged: an in-place, same-length rewrite within one timestamp tick (coarse on
+// SMB/FAT volumes) keeps dev, inode, times and size identical. The file is small, so the read
+// costs about a microsecond more than a stat. Failure to read an existing policy must never
+// mean "allow everything".
 function getIgnoreRules(): IgnoreMatcher {
   const root = getVaultRoot();
   const file = path.join(root, '.mcpignore');
-  let signature: string;
+  let text: string | null;
   try {
-    const st = statSync(file);
-    signature = `${st.dev}:${st.ino}:${st.ctimeMs}:${st.mtimeMs}:${st.size}`;
+    text = readFileSync(file, 'utf-8');
   } catch (e) {
     const code = (e as NodeJS.ErrnoException).code;
     if (code !== 'ENOENT' && code !== 'ENOTDIR') throw e;
@@ -190,25 +192,12 @@ function getIgnoreRules(): IgnoreMatcher {
       if (linkCode !== 'ENOENT' && linkCode !== 'ENOTDIR') throw linkError;
     }
     assertVaultRootReadable(root);
-    signature = 'absent';
+    text = null;
   }
-  if (ignoreCache?.root === root && ignoreCache.signature === signature) return ignoreCache.matches;
+  if (ignoreCache?.root === root && ignoreCache.text === text) return ignoreCache.matches;
 
-  let text = '';
-  if (signature !== 'absent') {
-    try {
-      text = readFileSync(file, 'utf-8');
-    } catch (e) {
-      const code = (e as NodeJS.ErrnoException).code;
-      if (code !== 'ENOENT' && code !== 'ENOTDIR') throw e;
-      assertVaultRootReadable(root);
-      // Re-check disappearance (including a dangling symlink) instead of caching an empty
-      // policy under the identity of the file observed by stat.
-      return getIgnoreRules();
-    }
-  }
-  const matches = compileIgnoreRules(text);
-  ignoreCache = { root, signature, matches };
+  const matches = compileIgnoreRules(text ?? '');
+  ignoreCache = { root, text, matches };
   invalidateResolverCache();
   return matches;
 }
