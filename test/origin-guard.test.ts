@@ -89,6 +89,27 @@ describe('MCP Origin guard', () => {
     });
   });
 
+  test('explicit wildcard permits any origin but still requires authentication', async () => {
+    process.env.CORS_ALLOWED_ORIGINS = ' * ';
+    await withServer(async base => {
+      for (const origin of ['https://other.example', 'http://localhost:9999', 'null', undefined]) {
+        const response = await request(base, 'POST', origin);
+        expect(response.status).toBe(200);
+        expect(response.headers.get('access-control-allow-origin')).toBe('*');
+        expect(await response.text()).toContain('vault_read');
+      }
+      const preflight = await request(base, 'OPTIONS', 'https://other.example', {
+        'Access-Control-Request-Method': 'POST',
+        'Access-Control-Request-Headers': 'authorization,content-type',
+      });
+      expect(preflight.status).toBe(204);
+      expect(preflight.headers.get('access-control-allow-origin')).toBe('*');
+      const denied = await request(base, 'POST', 'https://other.example', { Authorization: 'Bearer invalid' });
+      expect(denied.status).toBe(401);
+      await denied.text();
+    });
+  });
+
   test('rejects disallowed, malformed, opaque, and empty Origins on every MCP method', async () => {
     await withServer(async base => {
       for (const origin of ['https://evil.example', 'null', '', '*', 'not-an-origin',
@@ -227,7 +248,7 @@ describe('MCP Origin guard', () => {
 
 describe('origin configuration', () => {
   test('rejects unsafe or malformed allowlist entries at startup', () => {
-    for (const value of ['*', 'https://claude.ai,*', 'null', 'not-a-url', 'ftp://example.test',
+    for (const value of ['https://claude.ai,*', 'null', 'not-a-url', 'ftp://example.test',
       'https://user:password@example.test', 'https://@example.test', 'https://example.test/path',
       'https://example.test/', 'https://example.test?query', 'https://example.test#fragment',
       'https://*.example.test', 'https://%2a.example.test', 'https://claude.ai,', ',', 'https:\\example.test']) {

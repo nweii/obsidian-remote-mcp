@@ -30,9 +30,11 @@ function parseOrigin(value: string, setting: string, allowTrailingSlash = false)
   return url.origin;
 }
 
-function getAllowedOrigins(baseUrl: string): string[] {
+function getAllowedOrigins(baseUrl: string): string[] | null {
   const env = process.env.CORS_ALLOWED_ORIGINS?.trim();
   if (!env) return [baseUrl];
+  // A standalone wildcard deliberately restores unrestricted browser-origin access.
+  if (env === "*") return null;
   return [...new Set(env.split(',').map(origin => parseOrigin(origin.trim(), 'CORS_ALLOWED_ORIGINS')))];
 }
 
@@ -104,7 +106,7 @@ export function createApp(): { app: Express; auth: Auth } {
   const app = express();
   app.use('/mcp', (req, res, next) => {
     const origin = req.headers.origin;
-    if (origin !== undefined && !allowedOrigins.includes(origin)) {
+    if (allowedOrigins !== null && origin !== undefined && !allowedOrigins.includes(origin)) {
       res.status(403).end();
       return;
     }

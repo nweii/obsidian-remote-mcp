@@ -259,9 +259,9 @@ CORS_ALLOWED_ORIGINS=https://claude.ai
 CORS_ALLOWED_ORIGINS=https://claude.ai,http://localhost:3000
 ```
 
-Only listed origins receive `Access-Control-Allow-Origin`. Requests to `/mcp` with an unlisted or invalid `Origin` receive `403`, including actual requests, not just preflights. Use HTTP(S) origins without paths or credentials; `*` and `null` are rejected at startup. The list replaces the default, so include your own site origin too if needed. Requests without an `Origin` header, such as server-to-server MCP clients, continue to work and still require authentication. OAuth discovery and browser sign-in retain their protocol-specific behavior.
+When using an explicit list, only listed origins receive `Access-Control-Allow-Origin`. Requests to `/mcp` with an unlisted or invalid `Origin` receive `403`, including actual requests, not just preflights. Use HTTP(S) origins without paths or credentials; Partial wildcards and `null` entries are rejected at startup. The list replaces the default, so include your own site origin too if needed. Requests without an `Origin` header, such as server-to-server MCP clients, continue to work and still require authentication. OAuth discovery and browser sign-in retain their protocol-specific behavior.
 
-If an existing deployment sets `CORS_ALLOWED_ORIGINS=*`, replace it with the exact browser origins you trust or remove it to use the site-origin default.
+Set `CORS_ALLOWED_ORIGINS=*` explicitly to accept any browser origin, including opaque origins (`Origin: null`). Authentication is still required. Use `*` alone, not alongside a list. Removing the setting uses the safer site-origin default; existing deployments with an explicit `*` retain unrestricted origin access.
 
 #### Password gate
 
