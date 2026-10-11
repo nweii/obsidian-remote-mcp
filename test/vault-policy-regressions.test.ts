@@ -241,6 +241,14 @@ describe('Obsidian internal folders', () => {
     expect(await vault.readNote('.context.md')).toBe('hidden context\n');
   });
 
+  test('trash cannot be routed into an internal folder through a .trash symlink', async () => {
+    await mkdir(path.join(vaultPath, '.obsidian'), { recursive: true });
+    await symlink(path.join(vaultPath, '.obsidian'), path.join(vaultPath, '.trash'));
+    await expect(vault.trashNote('Public/Open.md')).rejects.toBeInstanceOf(vault.VaultPolicyError);
+    expect(existsSync(path.join(vaultPath, 'Public/Open.md'))).toBe(true);
+    expect(await readdir(path.join(vaultPath, '.obsidian'))).toHaveLength(0);
+  });
+
   test('trashed notes stay readable unless .mcpignore hides .trash', async () => {
     await vault.trashNote('Public/Open.md');
     const trashed = await readdir(path.join(vaultPath, '.trash'));

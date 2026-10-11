@@ -319,7 +319,8 @@ function realpathOrNearestExisting(absPath: string): string {
 
 // Check both the requested path and its canonical target. An allowed target cannot make an
 // ignored alias writable, and an allowed alias cannot expose an ignored target. The internal
-// trash destination skips exclusions only; containment and policy-file protection still apply.
+// trash destination skips .mcpignore only; containment, the internal-folder exclusion, and
+// policy-file protection still apply.
 function resolveVaultPath(relativePath: string, enforceIgnore: boolean): string {
   const vaultRoot = getVaultRoot();
   const resolved = path.resolve(vaultRoot, relativePath);
@@ -341,7 +342,7 @@ function resolveVaultPath(relativePath: string, enforceIgnore: boolean): string 
   const lexicalRel = path.relative(vaultRoot, resolved);
   const canonicalRel = path.relative(realRoot, realResolved);
 
-  if (enforceIgnore && (isInternalRelative(lexicalRel) || isInternalRelative(canonicalRel))) {
+  if (isInternalRelative(lexicalRel) || isInternalRelative(canonicalRel)) {
     throw new VaultPolicyError(
       'internal',
       `Path is inside an Obsidian internal folder (${INTERNAL_FOLDERS.join(', ')}), which MCP cannot access: ${relativePath}`,
