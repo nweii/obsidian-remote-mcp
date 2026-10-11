@@ -469,6 +469,7 @@ YEARLY_NOTE_PATH_TEMPLATE=Yearly/{YYYY}.md
 - `.mcpignore` is owner-managed: agents may read it when allowed by the rules, but cannot create, edit, delete, or move it through MCP, including through aliases. Edit the file directly to change access.
 - `.obsidian` and `.git` (at any depth) are never accessible through MCP, with or without a `.mcpignore`. They hold app settings, plugin data (often API keys), and version history.
 - `.trash` stays readable by explicit path, so an agent can read or restore what `vault_trash` moved there. Add `.trash` to `.mcpignore` to hide deleted notes; trashing still works.
+- `vault_move` and `vault_trash` act on single files and refuse folders, so moving a folder can't carry notes hidden by a path-specific rule somewhere the rule no longer applies.
 - Other hidden entries are omitted from ordinary searches and listings, but explicit paths (including `VAULT_CONTEXT_PATH=.claude/CLAUDE.md`) remain accessible unless blocked by `.mcpignore`.
 - `VAULT_READ_ONLY=true` blocks all write operations. Write-only tools are left out of the tool list entirely, so agents never see a tool that can only fail; `vault_periodic_note`, `vault_clip_url`, and `vault_move` (whose default dry run only plans) stay listed and refuse the write.
 - `vault_search_title` defaults to `limit=50`; `vault_search_content` defaults to `limit=20`. Limits are adjustable; `0` means no limit.

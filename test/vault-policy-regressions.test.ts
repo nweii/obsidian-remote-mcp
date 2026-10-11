@@ -222,6 +222,29 @@ describe('ignore configuration can be read but cannot be mutated through vault o
   });
 });
 
+describe('folder moves', () => {
+  // A folder carried to a new location would take descendants hidden by a location-specific
+  // rule to a path the rule no longer matches.
+  beforeEach(async () => {
+    await mkdir(path.join(vaultPath, 'Projects/Alpha'), { recursive: true });
+    await writeFile(path.join(vaultPath, 'Projects/Alpha/secret.md'), 'alpha secret\n');
+    await writeFile(path.join(vaultPath, '.mcpignore'), POLICY + 'Projects/Alpha/secret.md\n');
+  });
+
+  test('trash, move and the move plan refuse a folder', async () => {
+    await expect(vault.trashNote('Projects/Alpha')).rejects.toThrow('is a folder');
+    await expect(vault.moveFile('Projects/Alpha', 'Public/Alpha')).rejects.toThrow('is a folder');
+    await expect(vault.planReferenceRewrite('Projects/Alpha', 'Public/Alpha')).rejects.toThrow('is a folder');
+    expect(existsSync(path.join(vaultPath, 'Projects/Alpha/secret.md'))).toBe(true);
+    expect(existsSync(path.join(vaultPath, '.trash'))).toBe(false);
+    expect(existsSync(path.join(vaultPath, 'Public/Alpha'))).toBe(false);
+  });
+
+  test('trashing a missing note reports the vault-relative path', async () => {
+    await expect(vault.trashNote('Public/Missing.md')).rejects.toThrow('No file found at "Public/Missing.md"');
+  });
+});
+
 describe('reserved policy path', () => {
   test('nothing can be created beneath .mcpignore when the policy file is absent', async () => {
     await rm(path.join(vaultPath, '.mcpignore'));

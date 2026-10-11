@@ -816,9 +816,26 @@ export async function deleteNote(relativePath: string): Promise<void> {
   await fs.unlink(resolveWritePath(relativePath));
 }
 
+// Trash and move are file operations. A folder would carry descendants hidden by a
+// location-specific .mcpignore rule to a path that rule no longer matches, so refuse it.
+function assertMovableFile(absPath: string, relativePath: string): void {
+  let st;
+  try {
+    st = statSync(absPath);
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT' || code === 'ENOTDIR') throw new Error(`No file found at "${relativePath}".`);
+    throw e;
+  }
+  if (!st.isFile()) {
+    throw new Error(`"${relativePath}" is a folder. Move or trash the notes inside it individually.`);
+  }
+}
+
 export async function trashNote(relativePath: string): Promise<void> {
   assertWritable();
   const absPath = resolveWritePath(relativePath);
+  assertMovableFile(absPath, relativePath);
   // Internal trash remains usable when .trash is ignored, but must stay inside the vault
   // and cannot be an alias of the access policy or one of its containing directories.
   const trashDir = resolveWritePath('.trash', true);
@@ -848,9 +865,7 @@ export async function moveFile(source: string, destination: string): Promise<Mov
 
   // A missing source would surface as a raw ENOENT from fs.rename, whose message embeds
   // absolute filesystem paths. Check up front and fail with the vault-relative path instead.
-  if (!pathExists(fromAbs)) {
-    throw new Error(`No file found at "${source}".`);
-  }
+  assertMovableFile(fromAbs, source);
 
   // Source and destination resolving to the same file is a no-op move; reject it up front
   // rather than deadlocking on the same lock key below or silently doing nothing.
@@ -1948,9 +1963,7 @@ export async function planReferenceRewrite(from: string, to: string): Promise<Re
 
   // A typo'd source would otherwise produce a plausible-looking empty plan. Fail the way
   // moveFile does, with the vault-relative path.
-  if (!pathExists(fromAbs)) {
-    throw new Error(`No file found at "${from}".`);
-  }
+  assertMovableFile(fromAbs, from);
 
   const oldName = linkNameForFile(from);
   const newName = linkNameForFile(to);
