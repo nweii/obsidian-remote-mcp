@@ -758,6 +758,14 @@ export async function searchContent(query: string, options: SearchOptions = {}):
   return results;
 }
 
+// Every note path in the vault (or a folder), in sorted walk order. Honours dotfile skipping and
+// .mcpignore through walkVaultFiles.
+export async function listNotePaths(folder?: string): Promise<string[]> {
+  const paths: string[] = [];
+  for await (const { relPath } of walkVaultFiles({ folder, sort: true })) paths.push(relPath);
+  return paths;
+}
+
 export async function searchFilename(pattern: string): Promise<string[]> {
   const results: string[] = [];
   const regex = new RegExp(pattern, 'i');
@@ -1334,6 +1342,17 @@ function collectNoteTags(content: string): string[] {
   const frontmatter = parseFrontmatter(content);
   const { body } = splitFrontmatter(content);
   return [...extractFrontmatterTags(frontmatter), ...extractInlineTags(body)];
+}
+
+// All tags on one note — frontmatter `tags` plus inline `#tag` — deduplicated case-insensitively,
+// keeping first-seen casing.
+export function getNoteTags(content: string): string[] {
+  const seen = new Map<string, string>();
+  for (const tag of collectNoteTags(content)) {
+    const key = tag.toLowerCase();
+    if (!seen.has(key)) seen.set(key, tag);
+  }
+  return [...seen.values()];
 }
 
 export interface TagScanOptions {

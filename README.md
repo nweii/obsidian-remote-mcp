@@ -74,6 +74,8 @@ Access to the vault is controlled in layers.
 
 **Scope** — `.mcpignore` blocks paths from access, `VAULT_READ_ONLY` disables writes, and `CORS_ALLOWED_ORIGINS` limits browser origins. Paths are always confined to the vault root.
 
+**Outbound note text** — `vault_skim` is the only tool that sends note text off the server, and only when a decision-model key is configured. It returns a plan first and sends nothing until called again with that plan's id. `SKIM_EXCLUDE_TAGS` and `SKIM_EXCLUDE_PATHS` withhold notes from it entirely. See [Skimming notes](#skimming-notes).
+
 The configurable parts are set as [environment variables](#environment-variables).
 
 ## Quick start
@@ -209,6 +211,7 @@ The server currently exposes these tools:
 | `vault_tags` | List all tags with note counts, or note paths for one `tag`; counts frontmatter and inline `#tag` |
 | `vault_periodic_note` | Read or create a daily, weekly, monthly, quarterly, or yearly note using a per-cadence path template |
 | `vault_clip_url` | Save a web page to the vault as a markdown note |
+| `vault_skim` | Return only the parts of selected notes relevant to a goal, judged chunk by chunk by an external decision model; plans first and sends nothing until confirmed. Listed only when a decision-model key is set (see [Skimming notes](#skimming-notes)) |
 | `vault_feedback` | Log a structured note when an agent gets stuck or wants a tool that doesn't exist |
 
 ## Server configuration
@@ -316,6 +319,13 @@ MCP_STATIC_BEARER_TOKEN=               # optional; API key for /mcp (see Authent
 HEALTH_TOKEN=                          # optional; enables GET /health (see Health endpoint)
 VAULT_READ_ONLY=true                   # optional
 VAULT_ATTACHMENT_MAX_BYTES=10485760    # optional; vault_read_attachment size cap, defaults to 10 MB
+SKIM_PROVIDER=typesafe                 # optional; typesafe (default), openrouter, or openai — enables vault_skim with its key below
+TYPESAFE_API_KEY=                      # optional; key for SKIM_PROVIDER=typesafe
+OPENROUTER_API_KEY=                    # optional; key for SKIM_PROVIDER=openrouter
+OPENAI_API_KEY=                        # optional; key for SKIM_PROVIDER=openai
+SKIM_MODEL=                            # optional; overrides the provider's default decision model
+SKIM_EXCLUDE_TAGS=private,health/*     # optional; notes with these tags are never sent by vault_skim
+SKIM_EXCLUDE_PATHS=03-Records/Journaling # optional; notes at or under these paths are never sent by vault_skim
 PORT=3456
 ```
 
@@ -412,6 +422,30 @@ MONTHLY_NOTE_PATH_TEMPLATE=Monthly/{YYYY}-{MM}.md
 QUARTERLY_NOTE_PATH_TEMPLATE=Quarterly/{YYYY}-Q{Q}.md
 YEARLY_NOTE_PATH_TEMPLATE=Yearly/{YYYY}.md
 ```
+
+### Skimming notes
+
+`vault_skim` answers "which parts of these notes matter for this goal?" without the agent reading every note whole. It splits each selected note into ~2,000-character chunks (with a little overlap so a passage on a boundary is seen whole), asks a decision model one yes/no question per chunk, and returns only the chunks that pass, cited as `path:start-end` so the agent can open the note there with `vault_read`. Notes are chosen by `paths` (paths or titles), by a regex `query` optionally scoped to a `folder`, or by `folder` alone, up to `max_notes` (default 20).
+
+Decision models return a probability rather than generated text, which keeps each judgement fast and cheap. Three providers are supported, chosen with `SKIM_PROVIDER`:
+
+| Provider | Key | Default model |
+| --- | --- | --- |
+| `typesafe` (default) | `TYPESAFE_API_KEY` | `jev-latest` |
+| `openrouter` | `OPENROUTER_API_KEY` | `typesafe/jev-1.13` |
+| `openai` | `OPENAI_API_KEY` | `gpt-6-luna` |
+
+`SKIM_MODEL` overrides the model. Without the chosen provider's key, `vault_skim` is not listed.
+
+Because note text leaves the server, the tool works in two steps. A call without `confirm` sends nothing and returns a plan: the goal, how notes were selected, the notes and chunk counts that would be sent, the notes withheld and why, and the provider and model. The agent shows that plan to the user, and after approval calls again with the same arguments plus `confirm` set to the plan id. The id covers the goal, the provider and model, and the exact version of each planned note, so a confirm is refused (with a fresh plan) if any of them changed. A single call can send at most 500 chunks.
+
+Notes are withheld in layers, and each layer can only withhold more:
+
+1. `.mcpignore`, which blocks the paths from every tool.
+2. `SKIM_EXCLUDE_TAGS` and `SKIM_EXCLUDE_PATHS` (comma-separated), which apply to every `vault_skim` call. `private` matches only `#private`; `work/*` matches `#work` and every tag nested under it. Tags are read from frontmatter and inline `#tag`. A path rule covers that path and everything under it.
+3. `exclude_tags` and `exclude_paths` on a call, which add to the server's rules for that call only.
+
+A chunk the model couldn't judge (a failed request, a malformed answer) is kept and marked `unjudged`, so a provider failure can return more text than expected but never silently drops any.
 
 ## Notes
 
