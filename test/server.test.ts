@@ -1145,6 +1145,32 @@ describe('Title resolution via tool round-trips', () => {
     }
   });
 
+  test('vault_move plans and applies a folder move, then vault_trash accepts the folder', async () => {
+    const dir = path.join(vaultPath, 'FolderTool');
+    await mkdir(path.join(dir, 'Before'), { recursive: true });
+    await writeFile(path.join(dir, 'Before', 'Note.md'), 'inside\n');
+    await writeFile(path.join(dir, 'Ref.md'), '[[FolderTool/Before/Note]]\n');
+    const { app, auth } = createApp();
+    const { base, close } = await listen(app);
+    try {
+      const token = auth.seedTestToken();
+      const args = { source: 'FolderTool/Before/', destination: 'FolderTool/After/' };
+      const plan = await callTool(base, token, 'vault_move', args);
+      expect(plan.isError).toBeFalsy();
+      expect(plan.content?.map(c => c.text).join('\n')).toContain('Dry run');
+      expect(await readFile(path.join(dir, 'Before', 'Note.md'), 'utf8')).toBe('inside\n');
+      const applied = await callTool(base, token, 'vault_move', { ...args, dry_run: false });
+      expect(applied.isError).toBeFalsy();
+      expect(await readFile(path.join(dir, 'Ref.md'), 'utf8')).toBe('[[FolderTool/After/Note]]\n');
+      const trashed = await callTool(base, token, 'vault_trash', { path: 'FolderTool/After/' });
+      expect(trashed.isError).toBeFalsy();
+      await expect(readFile(path.join(dir, 'After', 'Note.md'))).rejects.toThrow();
+    } finally {
+      await close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   test('vault_read_attachment returns an image content block for a png', async () => {
     // A minimal but valid 1x1 PNG.
     const png = Buffer.from(
