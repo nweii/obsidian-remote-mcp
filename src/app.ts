@@ -30,9 +30,9 @@ function parseOrigin(value: string, setting: string, allowTrailingSlash = false)
   return url.origin;
 }
 
-function getAllowedOrigins(baseUrl: string): string[] | null {
+function getAllowedOrigins(): string[] | null {
   const env = process.env.CORS_ALLOWED_ORIGINS?.trim();
-  if (!env) return [baseUrl];
+  if (!env) return null;
   // A standalone wildcard deliberately restores unrestricted browser-origin access.
   if (env === "*") return null;
   return [...new Set(env.split(',').map(origin => parseOrigin(origin.trim(), 'CORS_ALLOWED_ORIGINS')))];
@@ -48,7 +48,7 @@ export function createApp(): { app: Express; auth: Auth } {
   // Browser origins are trusted configuration, never inferred from Host or proxy headers.
   // The kit rejects origins outside this list on /mcp and permits non-browser clients
   // without an Origin header. OAuth/discovery retain the SDK's interoperability behavior.
-  const allowedOrigins = getAllowedOrigins(baseUrl);
+  const allowedOrigins = getAllowedOrigins();
 
   const clientId = process.env.MCP_CLIENT_ID;
   if (!clientId) throw new Error('MCP_CLIENT_ID env var is required');
@@ -101,7 +101,7 @@ export function createApp(): { app: Express; auth: Auth } {
   });
 
   // The kit's guard skips a present-but-empty Origin header. Mount it behind an explicit
-  // /mcp check so every supplied Origin must match; only an absent header is exempt.
+  // /mcp check so every supplied Origin must match when an allowlist is configured.
   // OAuth/discovery routes remain outside this guard for normal browser sign-in/discovery.
   const app = express();
   app.use('/mcp', (req, res, next) => {

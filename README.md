@@ -252,16 +252,16 @@ openssl rand -base64 48
 
 #### CORS
 
-`CORS_ALLOWED_ORIGINS` lists the exact **browser origins** allowed to call `/mcp`. By default, only the origin of `MCP_BASE_URL` is trusted (or `http://localhost:PORT` for local development). To allow a browser client on another origin, set an explicit list:
+`CORS_ALLOWED_ORIGINS` lists the exact **browser origins** allowed to call `/mcp`. By default, any origin is allowed, preserving browser-client compatibility. To restrict access by origin, set an explicit list:
 
 ```env
 CORS_ALLOWED_ORIGINS=https://claude.ai
 CORS_ALLOWED_ORIGINS=https://claude.ai,http://localhost:3000
 ```
 
-When using an explicit list, only listed origins receive `Access-Control-Allow-Origin`. Requests to `/mcp` with an unlisted or invalid `Origin` receive `403`, including actual requests, not just preflights. Use HTTP(S) origins without paths or credentials; Partial wildcards and `null` entries are rejected at startup. The list replaces the default, so include your own site origin too if needed. Requests without an `Origin` header, such as server-to-server MCP clients, continue to work and still require authentication. OAuth discovery and browser sign-in retain their protocol-specific behavior.
+When using an explicit list, only listed origins receive `Access-Control-Allow-Origin`. Requests to `/mcp` with an unlisted or invalid `Origin` receive `403`, including actual requests, not just preflights. Use HTTP(S) origins without paths or credentials; partial wildcards and `null` entries are rejected at startup. The list replaces the default, so include your own site origin too if needed. Requests without an `Origin` header, such as server-to-server MCP clients, continue to work and still require authentication. OAuth discovery and browser sign-in retain their protocol-specific behavior.
 
-Set `CORS_ALLOWED_ORIGINS=*` explicitly to accept any browser origin, including opaque origins (`Origin: null`). Authentication is still required. Use `*` alone, not alongside a list. Removing the setting uses the safer site-origin default; existing deployments with an explicit `*` retain unrestricted origin access.
+Set `CORS_ALLOWED_ORIGINS=*` explicitly to accept any browser origin, including opaque origins (`Origin: null`). Authentication is still required. Use `*` alone, not alongside a list. Leaving the setting unset or empty also accepts any origin. Origin restrictions are opt-in and do not replace authentication.
 
 #### Password gate
 
@@ -314,7 +314,7 @@ WEEKLY_NOTE_PATH_TEMPLATE=Weekly/{GGGG}-W{WW}.md       # optional; opt-in cadenc
 MONTHLY_NOTE_PATH_TEMPLATE=Monthly/{YYYY}-{MM}.md      # optional; opt-in cadence
 QUARTERLY_NOTE_PATH_TEMPLATE=Quarterly/{YYYY}-Q{Q}.md  # optional; opt-in cadence
 YEARLY_NOTE_PATH_TEMPLATE=Yearly/{YYYY}.md             # optional; opt-in cadence
-CORS_ALLOWED_ORIGINS=https://claude.ai # optional; defaults to MCP_BASE_URL origin
+CORS_ALLOWED_ORIGINS=https://claude.ai # optional; defaults to *
 TOKEN_STORE_PATH=./tokens.json         # optional
 MCP_STATIC_BEARER_TOKEN=               # optional; API key for /mcp (see Authentication)
 HEALTH_TOKEN=                          # optional; enables GET /health (see Health endpoint)

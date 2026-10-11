@@ -31,7 +31,7 @@ beforeAll(async () => {
 
 beforeEach(() => {
   process.env.MCP_BASE_URL = 'https://vault.example';
-  delete process.env.CORS_ALLOWED_ORIGINS;
+  process.env.CORS_ALLOWED_ORIGINS = 'https://vault.example';
   delete process.env.PORT;
   delete process.env.MCP_DCR_ENABLED;
   delete process.env.MCP_DCR_ALLOWED_REDIRECT_URIS;
@@ -89,26 +89,30 @@ describe('MCP Origin guard', () => {
     });
   });
 
-  test('explicit wildcard permits any origin but still requires authentication', async () => {
-    process.env.CORS_ALLOWED_ORIGINS = ' * ';
-    await withServer(async base => {
-      for (const origin of ['https://other.example', 'http://localhost:9999', 'null', undefined]) {
-        const response = await request(base, 'POST', origin);
-        expect(response.status).toBe(200);
-        expect(response.headers.get('access-control-allow-origin')).toBe('*');
-        expect(await response.text()).toContain('vault_read');
-      }
-      const preflight = await request(base, 'OPTIONS', 'https://other.example', {
-        'Access-Control-Request-Method': 'POST',
-        'Access-Control-Request-Headers': 'authorization,content-type',
+  for (const setting of [undefined, '', ' * ']) {
+    test(`unrestricted setting ${JSON.stringify(setting)} permits any origin but still requires authentication`, async () => {
+      if (setting === undefined) delete process.env.CORS_ALLOWED_ORIGINS;
+      else process.env.CORS_ALLOWED_ORIGINS = setting;
+      await withServer(async base => {
+        for (const origin of ['https://other.example', 'http://localhost:9999', 'null', undefined]) {
+          const response = await request(base, 'POST', origin);
+          expect(response.status).toBe(200);
+          expect(response.headers.get('access-control-allow-origin')).toBe('*');
+          expect(await response.text()).toContain('vault_read');
+        }
+        const preflight = await request(base, 'OPTIONS', 'https://other.example', {
+          'Access-Control-Request-Method': 'POST',
+          'Access-Control-Request-Headers': 'authorization,content-type',
+        });
+        expect(preflight.status).toBe(204);
+        expect(preflight.headers.get('access-control-allow-origin')).toBe('*');
+        const denied = await request(base, 'POST', 'https://other.example', { Authorization: 'Bearer invalid' });
+        expect(denied.status).toBe(401);
+        await denied.text();
       });
-      expect(preflight.status).toBe(204);
-      expect(preflight.headers.get('access-control-allow-origin')).toBe('*');
-      const denied = await request(base, 'POST', 'https://other.example', { Authorization: 'Bearer invalid' });
-      expect(denied.status).toBe(401);
-      await denied.text();
     });
-  });
+
+  }
 
   test('rejects disallowed, malformed, opaque, and empty Origins on every MCP method', async () => {
     await withServer(async base => {
@@ -167,9 +171,10 @@ describe('MCP Origin guard', () => {
     });
   });
 
-  test('local fallback uses the configured port without trusting the bind address', async () => {
+  test('explicit localhost allowlist uses its configured port', async () => {
     delete process.env.MCP_BASE_URL;
     process.env.PORT = '4567';
+    process.env.CORS_ALLOWED_ORIGINS = 'http://localhost:4567';
     await withServer(async base => {
       const allowed = await request(base, 'GET', 'http://localhost:4567');
       expect(allowed.status).toBe(405);
@@ -214,7 +219,7 @@ describe('MCP Origin guard', () => {
           await response.text();
         }
         const mcp = await request(base, 'OPTIONS', 'https://claude.ai');
-        expect(mcp.status).toBe(403);
+        expect(mcp.status).toBe(allowlist === undefined ? 204 : 403);
         await mcp.text();
       });
     }
