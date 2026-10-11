@@ -637,7 +637,7 @@ describe('Vault-derived defaults', () => {
 });
 
 describe('CORS', () => {
-  test('allows any browser origin by default', async () => {
+  test('allows the configured site origin by default', async () => {
     delete process.env.CORS_ALLOWED_ORIGINS;
     const { app, auth } = createApp();
     const { base, close } = await listen(app);
@@ -646,7 +646,7 @@ describe('CORS', () => {
         headers: { Origin: 'https://example.test' },
       });
       expect(res.status).toBe(401);
-      expect(res.headers.get('access-control-allow-origin')).toBe('*');
+      expect(res.headers.get('access-control-allow-origin')).toBe('https://example.test');
     } finally {
       await close();
     }

@@ -30,9 +30,11 @@ function parseOrigin(value: string, setting: string, allowTrailingSlash = false)
   return url.origin;
 }
 
-function getAllowedOrigins(): string[] | null {
+function getAllowedOrigins(baseUrl: string): string[] | null {
   const env = process.env.CORS_ALLOWED_ORIGINS?.trim();
-  if (!env) return null;
+  // Exact first-party web origins are a compatibility allowance, not OAuth identities.
+  // Cloud/native clients without Origin remain supported independently of this list.
+  if (!env) return [...new Set([baseUrl, 'https://claude.ai', 'https://chatgpt.com'])];
   // A standalone wildcard deliberately restores unrestricted browser-origin access.
   if (env === "*") return null;
   return [...new Set(env.split(',').map(origin => parseOrigin(origin.trim(), 'CORS_ALLOWED_ORIGINS')))];
@@ -48,7 +50,7 @@ export function createApp(): { app: Express; auth: Auth } {
   // Browser origins are trusted configuration, never inferred from Host or proxy headers.
   // The kit rejects origins outside this list on /mcp and permits non-browser clients
   // without an Origin header. OAuth/discovery retain the SDK's interoperability behavior.
-  const allowedOrigins = getAllowedOrigins();
+  const allowedOrigins = getAllowedOrigins(baseUrl);
 
   const clientId = process.env.MCP_CLIENT_ID;
   if (!clientId) throw new Error('MCP_CLIENT_ID env var is required');
