@@ -126,8 +126,23 @@ describe('running commands', () => {
     await writeFile(path.join(vaultPath, '.mcpignore'), 'Private\n');
     process.env.OBSIDIAN_CLI_MCPIGNORE_ACK = 'true';
     expect(await refused({ command: 'bookmark', params: { file: 'Private/Secret.md' } })).toBe('Not found: Private/Secret.md');
+    expect(await refused({ command: 'bookmark', params: { file: 'Assets/missing.png' } })).toBe('Not found: Assets/missing.png');
+    await mkdir(path.join(vaultPath, 'Assets'), { recursive: true });
+    await writeFile(path.join(vaultPath, 'Assets', 'image.png'), '');
     await cli.runCli({ command: 'bookmark', params: { file: 'Assets/image.png' } });
     expect((await fakeCalls(logFile))[0]).toEqual(['vault=Vault', 'bookmark', 'file=Assets/image.png']);
+  });
+
+  test('keeps file= for an existing non-Markdown file, and refuses a protected one', async () => {
+    await mkdir(path.join(vaultPath, 'Bases'), { recursive: true });
+    await writeFile(path.join(vaultPath, 'Bases', 'Projects.base'), 'views: []\n');
+    await writeFile(path.join(vaultPath, 'Private', 'Hidden.base'), 'views: []\n');
+    await writeFile(path.join(vaultPath, '.mcpignore'), 'Private\n');
+    process.env.OBSIDIAN_CLI_MCPIGNORE_ACK = 'true';
+    expect(await refused({ command: 'base:query', params: { file: 'Private/Hidden.base' } })).toBe('Not found: Private/Hidden.base');
+    expect(await refused({ command: 'base:query', params: { file: 'Hidden.base' } })).toBe('Not found: Hidden.base');
+    await cli.runCli({ command: 'base:query', params: { file: 'Bases/Projects.base' } });
+    expect((await fakeCalls(logFile))[0]).toEqual(['vault=Vault', 'base:query', 'file=Bases/Projects.base']);
   });
 
   test('a command failure re-probes, then reports the command error', async () => {

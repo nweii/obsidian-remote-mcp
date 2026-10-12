@@ -46,8 +46,7 @@ const DESTRUCTIVE_PALETTE_ID = /delete|remove|purge|trash|erase|wipe|destroy|dis
 
 // Parameters naming a vault location. Each goes through the same path policy as every other tool.
 const PATH_PARAMS = ["path", "to", "folder"];
-// Commands whose file= is an exact path to any file rather than a note name; it is checked as a
-// path and kept as file=.
+// Commands whose file= is always an exact path rather than a note name.
 const FILE_IS_PATH = new Set(["bookmark", "tab:open"]);
 
 const COMMAND_NAME = /^[a-z][a-z-]*(?::[a-z][a-z-]*)?$/;
@@ -126,18 +125,20 @@ const notFound = (value: string): CliOutcome => ({ ok: false, error: `Not found:
 const isVaultRoot = (value: string) => path.posix.normalize(value.trim().replace(/^\/+/, "") || ".") === ".";
 
 // Checks every path-like parameter against the vault policy, with the write checks (which also
-// protect .mcpignore) since a command may write there. file= (Obsidian's own name resolution)
-// becomes path= resolved by the server, so Obsidian can't pick a protected note the server
-// wouldn't, except where file= is already an exact path. A command that may write can't target a folder through path=, since that would act on
-// descendants this check never sees; vault_move and vault_trash handle folders. A protected
-// location gets the same answer as a missing one.
+// protect .mcpignore) since a command may write there. A note named in file= (Obsidian's own name
+// resolution) becomes path= resolved by the server, so Obsidian can't pick a protected note the
+// server wouldn't. A file= that is an exact path stays file= and must name an existing file, since
+// Obsidian would resolve a missing one by name: every file= of a FILE_IS_PATH command, and any
+// other that names an existing non-Markdown file, such as a .base. A command that may write can't target a folder through path=, since that
+// would act on descendants this check never sees; vault_move and vault_trash handle folders. A
+// protected location gets the same answer as a missing one.
 async function applyPathPolicy(
   command: string,
   params: Record<string, string>,
 ): Promise<{ ok: true; params: Record<string, string> } | { ok: false; outcome: CliOutcome }> {
   const out = { ...params };
-  const pathKeys = FILE_IS_PATH.has(command) ? ["file", ...PATH_PARAMS] : PATH_PARAMS;
-  if (out.file !== undefined && !FILE_IS_PATH.has(command)) {
+  const exactFile = out.file !== undefined && (FILE_IS_PATH.has(command) || isExistingNonMarkdownFile(out.file));
+  if (out.file !== undefined && !exactFile) {
     if (out.path !== undefined) return { ok: false, outcome: { ok: false, error: "Pass file or path, not both." } };
     try {
       out.path = (await vault.resolveNoteReference(out.file)).path;
@@ -146,7 +147,7 @@ async function applyPathPolicy(
     }
     delete out.file;
   }
-  for (const key of pathKeys) {
+  for (const key of exactFile ? ["file", ...PATH_PARAMS] : PATH_PARAMS) {
     const value = out[key];
     if (value === undefined || isVaultRoot(value) && key !== "to" && KNOWN_READ_COMMANDS.has(command)) continue;
     let abs: string;
@@ -156,11 +157,25 @@ async function applyPathPolicy(
       if (e instanceof vault.VaultPolicyError) return { ok: false, outcome: notFound(value) };
       throw e;
     }
+    if (key === "file" && (!exists(abs) || isDirectory(abs))) return { ok: false, outcome: notFound(value) };
     if (key === "path" && !KNOWN_READ_COMMANDS.has(command) && isDirectory(abs)) {
       return { ok: false, outcome: { ok: false, error: `vault_cli can't run "${command}" on a folder. Use vault_move or vault_trash for folders.` } };
     }
   }
   return { ok: true, params: out };
+}
+
+// A name like "Note.v2" can still be a note, so only an existing file counts.
+function isExistingNonMarkdownFile(value: string): boolean {
+  const ext = path.posix.extname(value.trim()).toLowerCase();
+  if (ext === "" || ext === ".md") return false;
+  try {
+    const abs = vault.resolveSafeWritePath(value);
+    return exists(abs) && !isDirectory(abs);
+  } catch (e) {
+    if (e instanceof vault.VaultPolicyError) return false;
+    throw e;
+  }
 }
 
 function isDirectory(abs: string): boolean {
