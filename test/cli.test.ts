@@ -7,12 +7,13 @@ import os from 'os';
 import path from 'path';
 import { fakeCalls, installFakeObsidian } from './fake-obsidian.js';
 import * as cli from '../src/cli.js';
+import { runAsCaller } from 'mcp-server-kit';
 
 const ENV_KEYS = [
   'VAULT_PATH', 'VAULT_READ_ONLY', 'OBSIDIAN_CLI_ENABLED', 'OBSIDIAN_CLI_PATH', 'OBSIDIAN_CLI_VAULT',
   'OBSIDIAN_CLI_COMMANDS', 'OBSIDIAN_CLI_MCPIGNORE_ACK', 'FAKE_OBSIDIAN_VAULT', 'FAKE_OBSIDIAN_DOWN',
   'FAKE_OBSIDIAN_FAIL', 'FAKE_OBSIDIAN_BACKLINKS', 'FAKE_OBSIDIAN_LOG', 'MCP_CLIENT_ID', 'MCP_BASE_URL',
-  'MCP_STATIC_BEARER_TOKEN', 'APPROVAL_OPEN',
+  'MCP_STATIC_BEARER_TOKEN', 'MCP_STATIC_BEARER_SCOPES', 'APPROVAL_OPEN',
 ];
 let saved: Record<string, string | undefined>;
 let base: string;
@@ -234,6 +235,24 @@ describe('guards', () => {
   });
 });
 
+describe('per connection', () => {
+  const caller = (scopes: string[]) => ({ clientId: 'c', kind: 'dynamic' as const, scopes });
+
+  test('a connection without app control is refused before Obsidian runs', async () => {
+    const error = await runAsCaller(caller(['vault:write']), () => refused({ command: 'search', params: { query: 'x' } }));
+    expect(error).toContain('Control the Obsidian app');
+    const help = await runAsCaller(caller(['vault:write']), () => cli.cliHelp());
+    expect(help.ok).toBe(false);
+  });
+
+  test('a connection with app control but without editing runs only known-read commands', async () => {
+    const error = await runAsCaller(caller(['vault:cli']), () => refused({ command: 'create', params: { path: 'New.md' } }));
+    expect(error).toContain('Edit notes');
+    const search = await runAsCaller(caller(['vault:cli']), () => cli.runCli({ command: 'search', params: { query: 'x' } }));
+    expect(search.ok).toBe(true);
+  });
+});
+
 describe('help', () => {
   test('lists commands from obsidian help without blocked ones', async () => {
     const outcome = await cli.cliHelp();
@@ -338,6 +357,23 @@ describe('over MCP', () => {
     process.env.OBSIDIAN_CLI_ENABLED = 'true';
     await writeFile(path.join(vaultPath, '.mcpignore'), 'Private\n');
     expect(await toolNames()).not.toContain('vault_cli');
+  });
+
+  test('a connection approved without app control does not see the CLI tools, but backlinks still come from Obsidian', async () => {
+    process.env.MCP_STATIC_BEARER_SCOPES = 'vault:write';
+    expect(await toolNames()).not.toContain('vault_cli');
+    expect(await toolNames()).not.toContain('vault_cli_help');
+    process.env.FAKE_OBSIDIAN_BACKLINKS = JSON.stringify([{ file: 'Linker.md' }]);
+    const links = await rpc('tools/call', { name: 'vault_links', arguments: { path: 'Open.md', include_backlinks: true } });
+    expect(links.structuredContent.backlinks_source).toBe('obsidian');
+  });
+
+  test("vault_cli's read-only annotation follows the connection's editing access", async () => {
+    const hint = async () => ((await rpc('tools/list', {})).tools as { name: string; annotations: { readOnlyHint: boolean } }[])
+      .find(t => t.name === 'vault_cli')!.annotations.readOnlyHint;
+    expect(await hint()).toBe(false);
+    process.env.MCP_STATIC_BEARER_SCOPES = 'vault:cli';
+    expect(await hint()).toBe(true);
   });
 
   test('vault_cli runs a command', async () => {

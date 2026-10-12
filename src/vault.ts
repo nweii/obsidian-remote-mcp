@@ -6,6 +6,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { withPathLock, withPathsLock } from './lock.js';
 import { compileIgnoreRules } from './ignore.js';
+import { readOnlyReason } from './access.js';
 import {
   splitFrontmatter,
   parseFrontmatter,
@@ -240,17 +241,17 @@ function isInternalRelative(rel: string): boolean {
 
 // --- Read-only mode ----------------------------------------------------------
 
-// Whether VAULT_READ_ONLY=true is set. Read live, so the tool layer (which hides write-only
-// tools) and assertWritable (which refuses writes) always agree.
+// Whether writes are refused for the current request: VAULT_READ_ONLY=true, or a connection
+// approved without editing. Read live, so the tool layer (which hides write-only tools) and
+// assertWritable (which refuses writes) always agree.
 export function isReadOnly(): boolean {
-  return process.env.VAULT_READ_ONLY === 'true';
+  return readOnlyReason() !== null;
 }
 
-// Throws if VAULT_READ_ONLY=true is set in the environment.
+// Throws when writes are refused, saying why.
 function assertWritable() {
-  if (isReadOnly()) {
-    throw new Error('Vault is in read-only mode (VAULT_READ_ONLY=true)');
-  }
+  const reason = readOnlyReason();
+  if (reason) throw new Error(reason);
 }
 
 // --- Path safety -------------------------------------------------------------

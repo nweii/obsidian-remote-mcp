@@ -8,6 +8,7 @@ import path from "node:path";
 import { z } from "zod";
 import * as vault from "./vault.js";
 import { logToolCall, type ToolResult } from "./log.js";
+import { CLI_LABEL, CLI_SCOPE, connectionGranted, readOnlyReason, serverReadOnly } from "./access.js";
 
 const TIMEOUT_MS = 30_000;
 const PROBE_TIMEOUT_MS = 10_000;
@@ -64,13 +65,22 @@ function paletteAllowlist(): string[] {
   return (process.env.OBSIDIAN_CLI_COMMANDS ?? "").split(",").map(id => id.trim()).filter(Boolean);
 }
 
+// Why the connection making this request may not use the CLI tools, or null. Connections without
+// the scope never see the tools; this backs that up for any path that reaches them anyway.
+function connectionRefusal(): string | null {
+  return connectionGranted(CLI_SCOPE)
+    ? null
+    : `This connection was approved without "${CLI_LABEL}". To use Obsidian CLI commands, reconnect and tick "${CLI_LABEL}".`;
+}
+
 // Whether a command may run under the current mode, ignoring its arguments. Shared by the help
 // listing, so the list shows only what vault_cli will accept.
 function commandRefusal(command: string): string | null {
   if (!COMMAND_NAME.test(command)) return `"${command}" is not a valid command name.`;
   if (isBlocked(command)) return `"${command}" is blocked: it can run code or change the app.`;
-  if (vault.isReadOnly() && !KNOWN_READ_COMMANDS.has(command)) {
-    return `"${command}" is not on the known-read list, and the vault is in read-only mode.`;
+  const readOnly = readOnlyReason();
+  if (readOnly && !KNOWN_READ_COMMANDS.has(command)) {
+    return `"${command}" is not on the known-read list. ${readOnly}`;
   }
   if (command === "command" && paletteAllowlist().length === 0) {
     return `Command-palette execution is off. The server operator can list allowed command IDs in OBSIDIAN_CLI_COMMANDS.`;
@@ -310,6 +320,7 @@ export async function runCli(request: CliRequest): Promise<CliOutcome> {
   const params = request.params ?? {};
   const flags = request.flags ?? [];
   const refusal =
+    connectionRefusal() ??
     commandRefusal(request.command) ??
     (request.command === "command" ? paletteRefusal(params.id) : null) ??
     argumentRefusal(params, flags);
@@ -351,6 +362,8 @@ function parseHelp(text: string): HelpEntry[] {
 
 // Lists the commands vault_cli will run in the current mode, or shows help for one of them.
 export async function cliHelp(command?: string): Promise<CliOutcome> {
+  const refused = connectionRefusal();
+  if (refused) return { ok: false, error: refused };
   if (command !== undefined) {
     const refusal = commandRefusal(command);
     if (refusal) return { ok: false, error: refusal };
@@ -459,7 +472,7 @@ let lastLoggedAvailability: string | null = null;
 
 function logAvailability(available: Availability): void {
   const line = available.ok
-    ? `vault_cli enabled: agents can run Obsidian commands, including creating, editing, moving and deleting notes and changing Obsidian Publish${vault.isReadOnly() ? " (read-only mode: known-read commands only)" : ""}`
+    ? `vault_cli enabled: agents can run Obsidian commands, including creating, editing, moving and deleting notes and changing Obsidian Publish${serverReadOnly() ? " (read-only mode: known-read commands only)" : ""}. Each connection can be approved without it.`
     : `vault_cli not offered: ${available.reason}`;
   if (line === lastLoggedAvailability) return;
   lastLoggedAvailability = line;
@@ -470,7 +483,7 @@ export async function registerCliTools(server: McpServer): Promise<void> {
   if (!optedIn()) return;
   const available = await cliToolsAvailability();
   logAvailability(available);
-  if (!available.ok) return;
+  if (!available.ok || connectionRefusal()) return;
 
   registerCliTool<{ command?: string }>(server,
     "vault_cli_help",

@@ -70,9 +70,9 @@ Access to the vault is controlled in layers.
 - **[OAuth 2.1 + PKCE](#oauth-browser-sign-in)** — browser sign-in, presenting your `MCP_CLIENT_ID`.
 - **[API key](#api-key-static-bearer-token)** (`MCP_STATIC_BEARER_TOKEN`) — a fixed bearer token, for clients that can't open a browser.
 
-**Approval** — with OAuth, a client is granted access at the approval page, so the server won't start until access is guarded. Set [`APPROVAL_PASSWORD`](#password-gate) to require a password there, or rely on a client secret (`MCP_CLIENT_SECRET`), which guards token exchange instead. If a gateway like Cloudflare Zero Trust already fronts `/authorize`, set `APPROVAL_OPEN=true`.
+**Approval** — with OAuth, a client is granted access at the approval page, so the server won't start until access is guarded. Set [`APPROVAL_PASSWORD`](#password-gate) to require a password there, or rely on a client secret (`MCP_CLIENT_SECRET`), which guards token exchange instead. If a gateway like Cloudflare Zero Trust already fronts `/authorize`, set `APPROVAL_OPEN=true`. When you approve a connection, you also choose what it may do beyond reading: [edit notes, and control the Obsidian app](#choosing-what-each-connection-can-do).
 
-**Scope** — `.mcpignore` blocks paths from access, `VAULT_READ_ONLY` disables writes, and `CORS_ALLOWED_ORIGINS` limits browser origins. Paths are always confined to the vault root.
+**Scope** — `.mcpignore` blocks paths from access, `VAULT_READ_ONLY` disables writes for every connection, and `CORS_ALLOWED_ORIGINS` limits browser origins. Paths are always confined to the vault root.
 
 **Outbound note text** — `vault_skim` is the only tool that sends note text off the server, and only when a decision-model key is configured. It returns a plan first and sends nothing until called again with that plan's id. `SKIM_EXCLUDE_TAGS` and `SKIM_EXCLUDE_PATHS` withhold notes from it entirely. See [Skimming notes](#skimming-notes).
 
@@ -246,6 +246,8 @@ The client will then use this for every `/mcp` request. The server compares it d
 
 The trade-off versus OAuth is that the token is long-lived and held by the client service. You'll need to replace this token with a new one if you ever suspect exposure.
 
+The API key has full access by default. To narrow it, set `MCP_STATIC_BEARER_SCOPES` to the permissions it should keep: `vault:write` (edit notes), `vault:cli` (control the Obsidian app), both separated by a comma, or `none` for reading only.
+
 To generate a random, secure API key, run this in your terminal:
 
 ```bash
@@ -283,6 +285,17 @@ The integration tests exercise password approval, PKCE exchange, MCP initializat
 The OAuth approval page must be guarded, and the server refuses to start otherwise. Set `APPROVAL_PASSWORD` to require a password on that page before a code is issued; it's checked on every authorization. A client secret (`MCP_CLIENT_SECRET`) satisfies the guard instead, by blocking token exchange.
 
 If a reverse proxy or zero-trust gateway already guards `/authorize` (the stronger control), set `APPROVAL_OPEN=true` for the click-to-approve page instead.
+
+#### Choosing what each connection can do
+
+Every connection can read your notes. When you approve a new one, the approval page also asks whether it may:
+
+- **Edit notes**: create, edit, move and trash notes. Leave it unticked for a connection that should only read.
+- **Control the Obsidian app**: use `vault_cli` to run plugin and command-palette commands and change Publish and Sync. This box appears only while the [Obsidian CLI tools](#obsidian-cli-tools) are on. Without editing, such a connection runs only commands that read.
+
+Both are ticked by default, so approving without changes gives full access. Your server settings stay the limit: with `VAULT_READ_ONLY=true` no connection can edit, and the CLI box appears only when the CLI tools are on. A box that wasn't shown when a connection was approved counts as allowed, so turning the CLI tools on later reaches existing connections. Connections approved before these choices existed keep full access.
+
+To change a connection's access, connect it again and approve with different choices. A connection approved without "Edit notes" sees no editing tools, and tools that can write tell the agent the connection is read-only.
 
 ### Health endpoint
 
@@ -334,6 +347,7 @@ PERIODIC_WEEK_START=sunday             # optional; first day of locale weeks ({g
 # CORS_ALLOWED_ORIGINS=https://vault.example,https://my-vault-chat.example # optional; replaces the site-origin default
 TOKEN_STORE_PATH=./tokens.json         # optional
 MCP_STATIC_BEARER_TOKEN=               # optional; API key for /mcp (see Authentication)
+MCP_STATIC_BEARER_SCOPES=              # optional; narrows the API key: vault:write, vault:cli, or none
 HEALTH_TOKEN=                          # optional; enables GET /health (see Health endpoint)
 VAULT_READ_ONLY=true                   # optional
 VAULT_ATTACHMENT_MAX_BYTES=10485760    # optional; vault_read_attachment size cap, defaults to 10 MB
@@ -376,7 +390,7 @@ Run setup again after dependency updates: it rebuilds the clipper bundle using t
 
 ### Audit-log privacy
 
-With logging enabled, paths, titles, search queries, tags, and frontmatter field names can appear in logs in clear text. Note-body arguments and frontmatter values are redacted, and known parser/section errors are sanitized, but these metadata can still be sensitive. Feedback text is stored as written. Set `LOG_ENABLED=false` to disable tool-call and feedback logging. Logs do not rotate automatically.
+With logging enabled, paths, titles, search queries, tags, and frontmatter field names can appear in logs in clear text. Each entry also names the connection that made the call (`client`, plus `client_name` for clients that registered themselves). Note-body arguments and frontmatter values are redacted, and known parser/section errors are sanitized, but these metadata can still be sensitive. Feedback text is stored as written. Set `LOG_ENABLED=false` to disable tool-call and feedback logging. Logs do not rotate automatically.
 
 ### Vault path
 
@@ -513,7 +527,7 @@ When the server runs on a machine with the Obsidian app (1.12 or later, with its
 
 They are off until `OBSIDIAN_CLI_ENABLED=true`. Then they are listed only if the `obsidian` binary is found (on `PATH`, or at `OBSIDIAN_CLI_PATH`) and `obsidian vault info=path` reports the same folder as the server's vault. The server passes the vault folder's name as `vault=`; set `OBSIDIAN_CLI_VAULT` if Obsidian knows the vault by another name. If the app later stops answering, the next failing call checks again and returns a clear error.
 
-Turning the CLI tools on gives agents most of what you can do in Obsidian: creating, editing, moving and deleting notes, and adding or removing notes on your Obsidian Publish site. Turn on `VAULT_READ_ONLY` if agents should only read. The server log says so whenever the tools come on or go off, and why.
+Turning the CLI tools on gives agents most of what you can do in Obsidian: creating, editing, moving and deleting notes, and adding or removing notes on your Obsidian Publish site. To keep a connection from using them, untick "Control the Obsidian app" when you [approve it](#choosing-what-each-connection-can-do); untick "Edit notes" to limit it to commands that read. `VAULT_READ_ONLY` limits every connection to reading. The server log says so whenever the tools come on or go off, and why.
 
 The guards:
 
@@ -521,7 +535,7 @@ The guards:
 - Parameter keys and flags must be lowercase words (`a-z` and `-`). Each becomes one argument; there is no shell.
 - `eval`, `devtools`, `restart`, `reload`, `plugins:restrict`, `theme:install`, and every `dev:`, `plugin:` and `snippet:` command are always blocked. No setting unblocks them.
 - Command-palette execution (`command id=…`) is off unless `OBSIDIAN_CLI_COMMANDS` lists the allowed IDs. `*` allows every ID except those that look destructive (delete, remove, purge, trash and similar); those run only when listed by name. `*` also covers community-plugin commands, and some of those run scripts (Templater, Shell commands), so prefer listing IDs.
-- With `VAULT_READ_ONLY=true`, only commands on a known-read list run, so a command added by a future CLI release is refused until it is reviewed.
+- With `VAULT_READ_ONLY=true`, and for a connection approved without "Edit notes", only commands on a known-read list run, so a command added by a future CLI release is refused until it is reviewed.
 - `path`, `to` and `folder` go through the same path checks as every other tool, and `file` (a note name) is resolved by the server and passed as an exact `path`. A protected location gets the same "Not found" answer a missing note does. `name` can't contain a slash.
 - A command that may write can't target a folder through `path`; use `vault_move` or `vault_trash` for folders.
 - Calls are audit-logged with the command, parameter names and flags. Parameter values stay out of the logged arguments, though an error message can name the path or command ID it refused.
@@ -549,7 +563,7 @@ With the CLI available, `vault_links` also asks Obsidian for backlinks, which fo
 - `.trash` stays readable by explicit path, so an agent can read or restore what `vault_trash` moved there. Add `.trash` to `.mcpignore` to hide deleted notes; trashing still works.
 - `vault_move` and `vault_trash` also support folders. The entire subtree (including hidden entries) must pass access checks before anything moves; a protected descendant rejects the whole operation. Folder trees containing symlinks or special files are refused; use the real source folder path rather than a symlinked parent shortcut. Every mapped destination is checked too. For `vault_move`, write folder paths with trailing slashes, such as `Projects/` → `Archive/Projects/`; dry runs validate and preview without creating directories. Folder moves update path-qualified wikilinks and canvas paths, including references inside the moved folder; bare note names stay unchanged. As with file moves, relative `./`/`../` links and standard Markdown links are not rewritten and need manual review. Trash does not rewrite links.
 - Other hidden entries are omitted from ordinary searches and listings, but explicit paths (including `VAULT_CONTEXT_PATH=.claude/CLAUDE.md`) remain accessible unless blocked by `.mcpignore`.
-- `VAULT_READ_ONLY=true` blocks all write operations. Write-only tools are left out of the tool list entirely, so agents never see a tool that can only fail; `vault_periodic_note`, `vault_clip_url`, and `vault_move` (whose default dry run only plans) stay listed and refuse the write.
+- `VAULT_READ_ONLY=true` blocks all write operations for every connection; a connection approved without "Edit notes" gets the same treatment on its own. Write-only tools are left out of the tool list entirely, so agents never see a tool that can only fail; `vault_periodic_note`, `vault_clip_url`, and `vault_move` (whose default dry run only plans) stay listed and refuse the write.
 - `vault_search_title` defaults to `limit=50`; `vault_search_content` defaults to `limit=20`. Limits are adjustable; `0` means no limit.
 - `vault_tags` defaults to `limit=100` when listing all tags; passing a `tag` returns the matching note paths without a limit. Counts are case-insensitive (displayed in first-seen casing) and nested tags match exactly — `parent` does not include `parent/child`.
 - `vault_frontmatter` and `vault_set_frontmatter_property` let agents work with frontmatter properties without reading or rewriting the whole note body.

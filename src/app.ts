@@ -8,6 +8,8 @@ import { createApp as createKitApp, createAuth } from 'mcp-server-kit';
 import type { Auth } from 'mcp-server-kit';
 import { getVaultRoot, getVaultDisplayName } from './vault.js';
 import { registerTools } from './tools.js';
+import { accessScopes, SCOPES_PROMPT, staticBearerScopes } from './access.js';
+import { cliToolsAvailability } from './cli.js';
 import pkg from '../package.json' with { type: 'json' };
 
 function parseOrigin(value: string, setting: string, allowTrailingSlash = false): string {
@@ -79,6 +81,11 @@ export function createApp(): { app: Express; auth: Auth } {
     approvalPassword: process.env.APPROVAL_PASSWORD,
     approvalOpen: process.env.APPROVAL_OPEN?.trim().toLowerCase() === 'true',
     approvalPrompt: `Allow access to your ${getVaultDisplayName()} vault?`,
+    // Whoever approves a connection chooses whether it may edit notes and use the Obsidian CLI
+    // tools. Server settings stay the limit; see access.ts.
+    scopes: accessScopes(async () => (await cliToolsAvailability()).ok),
+    scopesPrompt: SCOPES_PROMPT,
+    staticBearerScopes: staticBearerScopes(),
     testMode,
     // The SDK's rate limiter keys on client IP; under test every request shares 127.0.0.1, so leaving
     // it on would throttle across cases. Disabled in test only — production keeps it.

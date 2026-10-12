@@ -26,6 +26,7 @@ src/
   frontmatter.ts  — Frontmatter parsing and the textual key splice
   ignore.ts       — Compiles .mcpignore literal/glob rules with case and Unicode normalization
   lock.ts         — Per-path async mutex for read-modify-write
+  access.ts       — Per-connection access: the approval page's scopes (edit notes, Obsidian CLI) and whether the current request's connection holds one
   clip.ts         — Registers vault_clip_url when the optional web-clipper-headless is installed
   cli.ts          — Registers vault_cli / vault_cli_help when the obsidian CLI is opted in and reaches this vault: guards, probe, help parsing; backlinks via Obsidian
   skim.ts         — Registers vault_skim when a decision-model key is set: note selection, exclusions, plan ids, rendering

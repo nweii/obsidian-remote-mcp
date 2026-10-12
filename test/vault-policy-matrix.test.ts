@@ -6,6 +6,7 @@ import { lstat, mkdir, mkdtemp, readFile, readdir, readlink, rm, symlink, writeF
 import os from 'os';
 import path from 'path';
 import { fakeCalls, installFakeObsidian } from './fake-obsidian.js';
+import { runAsCaller } from 'mcp-server-kit';
 
 let vault: typeof import('../src/vault.js');
 let cli: typeof import('../src/cli.js');
@@ -243,6 +244,32 @@ describe('writes refuse hostile paths', () => {
       expect(await snapshot()).toEqual(baseline);
     });
   }
+});
+
+// A connection approved without "Edit notes" may not write, whatever the path. Each write is
+// given an ordinary note it could otherwise change.
+describe('writes refuse a read-only connection', () => {
+  const reader = { clientId: 'reader', kind: 'dynamic' as const, scopes: ['vault:cli'] };
+  const writes: Record<string, () => unknown> = {
+    ...Object.fromEntries(
+      Object.entries(WRITE_OPS)
+        .filter(([name]) => name !== 'resolveSafeWritePath') // resolves a path; writes nothing
+        .map(([name, run]) => [name, () => run(name.includes('destination') ? 'Fresh.md' : 'Movable.md')]),
+    ),
+    updateFrontmatterBatch: async () => {
+      const [result] = await vault.updateFrontmatterBatch([{ path: 'Movable.md', fields: { k: 'v' } }]);
+      if (!result!.updated) throw new Error(result!.error);
+    },
+    applyReferenceRewrite: async () => {
+      const result = await vault.applyReferenceRewrite(emptyPlan('Open.md'));
+      if (result.failures.length) throw new Error(result.failures[0]!.error);
+    },
+  };
+  test.each(Object.entries(writes))('%s', async (_, run) => {
+    const { error } = await outcome(() => runAsCaller(reader, run));
+    expect(error instanceof Error ? error.message : String(error)).toContain('This connection is read-only');
+    expect(await snapshot()).toEqual(baseline);
+  });
 });
 
 describe('reads refuse hostile paths', () => {
