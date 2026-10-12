@@ -970,6 +970,7 @@ describe('Title resolution via tool round-trips', () => {
         ['vault_read', { path: 'ErrorMappingDir' }, /is a directory, not a note\. Call vault_read with mode "list"/],
         ['vault_read_attachment', { path: 'NoSuchAttachment.png' }, /^Attachment not found: NoSuchAttachment\.png$/],
         ['vault_read', { path: 'NoSuchFolder', mode: 'list' }, /^Folder not found: NoSuchFolder$/],
+        ['vault_search_content', { query: 'x', folder: 'NoSuchFolder' }, /^Folder not found: NoSuchFolder$/],
       ];
       for (const [tool, args, expected] of cases) {
         const result = await callTool(base, token, tool, args);
