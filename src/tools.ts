@@ -62,33 +62,52 @@ function withResolveWarning(
   };
 }
 
-// Wrap vault.resolveNoteReference so handlers can short-circuit on resolver
-// errors with a consistent isError tool result. Only known resolver-layer
-// rejections (policy violations, EISDIR, missed lookup, empty input) become
-// friendly isError results; unexpected throws (e.g. EACCES during walk) bubble
-// up so the SDK records them with a stack instead of muting them into agent
-// text. eisdirHint is appended to the "is a directory" message for vault_read,
-// which has a folder-browsing alternative (mode "list").
-async function resolveOrError(
-  input: string,
-  opts: { eisdirHint?: string } = {},
-): Promise<{ ok: true; ref: vault.ResolvedReference } | { ok: false; result: ToolResult }> {
-  try {
-    const ref = await vault.resolveNoteReference(input);
-    return { ok: true, ref };
-  } catch (e) {
-    const code = (e as NodeJS.ErrnoException)?.code;
-    const message = e instanceof Error ? e.message : String(e);
-    const isResolverError =
-      e instanceof vault.VaultPolicyError ||
-      code === "EISDIR" ||
-      (e instanceof Error &&
-        (message === "Empty note reference" || message.startsWith("Could not resolve")));
-    if (!isResolverError) throw e;
-    const text = code === "EISDIR" && opts.eisdirHint ? `${message}${opts.eisdirHint}` : message;
-    return { ok: false, result: { content: [{ type: "text" as const, text }], isError: true } };
+// The one place an expected vault failure becomes a tool result. The switch is exhaustive over
+// vault.VaultError, so a new error class can't ship without a decision here.
+function vaultErrorResult(e: vault.VaultError): ToolResult {
+  switch (e._tag) {
+    case "AmbiguousHeadingError":
+      // Two blocks on purpose. The audit logger records only the first block of an isError
+      // result, and the previews in the second are note body text, so they stay out of
+      // logs/tool-calls.jsonl while the agent still gets what it needs to disambiguate.
+      return {
+        content: [
+          { type: "text", text: e.message },
+          { type: "text", text: `Candidate sections:\n${e.candidatesText()}` },
+        ],
+        isError: true,
+      };
+    case "VaultUnavailableError":
+    case "VaultPolicyError":
+    case "NotFoundError":
+    case "IsDirectoryError":
+    case "NoteExistsError":
+    case "ConcurrentEditError":
+    case "AttachmentTooLargeError":
+    case "InvalidSearchPatternError":
+    case "HeadingNotFoundError":
+    case "FrontmatterParseError":
+    case "InvalidRequestError":
+      return { content: [{ type: "text", text: e.message }], isError: true };
+    default: {
+      const unhandled: never = e;
+      throw unhandled;
+    }
   }
 }
+
+// Registers a tool through the audit logger and turns any vault.VaultError its handler throws
+// into a result with vaultErrorResult. Other throws propagate, so the SDK records unexpected
+// faults (e.g. EACCES during a walk) instead of muting them into agent text.
+const registerVaultTool: typeof registerLogged = (server, name, def, handler) =>
+  registerLogged(server, name, def, async (args) => {
+    try {
+      return await handler(args);
+    } catch (e) {
+      if (vault.isVaultError(e)) return vaultErrorResult(e);
+      throw e;
+    }
+  });
 
 // vault_update takes the same path/bare-title input as vault_read, and vault_read versions the
 // note against its *resolved* path. updateNote must operate on that same resolved path or the
@@ -96,16 +115,13 @@ async function resolveOrError(
 // path). Resolve to an existing note when possible; fall back to the literal input only when
 // the note genuinely doesn't exist (e.g. creating a new one). Every other failure — policy
 // violations, EISDIR, transient FS errors during the resolver walk — propagates, matching
-// resolveOrError on the read path; swallowing them could write a stray file at the wrong path.
+// the read path; swallowing them could write a stray file at the wrong path.
 async function resolveForWrite(input: string): Promise<string> {
   try {
     const ref = await vault.resolveNoteReference(input);
     return ref.path;
   } catch (e) {
-    const isNotFound =
-      e instanceof Error &&
-      (e.message === "Empty note reference" || e.message.startsWith("Could not resolve"));
-    if (!isNotFound) throw e;
+    if (!(e instanceof vault.NotFoundError)) throw e;
     return input;
   }
 }
@@ -300,7 +316,7 @@ export async function registerTools(server: McpServer) {
   // never see a tool that can only fail. Tools that read or write depending on their arguments
   // (vault_periodic_note, vault_clip_url, and vault_move, whose default dry run only plans) stay
   // registered; the vault layer refuses their writes.
-  const registerWrite: typeof registerLogged = vault.isReadOnly() ? () => {} : registerLogged;
+  const registerWrite: typeof registerLogged = vault.isReadOnly() ? () => {} : registerVaultTool;
 
   // Optional: vault_clip_url. Wrapped in try/catch so a failure in the optional clip layer
   // can never break registration of the core vault tools.
@@ -334,7 +350,7 @@ export async function registerTools(server: McpServer) {
     );
   }
 
-  registerLogged(server,
+  registerVaultTool(server,
     "vault_context",
     {
       annotations: { readOnlyHint: true, openWorldHint: false },
@@ -380,7 +396,7 @@ export async function registerTools(server: McpServer) {
     },
   );
 
-  registerLogged(server,
+  registerVaultTool(server,
     "vault_read",
     {
       annotations: { readOnlyHint: true, openWorldHint: false },
@@ -420,15 +436,12 @@ export async function registerTools(server: McpServer) {
           ],
         };
       }
-      const out = await resolveOrError(path, {
-        eisdirHint: ` Use mode "list" with the same path (or path "") to browse.`,
-      });
-      if (!out.ok) return out.result;
-      const content = await vault.readNote(out.ref.path);
+      const ref = await vault.resolveNoteReference(path);
+      const content = await vault.readNote(ref.path);
       // Hand back a version for the note so vault_update can detect concurrent edits.
       // Kept as its own content block so it never bleeds into the note body the agent parses.
       const version = vault.versionOf(content);
-      const result = withResolveWarning({ content: [{ type: "text", text: content }] }, out.ref, path);
+      const result = withResolveWarning({ content: [{ type: "text", text: content }] }, ref, path);
       result.content.push({
         type: "text",
         text: `(version: ${version} — pass as base_version to vault_update to avoid clobbering a concurrent edit)`,
@@ -437,7 +450,7 @@ export async function registerTools(server: McpServer) {
     },
   );
 
-  registerLogged(server,
+  registerVaultTool(server,
     "vault_batch_read",
     {
       annotations: { readOnlyHint: true, openWorldHint: false },
@@ -471,7 +484,7 @@ export async function registerTools(server: McpServer) {
     },
   );
 
-  registerLogged(server,
+  registerVaultTool(server,
     "vault_outline",
     {
       annotations: { readOnlyHint: true, openWorldHint: false },
@@ -483,18 +496,17 @@ export async function registerTools(server: McpServer) {
       }),
     },
     async ({ path }) => {
-      const out = await resolveOrError(path);
-      if (!out.ok) return out.result;
-      const headings = await vault.getNoteOutline(out.ref.path);
+      const ref = await vault.resolveNoteReference(path);
+      const headings = await vault.getNoteOutline(ref.path);
       const body =
         headings.length === 0
           ? { content: [{ type: "text" as const, text: "(no headings)" }] }
           : { content: [{ type: "text" as const, text: headings.join("\n") }] };
-      return withResolveWarning(body, out.ref, path);
+      return withResolveWarning(body, ref, path);
     },
   );
 
-  registerLogged(server,
+  registerVaultTool(server,
     "vault_read_section",
     {
       annotations: { readOnlyHint: true, openWorldHint: false },
@@ -509,26 +521,23 @@ export async function registerTools(server: McpServer) {
       }),
     },
     async ({ path, heading }) => {
-      const out = await resolveOrError(path);
-      if (!out.ok) return out.result;
+      const ref = await vault.resolveNoteReference(path);
       try {
-        const content = await vault.readNoteSection(out.ref.path, heading);
-        return withResolveWarning({ content: [{ type: "text", text: content }] }, out.ref, path);
+        const content = await vault.readNoteSection(ref.path, heading);
+        return withResolveWarning({ content: [{ type: "text", text: content }] }, ref, path);
       } catch (e) {
-        const message = e instanceof Error ? e.message : String(e);
-        const hint = message.startsWith("Heading ")
-          ? " — call vault_outline first and copy heading text exactly (without # prefix)."
-          : "";
-        // If the title was ambiguous, prepend the warning so the agent knows the
-        // heading miss may belong to a different candidate than expected.
-        const warning = buildResolveWarning(out.ref, path);
-        const text = warning ? `${warning}\n\n${message}${hint}` : `${message}${hint}`;
-        return { content: [{ type: "text", text }], isError: true };
+        if (!(e instanceof vault.HeadingNotFoundError)) throw e;
+        // On an ambiguous title the heading may live in another candidate, so say which note was
+        // searched. The warning goes after the error so the logged first block stays the error.
+        const result = vaultErrorResult(e);
+        const warning = buildResolveWarning(ref, path);
+        if (warning) result.content.push({ type: "text", text: warning });
+        return result;
       }
     },
   );
 
-  registerLogged(server,
+  registerVaultTool(server,
     "vault_read_attachment",
     {
       annotations: { readOnlyHint: true, openWorldHint: false },
@@ -545,48 +554,33 @@ export async function registerTools(server: McpServer) {
       }),
     },
     async ({ path, stat_only }) => {
-      try {
-        const att = await vault.readAttachment(path, stat_only);
-        const sizeKb = (att.bytes / 1024).toFixed(1);
-        if (stat_only) {
-          return {
-            content: [
-              { type: "text", text: `${path}\nmime: ${att.mimeType}\nsize: ${att.bytes} bytes (${sizeKb} KB)` },
-            ],
-          };
-        }
-        if (att.isImage) {
-          // Image content block so clients render the attachment. The base64 payload lives only
-          // in the result, never in the args the logger records, so it doesn't land in the log.
-          return {
-            content: [{ type: "image", data: att.data!, mimeType: att.mimeType }],
-          };
-        }
-        // Non-image: hand back the base64 plus mime/size so the agent knows what it got.
+      const att = await vault.readAttachment(path, stat_only);
+      const sizeKb = (att.bytes / 1024).toFixed(1);
+      if (stat_only) {
         return {
           content: [
             { type: "text", text: `${path}\nmime: ${att.mimeType}\nsize: ${att.bytes} bytes (${sizeKb} KB)` },
-            { type: "text", text: att.data! },
           ],
         };
-      } catch (e) {
-        const code = (e as NodeJS.ErrnoException)?.code;
-        const message = e instanceof Error ? e.message : String(e);
-        if (
-          e instanceof vault.VaultPolicyError ||
-          e instanceof vault.AttachmentTooLargeError ||
-          code === "EISDIR" ||
-          code === "ENOENT"
-        ) {
-          const text = code === "ENOENT" ? `Attachment not found: ${path}` : message;
-          return { content: [{ type: "text", text }], isError: true };
-        }
-        throw e;
       }
+      if (att.isImage) {
+        // Image content block so clients render the attachment. The base64 payload lives only
+        // in the result, never in the args the logger records, so it doesn't land in the log.
+        return {
+          content: [{ type: "image", data: att.data!, mimeType: att.mimeType }],
+        };
+      }
+      // Non-image: hand back the base64 plus mime/size so the agent knows what it got.
+      return {
+        content: [
+          { type: "text", text: `${path}\nmime: ${att.mimeType}\nsize: ${att.bytes} bytes (${sizeKb} KB)` },
+          { type: "text", text: att.data! },
+        ],
+      };
     },
   );
 
-  registerLogged(server,
+  registerVaultTool(server,
     "vault_frontmatter",
     {
       annotations: { readOnlyHint: true, openWorldHint: false },
@@ -600,31 +594,30 @@ export async function registerTools(server: McpServer) {
       outputSchema: frontmatterOutput,
     },
     async ({ path, property }) => {
-      const out = await resolveOrError(path);
-      if (!out.ok) return out.result;
+      const ref = await vault.resolveNoteReference(path);
       if (property !== undefined && property.length > 0) {
-        const value = await vault.getFrontmatterProperty(out.ref.path, property);
+        const value = await vault.getFrontmatterProperty(ref.path, property);
         const body = structuredResult(
           frontmatterOutput,
-          { path: out.ref.path, property, ...(value === undefined ? {} : { value }) },
+          { path: ref.path, property, ...(value === undefined ? {} : { value }) },
           () =>
             value === undefined
               ? `Property "${property}" not found.`
               : typeof value === "string" ? value : JSON.stringify(value, null, 2),
         );
-        return withResolveWarning(body, out.ref, path);
+        return withResolveWarning(body, ref, path);
       }
-      const frontmatter = await vault.getFrontmatter(out.ref.path);
+      const frontmatter = await vault.getFrontmatter(ref.path);
       const body = structuredResult(
         frontmatterOutput,
-        { path: out.ref.path, frontmatter },
+        { path: ref.path, frontmatter },
         () => (frontmatter === null ? "(no frontmatter)" : JSON.stringify(frontmatter, null, 2)),
       );
-      return withResolveWarning(body, out.ref, path);
+      return withResolveWarning(body, ref, path);
     },
   );
 
-  registerLogged(server,
+  registerVaultTool(server,
     "vault_links",
     {
       annotations: { readOnlyHint: true, openWorldHint: false },
@@ -638,16 +631,15 @@ export async function registerTools(server: McpServer) {
       outputSchema: linksOutput,
     },
     async ({ path, include_backlinks, backlinks_limit }) => {
-      const out = await resolveOrError(path);
-      if (!out.ok) return out.result;
-      const links = await vault.getNoteLinks(out.ref.path);
+      const ref = await vault.resolveNoteReference(path);
+      const links = await vault.getNoteLinks(ref.path);
       const backlinks = include_backlinks
-        ? await resolveBacklinks(out.ref.path, backlinks_limit)
+        ? await resolveBacklinks(ref.path, backlinks_limit)
         : undefined;
       const body = structuredResult(
         linksOutput,
         {
-          path: out.ref.path,
+          path: ref.path,
           outgoing: links.map((l) => ({ title: l.title, path: l.path })),
           ...(backlinks !== undefined ? { backlinks: backlinks.paths, backlinks_source: backlinks.source } : {}),
         },
@@ -671,7 +663,7 @@ export async function registerTools(server: McpServer) {
           return lines.join("\n");
         },
       );
-      return withResolveWarning(body, out.ref, path);
+      return withResolveWarning(body, ref, path);
     },
   );
 
@@ -687,14 +679,7 @@ export async function registerTools(server: McpServer) {
       }),
     },
     async ({ path, content }) => {
-      try {
-        await vault.createNote(path, content);
-      } catch (err) {
-        if (err instanceof vault.NoteExistsError) {
-          return { content: [{ type: "text", text: `Error: file already exists at ${path}. To replace it, use vault_update; to modify part of it, use vault_edit.` }], isError: true };
-        }
-        throw err;
-      }
+      await vault.createNote(path, content);
       return { content: [{ type: "text", text: `Created ${path}` }] };
     },
   );
@@ -715,16 +700,9 @@ export async function registerTools(server: McpServer) {
       }),
     },
     async ({ path, content, base_version }) => {
-      try {
-        const targetPath = await resolveForWrite(path);
-        const result = await vault.updateNote(targetPath, content, base_version);
-        return { content: [{ type: "text", text: `Updated ${targetPath}. New version: ${result.version}` }] };
-      } catch (e) {
-        if (e instanceof vault.ConcurrentEditError) {
-          return { content: [{ type: "text", text: e.message }], isError: true };
-        }
-        throw e;
-      }
+      const targetPath = await resolveForWrite(path);
+      const result = await vault.updateNote(targetPath, content, base_version);
+      return { content: [{ type: "text", text: `Updated ${targetPath}. New version: ${result.version}` }] };
     },
   );
 
@@ -833,30 +811,7 @@ export async function registerTools(server: McpServer) {
       }),
     },
     async ({ path, heading, operation, content }) => {
-      try {
-        await vault.editNoteSection(path, heading, operation, content);
-      } catch (e) {
-        const message = e instanceof Error ? e.message : String(e);
-        // Ambiguous-heading errors carry their own recovery guidance — don't append
-        // the "call vault_outline first" hint, which only fits the missing-heading case.
-        if (e instanceof vault.AmbiguousHeadingError) {
-          // Two blocks on purpose. The audit logger records only the first block of an
-          // isError result, and the previews in the second are note body text — keeping
-          // them out of block one keeps them out of logs/tool-calls.jsonl while the agent
-          // still gets everything it needs to disambiguate.
-          return {
-            content: [
-              { type: "text", text: message },
-              { type: "text", text: `Candidate sections:\n${e.candidatesText()}` },
-            ],
-            isError: true,
-          };
-        }
-        const hint = message.startsWith("Heading ")
-          ? " — call vault_outline first and copy heading text exactly (without # prefix)."
-          : "";
-        return { content: [{ type: "text", text: `${message}${hint}` }], isError: true };
-      }
+      await vault.editNoteSection(path, heading, operation, content);
       return { content: [{ type: "text", text: `Edited ${path} section "${heading}" (${operation})` }] };
     },
   );
@@ -877,7 +832,7 @@ export async function registerTools(server: McpServer) {
     },
   );
 
-  registerLogged(server,
+  registerVaultTool(server,
     "vault_move",
     {
       annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
@@ -898,26 +853,16 @@ export async function registerTools(server: McpServer) {
 
       // Use the same actionable errors for previews and writes. The write workflow holds
       // endpoint locks across planning and rename so queued edits cannot stale the plan.
-      try {
-        if (dry_run) {
-          const plan = await vault.planReferenceRewrite(source, destination);
-          return { content: [{ type: "text", text: formatMovePlan(plan) }] };
-        }
-        const result = await vault.moveWithReferences(source, destination);
-        return { content: [{ type: "text", text: formatMoveReport(result) }] };
-      } catch (e) {
-        if (e instanceof vault.NoteExistsError) {
-          return { content: [{ type: "text", text: `Error: a file or folder already exists at ${destination}. Choose a different destination or trash the existing entry first.` }], isError: true };
-        }
-        if (e instanceof vault.VaultPolicyError) {
-          return { content: [{ type: "text", text: e.message }], isError: true };
-        }
-        throw e;
+      if (dry_run) {
+        const plan = await vault.planReferenceRewrite(source, destination);
+        return { content: [{ type: "text", text: formatMovePlan(plan) }] };
       }
+      const result = await vault.moveWithReferences(source, destination);
+      return { content: [{ type: "text", text: formatMoveReport(result) }] };
     },
   );
 
-  registerLogged(server,
+  registerVaultTool(server,
     "vault_search_title",
     {
       annotations: { readOnlyHint: true, openWorldHint: false },
@@ -934,7 +879,7 @@ export async function registerTools(server: McpServer) {
     async ({ title, exact, limit }) => titleSearchToolResult(title, exact, limit),
   );
 
-  registerLogged(server,
+  registerVaultTool(server,
     "vault_search_content",
     {
       annotations: { readOnlyHint: true, openWorldHint: false },
@@ -950,17 +895,7 @@ export async function registerTools(server: McpServer) {
       outputSchema: contentSearchOutput,
     },
     async ({ query, folder, limit, case_sensitive }) => {
-      let results: vault.SearchResult[];
-      try {
-        results = await vault.searchContent(query, { folder, limit, caseSensitive: case_sensitive });
-      } catch (e) {
-        // A malformed pattern is the caller's mistake, not a server fault — hand back the
-        // reason so the agent can correct it, rather than letting a SyntaxError escape.
-        if (e instanceof vault.InvalidSearchPatternError) {
-          return { content: [{ type: "text" as const, text: e.message }], isError: true };
-        }
-        throw e;
-      }
+      const results = await vault.searchContent(query, { folder, limit, caseSensitive: case_sensitive });
       const hitLimit = limit > 0 && results.length === limit;
       return structuredResult(
         contentSearchOutput,
@@ -977,7 +912,7 @@ export async function registerTools(server: McpServer) {
     },
   );
 
-  registerLogged(server,
+  registerVaultTool(server,
     "vault_search_frontmatter",
     {
       annotations: { readOnlyHint: true, openWorldHint: false },
@@ -1018,7 +953,7 @@ export async function registerTools(server: McpServer) {
     },
   );
 
-  registerLogged(server,
+  registerVaultTool(server,
     "vault_tags",
     {
       annotations: { readOnlyHint: true, openWorldHint: false },
@@ -1061,7 +996,7 @@ export async function registerTools(server: McpServer) {
     },
   );
 
-  registerLogged(server,
+  registerVaultTool(server,
     "vault_periodic_note",
     {
       annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
@@ -1111,7 +1046,7 @@ export async function registerTools(server: McpServer) {
 
   if (!isLoggingEnabled()) return;
 
-  registerLogged(server,
+  registerVaultTool(server,
     "vault_feedback",
     {
       annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },

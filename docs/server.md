@@ -51,6 +51,7 @@
 | `OBSIDIAN_CLI_COMMANDS` | no | Comma-separated command-palette IDs `vault_cli` may run through `command`. `*` allows all except destructive-looking IDs, which must be listed by name. Unset, palette execution is off. |
 | `OBSIDIAN_CLI_MCPIGNORE_ACK` | no | `true` keeps the CLI tools on while `.mcpignore` has rules, accepting that CLI output can't be filtered by them. |
 | `HEALTH_TOKEN` | no | Dedicated bearer for `GET /health`. Default-closed: unset → the route 404s. Sent as `Authorization: Bearer`; separate from the OAuth and static-bearer secrets. |
+| `WEB_CLIPPER_SETTINGS_PATH` | no | Web Clipper settings export used by `vault_clip_url`, absolute or vault-relative. Unset, the newest `obsidian-web-clipper-settings*.json` within four folder levels of the vault root is used, whether or not `.mcpignore` hides it. |
 | `PORT` | no | HTTP port (default: `3456`) |
 | `HOST` | no | Bind address (default: `0.0.0.0`). Use `127.0.0.1` for a process behind a proxy on the same host; in Docker, restrict the published port instead. |
 

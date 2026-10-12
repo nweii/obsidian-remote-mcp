@@ -34,7 +34,6 @@ src/
   decision.ts     — Decision-model client (TypeSafe, OpenRouter, OpenAI): provider resolution, request shapes, batching, retries
   log.ts          — Configures the kit's audit logger and its redaction
   date.ts         — Local-timezone date helpers for periodic notes (parsing, ISO weeks, period buckets)
-  js-yaml.d.ts    — Module declaration for js-yaml
 scripts/          — setup-clipper.ts builds the optional clipper from the root lockfile
 test/             — One file per area; vault-policy-matrix.test.ts covers every vault export and the CLI tool against hostile input; fake-obsidian.ts stands in for the CLI
 docs/             — Design notes, reached through the pointers below

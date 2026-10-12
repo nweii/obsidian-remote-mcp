@@ -14,7 +14,184 @@ import {
   coerceFrontmatterValue,
   frontmatterValueMatches,
   type FrontmatterMatchType,
+  FrontmatterParseError,
 } from './frontmatter.js';
+
+// --- Errors ------------------------------------------------------------------
+//
+// Every expected way a vault operation can fail. Each class carries a literal `_tag`, and
+// VaultError is the union of them all, so the tool layer maps them with one exhaustive switch:
+// a class added to VAULT_ERROR_CLASSES without a case there fails the typecheck. Messages name
+// vault-relative paths and caller input only, never note text or host paths, because the audit
+// log records them. Anything else a vault function throws is a fault and propagates unchanged.
+
+// Thrown when the vault root itself can't be read. Distinct from VaultPolicyError: that means
+// "this path is not allowed", this means "the vault is not there, so no answer can be trusted".
+export class VaultUnavailableError extends Error {
+  readonly _tag = 'VaultUnavailableError';
+  constructor(message: string) {
+    super(message);
+    this.name = 'VaultUnavailableError';
+  }
+}
+
+// Thrown by resolveSafePath when a path is rejected for security/policy reasons.
+// `kind` says which rule refused it.
+export class VaultPolicyError extends Error {
+  readonly _tag = 'VaultPolicyError';
+  constructor(public readonly kind: 'escape' | 'mcpignore' | 'internal', message: string) {
+    super(message);
+    this.name = 'VaultPolicyError';
+  }
+}
+
+// Thrown when a note reference resolves to nothing, or when a file to read, move or trash is
+// missing.
+export class NotFoundError extends Error {
+  readonly _tag = 'NotFoundError';
+  constructor(message: string) {
+    super(message);
+    this.name = 'NotFoundError';
+  }
+}
+
+// Thrown when a folder is given where a note or file is expected.
+export class IsDirectoryError extends Error {
+  readonly _tag = 'IsDirectoryError';
+  constructor(message: string) {
+    super(message);
+    this.name = 'IsDirectoryError';
+  }
+}
+
+// Thrown by createNote, and by moves onto an occupied destination, when something already
+// exists at the target path.
+export class NoteExistsError extends Error {
+  readonly _tag = 'NoteExistsError';
+  constructor(message: string) {
+    super(message);
+    this.name = 'NoteExistsError';
+  }
+}
+
+// Thrown by updateNote when the note changed under the caller since its base_version.
+export class ConcurrentEditError extends Error {
+  readonly _tag = 'ConcurrentEditError';
+  constructor(message: string) {
+    super(message);
+    this.name = 'ConcurrentEditError';
+  }
+}
+
+// Thrown by readAttachment when the file is larger than the configured cap. Carries the
+// actual and max sizes so the tool layer can name the real size in its error.
+export class AttachmentTooLargeError extends Error {
+  readonly _tag = 'AttachmentTooLargeError';
+  constructor(public readonly bytes: number, public readonly maxBytes: number, message: string) {
+    super(message);
+    this.name = 'AttachmentTooLargeError';
+  }
+}
+
+// Thrown when a caller's search pattern can't be compiled or is implausibly long, instead of
+// letting a raw SyntaxError escape.
+export class InvalidSearchPatternError extends Error {
+  readonly _tag = 'InvalidSearchPatternError';
+  constructor(message: string) {
+    super(message);
+    this.name = 'InvalidSearchPatternError';
+  }
+}
+
+// Thrown by readNoteSection and editNoteSection when no heading in the note matches.
+export class HeadingNotFoundError extends Error {
+  readonly _tag = 'HeadingNotFoundError';
+  constructor(heading: string, relativePath: string) {
+    super(
+      `Heading "${heading}" not found in ${relativePath}. Call vault_outline first and copy the ` +
+        `heading text exactly (without the # prefix).`,
+    );
+    this.name = 'HeadingNotFoundError';
+  }
+}
+
+export type AmbiguousHeadingMatch = {
+  startIdx: number;
+  preview: string;
+};
+
+// Thrown by editNoteSection (and applySectionEdit) when the requested heading
+// matches more than one section. Carries enough information for the agent to
+// pick a unique anchor and retry via vault_edit. Mirrors the resolveNoteReference
+// "surface candidates, don't pick" pattern already used for ambiguous note titles.
+export class AmbiguousHeadingError extends Error {
+  readonly _tag = 'AmbiguousHeadingError';
+  readonly heading: string;
+  readonly relativePath: string;
+  readonly matches: AmbiguousHeadingMatch[];
+
+  constructor(opts: {
+    relativePath: string;
+    heading: string;
+    matches: AmbiguousHeadingMatch[];
+  }) {
+    // The message carries line numbers only — never the previews. The audit logger records
+    // error text verbatim (both the isError result's first content block and the message of
+    // any exception thrown out of a handler), so anything placed here lands in
+    // logs/tool-calls.jsonl on disk. Previews are note body text; they go to the agent
+    // through candidatesText() as a separate content block instead.
+    const lines = opts.matches.map(m => m.startIdx + 1).join(', ');
+    super(
+      `Heading "${opts.heading}" matches ${opts.matches.length} sections in ${opts.relativePath} ` +
+        `(lines ${lines}). vault_edit_section can't safely guess which one to edit. Use vault_edit ` +
+        `with a find-anchored replace on text unique to the target section, or vault_update for ` +
+        `the whole note.`,
+    );
+    this.name = 'AmbiguousHeadingError';
+    this.heading = opts.heading;
+    this.relativePath = opts.relativePath;
+    this.matches = opts.matches;
+  }
+
+  // The candidate list with a one-line body preview per match, for disambiguating by eye.
+  // Kept off `message` on purpose — see the constructor.
+  candidatesText(): string {
+    return this.matches
+      .map((m, i) => `  ${i + 1}. line ${m.startIdx + 1} — ${m.preview}`)
+      .join('\n');
+  }
+}
+
+// Thrown when a request can't be carried out as asked: a write to a read-only vault, a move onto
+// itself, a folder move whose link rewrites would be ambiguous, or listing a file as a folder.
+export class InvalidRequestError extends Error {
+  readonly _tag = 'InvalidRequestError';
+  constructor(message: string) {
+    super(message);
+    this.name = 'InvalidRequestError';
+  }
+}
+
+const VAULT_ERROR_CLASSES = [
+  VaultUnavailableError,
+  VaultPolicyError,
+  NotFoundError,
+  IsDirectoryError,
+  NoteExistsError,
+  ConcurrentEditError,
+  AttachmentTooLargeError,
+  InvalidSearchPatternError,
+  HeadingNotFoundError,
+  AmbiguousHeadingError,
+  FrontmatterParseError,
+  InvalidRequestError,
+] as const;
+
+export type VaultError = InstanceType<(typeof VAULT_ERROR_CLASSES)[number]>;
+
+export function isVaultError(e: unknown): e is VaultError {
+  return VAULT_ERROR_CLASSES.some((ErrorClass) => e instanceof ErrorClass);
+}
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 export const DEFAULT_CONTEXT_NOTE_CANDIDATES = ['AGENTS.md', 'CLAUDE.md'] as const;
@@ -145,29 +322,20 @@ export function getContextNotePath(): string | null {
 
 // --- .mcpignore --------------------------------------------------------------
 
-// Thrown when the vault root itself can't be read. Distinct from VaultPolicyError: that means
-// "this path is not allowed", this means "the vault is not there, so no answer can be trusted".
-export class VaultUnavailableError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'VaultUnavailableError';
-  }
-}
-
 // A missing ignore file is allowed only when the vault itself is available.
 function assertVaultRootReadable(root: string): void {
   try {
     if (!statSync(root).isDirectory()) throw new Error('Not a directory');
     accessSync(root, constants.R_OK | constants.X_OK);
   } catch {
-    throw new VaultUnavailableError(`Vault root is not a readable directory: ${root}. Refusing to serve without a usable vault.`);
+    throw new VaultUnavailableError('Vault root is not a readable directory. Refusing to serve without a usable vault.');
   }
 }
 
 type IgnoreMatcher = ReturnType<typeof compileIgnoreRules>;
 let ignoreCache: { root: string; text: string | null; matches: IgnoreMatcher } | null = null;
 
-// Keyed on the policy text itself, re-read on every check. File metadata cannot prove the
+// Keyed on the policy text itself, re-read for every policy snapshot. File metadata cannot prove the
 // policy unchanged: an in-place, same-length rewrite within one timestamp tick (coarse on
 // SMB/FAT volumes) keeps dev, inode, times and size identical. The file is small, so the read
 // costs about a microsecond more than a stat. Failure to read an existing policy must never
@@ -211,8 +379,8 @@ export function hasIgnoreRules(): boolean {
   });
 }
 
-// Walks may start through an in-vault directory symlink. Check both names just as direct
-// access does; testing only the alias path would miss an ignored canonical descendant.
+// Single-level listings show symlinked entries, so each child is resolved in full, the same
+// as direct access; testing only the alias path would miss an ignored canonical target.
 function isIgnored(absPath: string): boolean {
   try {
     resolveSafePath(path.relative(getVaultRoot(), absPath));
@@ -223,10 +391,6 @@ function isIgnored(absPath: string): boolean {
   }
 }
 
-function isIgnoredRelative(rel: string): boolean {
-  return getIgnoreRules()(rel.split(path.sep).join('/'));
-}
-
 // App state rather than user context: Obsidian settings and plugin data (where plugins keep
 // API keys), and version history. Excluded at any depth before .mcpignore is consulted, so no
 // policy file is needed to protect them. Other hidden folders, .trash included, stay reachable
@@ -234,10 +398,6 @@ function isIgnoredRelative(rel: string): boolean {
 // restore what it trashed. A .mcpignore rule hides any of those.
 const INTERNAL_FOLDERS = ['.obsidian', '.git'];
 const matchesInternalFolder = compileIgnoreRules(INTERNAL_FOLDERS.map(name => `**/${name}`).join('\n'));
-
-function isInternalRelative(rel: string): boolean {
-  return matchesInternalFolder(rel.split(path.sep).join('/'));
-}
 
 // --- Read-only mode ----------------------------------------------------------
 
@@ -251,19 +411,10 @@ export function isReadOnly(): boolean {
 // Throws when writes are refused, saying why.
 function assertWritable() {
   const reason = readOnlyReason();
-  if (reason) throw new Error(reason);
+  if (reason) throw new InvalidRequestError(reason);
 }
 
 // --- Path safety -------------------------------------------------------------
-
-// Thrown by resolveSafePath when a path is rejected for security/policy reasons.
-// Carries a typed `kind` so callers can match without parsing error text.
-export class VaultPolicyError extends Error {
-  constructor(public readonly kind: 'escape' | 'mcpignore' | 'internal', message: string) {
-    super(message);
-    this.name = 'VaultPolicyError';
-  }
-}
 
 // True when `candidate` is the root itself or sits underneath it. Both arguments must already
 // be absolute and normalized; neither is canonicalized here.
@@ -315,77 +466,133 @@ function realpathOrNearestExisting(absPath: string): string {
   }
 }
 
+// --- Policy snapshot ---------------------------------------------------------
+
+type PolicyVerdict = 'escape' | 'internal' | 'mcpignore' | 'policy-file' | null;
+
+// One reading of the access policy, and the single place its rules are decided. Every path
+// check (direct access, bulk walks, folder moves) asks a snapshot, so a rule added here applies
+// to all of them. A snapshot belongs to one operation: a walk or a folder move checks thousands
+// of entries against the policy as it stood when the operation began, instead of re-reading
+// .mcpignore for each one. Callers own their error wording; the snapshot only says which rule
+// refused.
+interface PolicySnapshot {
+  root: string;
+  realRoot: string;
+  // `lexical` is the absolute path as requested and `canonical` the same entry with symlinks
+  // resolved. Both must pass. `ignore: false` skips .mcpignore for the internal trash
+  // destination. `write` adds owner-managed policy-file protection; pass the entry's stat when
+  // it exists so a hardlink alias is caught.
+  check(lexical: string, canonical: string, opts: { ignore: boolean; write: boolean; stat?: Stats | null }): PolicyVerdict;
+}
+
+function policySnapshot(): PolicySnapshot {
+  const root = getVaultRoot();
+  const rules = getIgnoreRules();
+  const realRoot = getVaultRealRoot();
+  const policy = path.join(root, '.mcpignore');
+  // Only writes consult the policy file's own location and inode, so reads skip the cost.
+  let policyTarget: { real: string; stat: Stats | null } | null = null;
+  const getPolicyTarget = () => {
+    if (policyTarget) return policyTarget;
+    let stat: Stats | null = null;
+    try {
+      stat = statSync(policy);
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code !== 'ENOENT' && code !== 'ENOTDIR') throw e;
+    }
+    policyTarget = { real: realpathOrNearestExisting(policy), stat };
+    return policyTarget;
+  };
+  const key = (value: string) => value.normalize('NFC').toLowerCase();
+  const overlaps = (a: string, b: string) => isWithin(key(a), key(b)) || isWithin(key(b), key(a));
+  const rel = (from: string, to: string) => path.relative(from, to).split(path.sep).join('/');
+
+  return {
+    root,
+    realRoot,
+    check(lexical, canonical, { ignore, write, stat }) {
+      if (!isWithin(root, lexical) || !isWithin(realRoot, canonical)) return 'escape';
+      const lexicalRel = rel(root, lexical);
+      const canonicalRel = rel(realRoot, canonical);
+      if (matchesInternalFolder(lexicalRel) || matchesInternalFolder(canonicalRel)) return 'internal';
+      if (ignore && (rules(lexicalRel) || rules(canonicalRel))) return 'mcpignore';
+      if (write) {
+        // A containing directory counts: moving it would carry the policy away, and a path
+        // beneath an absent policy would create it as a directory the loader cannot read.
+        // Hardlinks need the inode check because realpath cannot identify those aliases.
+        const target = getPolicyTarget();
+        if (overlaps(lexical, policy) || overlaps(canonical, target.real) ||
+            (stat && target.stat && stat.dev === target.stat.dev && stat.ino === target.stat.ino)) {
+          return 'policy-file';
+        }
+      }
+      return null;
+    },
+  };
+}
+
 // Check both the requested path and its canonical target. An allowed target cannot make an
 // ignored alias writable, and an allowed alias cannot expose an ignored target. The internal
 // trash destination skips .mcpignore only; containment, the internal-folder exclusion, and
 // policy-file protection still apply.
-function resolveVaultPath(relativePath: string, enforceIgnore: boolean): string {
-  const vaultRoot = getVaultRoot();
-  const resolved = path.resolve(vaultRoot, relativePath);
-
-  if (!isWithin(vaultRoot, resolved)) {
+function resolveVaultPath(relativePath: string, opts: { ignore: boolean; write: boolean }): string {
+  const policy = policySnapshot();
+  const resolved = path.resolve(policy.root, relativePath);
+  if (!isWithin(policy.root, resolved)) {
     throw new VaultPolicyError('escape', `Path escapes vault root: ${relativePath}`);
   }
-
-  const realRoot = getVaultRealRoot();
   const realResolved = realpathOrNearestExisting(resolved);
-
-  if (!isWithin(realRoot, realResolved)) {
-    throw new VaultPolicyError(
-      'escape',
-      `Path escapes vault root: ${relativePath} (resolves outside the vault through a symlink)`,
-    );
+  let stat: Stats | null = null;
+  if (opts.write) {
+    try {
+      stat = statSync(resolved);
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code !== 'ENOENT' && code !== 'ENOTDIR') throw e;
+    }
   }
-
-  const lexicalRel = path.relative(vaultRoot, resolved);
-  const canonicalRel = path.relative(realRoot, realResolved);
-
-  if (isInternalRelative(lexicalRel) || isInternalRelative(canonicalRel)) {
-    throw new VaultPolicyError(
-      'internal',
-      `Path is inside an Obsidian internal folder (${INTERNAL_FOLDERS.join(', ')}), which MCP cannot access: ${relativePath}`,
-    );
+  switch (policy.check(resolved, realResolved, { ...opts, stat })) {
+    case 'escape':
+      throw new VaultPolicyError(
+        'escape',
+        `Path escapes vault root: ${relativePath} (resolves outside the vault through a symlink)`,
+      );
+    case 'internal':
+      throw new VaultPolicyError(
+        'internal',
+        `Path is inside an Obsidian internal folder (${INTERNAL_FOLDERS.join(', ')}), which MCP cannot access: ${relativePath}`,
+      );
+    case 'mcpignore':
+      throw new VaultPolicyError('mcpignore', `Path is blocked by .mcpignore: ${relativePath}`);
+    case 'policy-file':
+      throw new VaultPolicyError('mcpignore', 'The .mcpignore access policy cannot be modified through MCP. Edit it directly as the vault owner.');
   }
-
-  if (enforceIgnore && (isIgnoredRelative(lexicalRel) || isIgnoredRelative(canonicalRel))) {
-    throw new VaultPolicyError('mcpignore', `Path is blocked by .mcpignore: ${relativePath}`);
-  }
-
   return resolved;
 }
 
 export function resolveSafePath(relativePath: string): string {
-  return resolveVaultPath(relativePath, true);
+  return resolveVaultPath(relativePath, { ignore: true, write: false });
 }
 
 // The policy is owner-managed. Reading it is allowed unless it is itself ignored, but no
 // mutation may change it, including through directory/file aliases or a symlinked policy.
 // This check is separate from read-only mode so move dry runs can still validate destinations.
 function resolveWritePath(relativePath: string, allowIgnored = false): string {
-  const resolved = resolveVaultPath(relativePath, !allowIgnored);
-  const root = getVaultRoot();
-  const policy = path.join(root, '.mcpignore');
-  const realResolved = realpathOrNearestExisting(resolved);
-  const policyTarget = realpathOrNearestExisting(policy);
-  const key = (value: string) => value.normalize('NFC').toLowerCase();
-  // Moving a containing directory would remove a symlinked policy just as surely as moving
-  // the file, and a path beneath an absent policy would create it as a directory, which the
-  // policy loader then cannot read. Hardlinks need an inode check because realpath cannot
-  // identify those aliases.
-  let sameFile = false;
+  return resolveVaultPath(relativePath, { ignore: !allowIgnored, write: true });
+}
+
+// fs.stat that reports a missing path as a NotFoundError with the caller's vault-relative message,
+// instead of a raw ENOENT whose message carries the absolute host path.
+async function statExisting(absPath: string, notFoundMessage: string): Promise<Stats> {
   try {
-    const targetStat = statSync(resolved);
-    const policyStat = statSync(policy);
-    sameFile = targetStat.dev === policyStat.dev && targetStat.ino === policyStat.ino;
+    return await fs.stat(absPath);
   } catch (e) {
     const code = (e as NodeJS.ErrnoException).code;
-    if (code !== 'ENOENT' && code !== 'ENOTDIR') throw e;
+    if (code === 'ENOENT' || code === 'ENOTDIR') throw new NotFoundError(notFoundMessage);
+    throw e;
   }
-  const overlaps = (a: string, b: string) => isWithin(key(a), key(b)) || isWithin(key(b), key(a));
-  if (overlaps(resolved, policy) || overlaps(realResolved, policyTarget) || sameFile) {
-    throw new VaultPolicyError('mcpignore', 'The .mcpignore access policy cannot be modified through MCP. Edit it directly as the vault owner.');
-  }
-  return resolved;
 }
 
 // The checks every write gets, for callers outside this module that hand a path to something else
@@ -442,15 +649,6 @@ function mimeTypeFor(relativePath: string): string {
   return ATTACHMENT_MIME_TYPES[ext] ?? 'application/octet-stream';
 }
 
-// Thrown by readAttachment when the file is larger than the configured cap. Carries the
-// actual and max sizes so the tool layer can name the real size in its error.
-export class AttachmentTooLargeError extends Error {
-  constructor(public readonly bytes: number, public readonly maxBytes: number, message: string) {
-    super(message);
-    this.name = 'AttachmentTooLargeError';
-  }
-}
-
 export interface AttachmentResult {
   mimeType: string;
   bytes: number;       // size on disk
@@ -467,12 +665,8 @@ export async function readAttachment(
   statOnly = false,
 ): Promise<AttachmentResult> {
   const absPath = resolveSafePath(relativePath);
-  const st = await fs.stat(absPath);
-  if (st.isDirectory()) {
-    const err = new Error(`"${relativePath}" is a directory, not a file.`) as NodeJS.ErrnoException;
-    err.code = 'EISDIR';
-    throw err;
-  }
+  const st = await statExisting(absPath, `Attachment not found: ${relativePath}`);
+  if (st.isDirectory()) throw new IsDirectoryError(`"${relativePath}" is a directory, not a file.`);
 
   const mimeType = mimeTypeFor(relativePath);
   const isImage = IMAGE_MIME_TYPES.has(mimeType);
@@ -567,15 +761,6 @@ export async function writeNote(relativePath: string, content: string): Promise<
   invalidateResolverCache();
 }
 
-// Thrown by createNote when a note already exists at the target path. Typed so the tool layer
-// can turn it into a friendly isError result with caller-appropriate guidance.
-export class NoteExistsError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'NoteExistsError';
-  }
-}
-
 // Write a new note, refusing to overwrite one that already exists. Single source of truth for
 // the "create, don't clobber" guard shared by vault_create and the clip save-path.
 export async function createNote(relativePath: string, content: string): Promise<void> {
@@ -587,7 +772,9 @@ export async function createNote(relativePath: string, content: string): Promise
     await writeNote(relativePath, content);
     return;
   }
-  throw new NoteExistsError(`File already exists at ${relativePath}`);
+  throw new NoteExistsError(
+    `File already exists at ${relativePath}. To replace it, use vault_update; to modify part of it, use vault_edit.`,
+  );
 }
 
 // --- Concurrent-edit safety: optimistic versioning ---------------------------
@@ -597,15 +784,6 @@ export async function createNote(relativePath: string, content: string): Promise
 // back as `baseVersion`. If the note changed since the caller read it, the update is rejected
 // with a ConcurrentEditError ("re-read and retry") instead of silently overwriting the other
 // session's work. Omitting `baseVersion` keeps the old last-writer-wins overwrite.
-
-// Thrown by updateNote when the note changed under the caller. Typed (like VaultPolicyError)
-// so the tool layer can turn it into a friendly isError result.
-export class ConcurrentEditError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'ConcurrentEditError';
-  }
-}
 
 // Content-addressed version string for a note's text. Identical content always hashes to the
 // same value, so a caller's version matches iff the on-disk bytes are unchanged.
@@ -844,7 +1022,7 @@ function assertMovableFile(absPath: string, relativePath: string, allowFileSymli
     st = lstatSync(absPath);
   } catch (e) {
     const code = (e as NodeJS.ErrnoException).code;
-    if (code === 'ENOENT' || code === 'ENOTDIR') throw new Error(`No file found at "${relativePath}".`);
+    if (code === 'ENOENT' || code === 'ENOTDIR') throw new NotFoundError(`No file found at "${relativePath}".`);
     throw e;
   }
   if (st.isSymbolicLink() && allowFileSymlink && statSync(absPath).isFile()) return st;
@@ -880,14 +1058,14 @@ function pathEntryExists(absPath: string): boolean {
   }
 }
 
-// Snapshot the live policy once, then check the entire tree without per-entry realpath or
-// policy reads. Canonical descendants are simple joins once all symlink entries are refused.
+// Check the entire tree against one policy snapshot, without per-entry realpath or policy
+// reads. Canonical descendants are simple joins once all symlink entries are refused.
 function checkFileMove(source: string, destination: string, allowIgnoredDestination = false): CheckedMovePlan {
   const fromAbs = resolveWritePath(source);
   const toAbs = resolveWritePath(destination, allowIgnoredDestination);
   const sourceStat = assertMovableFile(fromAbs, source, true);
-  const vaultRoot = getVaultRoot();
-  const realRoot = getVaultRealRoot();
+  const policy = policySnapshot();
+  const { root: vaultRoot, realRoot } = policy;
   const fromReal = realpathSync(fromAbs);
   const toReal = realpathOrNearestExisting(toAbs);
   const key = (value: string) => value.normalize('NFC').toLowerCase();
@@ -895,12 +1073,16 @@ function checkFileMove(source: string, destination: string, allowIgnoredDestinat
       key(path.relative(vaultRoot, fromAbs)) !== key(path.relative(realRoot, fromReal))) {
     throw new VaultPolicyError('escape', 'Move the folder through its canonical vault path instead of a parent symlink, so references can be rewritten safely.');
   }
-  if (fromAbs === toAbs) throw new Error(`Source and destination are the same path ("${source}").`);
+  if (fromAbs === toAbs) throw new InvalidRequestError(`Source and destination are the same path ("${source}").`);
   // Reject either ancestry direction before acquiring hierarchical endpoint locks.
   if (isWithin(key(fromReal), key(toReal)) || isWithin(key(toReal), key(fromReal))) {
     throw new VaultPolicyError('escape', 'Source and destination overlap; choose a destination outside the source folder.');
   }
-  if (pathEntryExists(toAbs)) throw new NoteExistsError(`File or folder already exists at ${destination}`);
+  if (pathEntryExists(toAbs)) {
+    throw new NoteExistsError(
+      `A file or folder already exists at ${destination}. Choose a different destination or trash the existing entry first.`,
+    );
+  }
   const fileSymlink = sourceStat.isSymbolicLink();
   if (fileSymlink) {
     // A standalone file shortcut can be renamed safely if its relative/absolute link text
@@ -911,30 +1093,18 @@ function checkFileMove(source: string, destination: string, allowIgnoredDestinat
     }
   }
 
-  const rules = getIgnoreRules();
-  const policy = path.join(vaultRoot, '.mcpignore');
-  const policyReal = realpathOrNearestExisting(policy);
-  let policyStat: Stats | null = null;
-  try {
-    policyStat = statSync(policy);
-  } catch (e) {
-    const code = (e as NodeJS.ErrnoException).code;
-    if (code !== 'ENOENT' && code !== 'ENOTDIR') throw e;
-  }
-  const overlaps = (a: string, b: string) => isWithin(key(a), key(b)) || isWithin(key(b), key(a));
   const rel = (root: string, candidate: string) => path.relative(root, candidate).split(path.sep).join('/');
   const checkEntry = (lexical: string, canonical: string, st: Stats, ignore: boolean): void => {
     const lexicalRel = rel(vaultRoot, lexical);
-    const canonicalRel = rel(realRoot, canonical);
-    if (isInternalRelative(lexicalRel) || isInternalRelative(canonicalRel)) {
-      throw new VaultPolicyError('internal', `Folder operation would include an internal path: ${lexicalRel}`);
-    }
-    if (ignore && (rules(lexicalRel) || rules(canonicalRel))) {
-      throw new VaultPolicyError('mcpignore', `Folder operation would include a path blocked by .mcpignore: ${lexicalRel}`);
-    }
-    if (overlaps(lexical, policy) || overlaps(canonical, policyReal) ||
-        (policyStat && st.dev === policyStat.dev && st.ino === policyStat.ino)) {
-      throw new VaultPolicyError('mcpignore', 'Folder operation would modify the .mcpignore access policy or one of its aliases.');
+    switch (policy.check(lexical, canonical, { ignore, write: true, stat: st })) {
+      case 'escape':
+        throw new VaultPolicyError('escape', `Folder operation would include a path outside the vault: ${lexicalRel}`);
+      case 'internal':
+        throw new VaultPolicyError('internal', `Folder operation would include an internal path: ${lexicalRel}`);
+      case 'mcpignore':
+        throw new VaultPolicyError('mcpignore', `Folder operation would include a path blocked by .mcpignore: ${lexicalRel}`);
+      case 'policy-file':
+        throw new VaultPolicyError('mcpignore', 'Folder operation would modify the .mcpignore access policy or one of its aliases.');
     }
   };
   const files: MoveResult[] = [];
@@ -1056,16 +1226,6 @@ interface WalkEntry {
 
 const isMarkdownFile = (name: string): boolean => name.toLowerCase().endsWith('.md');
 
-// Thrown when a caller's search pattern can't be compiled or is implausibly long. Typed so the
-// tool layer can turn it into a friendly isError result instead of letting a raw SyntaxError
-// escape the handler.
-export class InvalidSearchPatternError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'InvalidSearchPatternError';
-  }
-}
-
 // Generous enough for any real search, short enough that the pathological constructions people
 // paste from regex-golf threads don't get through.
 const MAX_SEARCH_PATTERN_LENGTH = 1000;
@@ -1099,8 +1259,26 @@ export function compileSearchPattern(pattern: string, flags: string): RegExp {
 
 async function* walkVaultFiles(options: WalkVaultOptions = {}): AsyncGenerator<WalkEntry> {
   const { folder, includeFile = isMarkdownFile, sort = false } = options;
-  const vaultRoot = getVaultRoot();
   const root = resolveSafePath(folder || '');
+  if (folder && !(await statExisting(root, `Folder not found: ${folder}`)).isDirectory()) {
+    throw new InvalidRequestError(`Not a directory: ${folder}`);
+  }
+  // One policy snapshot for the whole walk. Each entry's canonical path is resolved when it is
+  // processed, not derived from its Dirent: a sync client can swap a directory for a symlink
+  // between readdir and recursion, and only the live target shows where it now leads.
+  const policy = policySnapshot();
+  const vaultRoot = policy.root;
+  const allowed = (fullPath: string): boolean => {
+    let canonical: string;
+    try {
+      canonical = realpathSync(fullPath);
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT' || code === 'ENOTDIR') return false; // Removed mid-walk, or now dangling.
+      throw e;
+    }
+    return policy.check(fullPath, canonical, { ignore: true, write: false }) === null;
+  };
 
   async function* walk(dir: string): AsyncGenerator<WalkEntry> {
     const entries = await fs.readdir(dir, { withFileTypes: true });
@@ -1113,7 +1291,7 @@ async function* walkVaultFiles(options: WalkVaultOptions = {}): AsyncGenerator<W
       // canonicalizes and re-checks containment; a bulk scan doesn't need that latitude.
       if (entry.isSymbolicLink()) continue;
       const fullPath = path.join(dir, entry.name);
-      if (isIgnored(fullPath)) continue;
+      if (!allowed(fullPath)) continue;
       if (entry.isDirectory()) {
         yield* walk(fullPath);
         continue;
@@ -1259,9 +1437,9 @@ export async function getFolderTree(maxDepth: number): Promise<string[]> {
 export async function listVaultFolder(relativeDir = '', limit = 200): Promise<VaultFolderEntry[]> {
   const normalized = relativeDir.trim() === '' ? '.' : relativeDir;
   const absDir = resolveSafePath(normalized);
-  const st = await fs.stat(absDir);
+  const st = await statExisting(absDir, `Folder not found: ${relativeDir || '.'}`);
   if (!st.isDirectory()) {
-    throw new Error(`Not a directory: ${relativeDir || '.'}`);
+    throw new InvalidRequestError(`Not a directory: ${relativeDir || '.'}`);
   }
   const entries = await fs.readdir(absDir, { withFileTypes: true });
   const out: VaultFolderEntry[] = [];
@@ -1342,52 +1520,6 @@ function findAllSectionBounds(
   return results;
 }
 
-export type AmbiguousHeadingMatch = {
-  startIdx: number;
-  preview: string;
-};
-
-// Thrown by editNoteSection (and applySectionEdit) when the requested heading
-// matches more than one section. Carries enough information for the agent to
-// pick a unique anchor and retry via vault_edit. Mirrors the resolveNoteReference
-// "surface candidates, don't pick" pattern already used for ambiguous note titles.
-export class AmbiguousHeadingError extends Error {
-  readonly heading: string;
-  readonly relativePath: string;
-  readonly matches: AmbiguousHeadingMatch[];
-
-  constructor(opts: {
-    relativePath: string;
-    heading: string;
-    matches: AmbiguousHeadingMatch[];
-  }) {
-    // The message carries line numbers only — never the previews. The audit logger records
-    // error text verbatim (both the isError result's first content block and the message of
-    // any exception thrown out of a handler), so anything placed here lands in
-    // logs/tool-calls.jsonl on disk. Previews are note body text; they go to the agent
-    // through candidatesText() as a separate content block instead.
-    const lines = opts.matches.map(m => m.startIdx + 1).join(', ');
-    super(
-      `Heading "${opts.heading}" matches ${opts.matches.length} sections in ${opts.relativePath} ` +
-        `(lines ${lines}). vault_edit_section can't safely guess which one to edit. Use vault_edit ` +
-        `with a find-anchored replace on text unique to the target section, or vault_update for ` +
-        `the whole note.`,
-    );
-    this.name = 'AmbiguousHeadingError';
-    this.heading = opts.heading;
-    this.relativePath = opts.relativePath;
-    this.matches = opts.matches;
-  }
-
-  // The candidate list with a one-line body preview per match, for disambiguating by eye.
-  // Kept off `message` on purpose — see the constructor.
-  candidatesText(): string {
-    return this.matches
-      .map((m, i) => `  ${i + 1}. line ${m.startIdx + 1} — ${m.preview}`)
-      .join('\n');
-  }
-}
-
 function previewMatch(lines: string[], startIdx: number, endIdx: number): string {
   const headingLine = lines[startIdx].trim();
   for (let j = startIdx + 1; j < endIdx; j++) {
@@ -1410,7 +1542,7 @@ export async function readNoteSection(relativePath: string, heading: string): Pr
   const lines = content.split('\n');
   const matches = findAllSectionBounds(lines, heading);
   if (matches.length === 0) {
-    throw new Error(`Heading "${heading}" not found in ${relativePath}`);
+    throw new HeadingNotFoundError(heading, relativePath);
   }
   if (matches.length === 1) {
     const { startIdx, endIdx } = matches[0];
@@ -1461,7 +1593,7 @@ function applySectionEdit(
   const lines = existing.split('\n');
   const matches = findAllSectionBounds(lines, heading);
   if (matches.length === 0) {
-    throw new Error(`Heading "${heading}" not found in ${relativePath}`);
+    throw new HeadingNotFoundError(heading, relativePath);
   }
   if (matches.length > 1) {
     throw new AmbiguousHeadingError({
@@ -1583,7 +1715,7 @@ async function statOrNull(relativePath: string): Promise<import('fs').Stats | nu
 export async function resolveNoteReference(input: string): Promise<ResolvedReference> {
   const trimmed = input.trim().replace(/\/+$/, '');
   if (trimmed === '') {
-    throw new Error('Empty note reference');
+    throw new NotFoundError('Empty note reference');
   }
 
   const hasMdSuffix = /\.md$/i.test(trimmed);
@@ -1595,9 +1727,7 @@ export async function resolveNoteReference(input: string): Promise<ResolvedRefer
   const asGivenStat = await statOrNull(trimmed);
   if (asGivenStat) {
     if (asGivenStat.isDirectory()) {
-      const err = new Error(`"${trimmed}" is a directory, not a note.`) as NodeJS.ErrnoException;
-      err.code = 'EISDIR';
-      throw err;
+      throw new IsDirectoryError(`"${trimmed}" is a directory, not a note. Call vault_read with mode "list" to browse it.`);
     }
     if (asGivenStat.isFile() && hasMdSuffix) {
       return { path: trimmed, matchedVia: 'path' };
@@ -1628,7 +1758,7 @@ export async function resolveNoteReference(input: string): Promise<ResolvedRefer
     }
   }
 
-  throw new Error(
+  throw new NotFoundError(
     `Could not resolve "${input}" to a note. Try a full vault-relative path or call vault_search_title to discover it.`,
   );
 }
@@ -2125,7 +2255,7 @@ function folderRewriteTargets(movedFiles: MoveResult[]): FolderRewriteTargets {
     const ownerKey = `${kind}:${key}`;
     const existing = owners.get(ownerKey);
     if (existing !== undefined && existing !== source) {
-      throw new Error(`Cannot safely rewrite folder references: "${existing}" and "${source}" share the link target "${target}". Disambiguate these filenames or move the folder directly in Obsidian and review links manually.`);
+      throw new InvalidRequestError(`Cannot safely rewrite folder references: "${existing}" and "${source}" share the link target "${target}". Disambiguate these filenames or move the folder directly in Obsidian and review links manually.`);
     }
     owners.set(ownerKey, source);
     map.set(key, replacement);
