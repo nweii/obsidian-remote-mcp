@@ -200,6 +200,16 @@ function getIgnoreRules(): IgnoreMatcher {
   return matches;
 }
 
+// Whether .mcpignore holds any rule. Tools whose output can't be filtered by path stay off while
+// it does. Throws, like every policy read, when an existing policy can't be read.
+export function hasIgnoreRules(): boolean {
+  getIgnoreRules();
+  return (ignoreCache?.text ?? '').split('\n').some(line => {
+    const rule = line.trim();
+    return rule !== '' && !rule.startsWith('#');
+  });
+}
+
 // Walks may start through an in-vault directory symlink. Check both names just as direct
 // access does; testing only the alias path would miss an ignored canonical descendant.
 function isIgnored(absPath: string): boolean {
@@ -375,6 +385,12 @@ function resolveWritePath(relativePath: string, allowIgnored = false): string {
     throw new VaultPolicyError('mcpignore', 'The .mcpignore access policy cannot be modified through MCP. Edit it directly as the vault owner.');
   }
   return resolved;
+}
+
+// The checks every write gets, for callers outside this module that hand a path to something else
+// to write (the Obsidian CLI): the read policy plus protection of the policy file.
+export function resolveSafeWritePath(relativePath: string): string {
+  return resolveWritePath(relativePath);
 }
 
 export async function readNote(relativePath: string): Promise<string> {

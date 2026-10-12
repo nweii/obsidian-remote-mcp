@@ -27,6 +27,7 @@ src/
   ignore.ts       — Compiles .mcpignore literal/glob rules with case and Unicode normalization
   lock.ts         — Per-path async mutex for read-modify-write
   clip.ts         — Registers vault_clip_url when the optional web-clipper-headless is installed
+  cli.ts          — Registers vault_cli / vault_cli_help when the obsidian CLI is opted in and reaches this vault: guards, probe, help parsing; backlinks via Obsidian
   skim.ts         — Registers vault_skim when a decision-model key is set: note selection, exclusions, plan ids, rendering
   chunk.ts        — Line-aware chunker with overlap used by vault_skim
   decision.ts     — Decision-model client (TypeSafe, OpenRouter, OpenAI): provider resolution, request shapes, batching, retries
@@ -34,7 +35,7 @@ src/
   date.ts         — Local-timezone date helpers for periodic notes (parsing, ISO weeks, period buckets)
   js-yaml.d.ts    — Module declaration for js-yaml
 scripts/          — setup-clipper.ts builds the optional clipper from the root lockfile
-test/             — One file per area; vault-policy-matrix.test.ts covers every vault export against hostile paths
+test/             — One file per area; vault-policy-matrix.test.ts covers every vault export and the CLI tool against hostile input; fake-obsidian.ts stands in for the CLI
 docs/             — Design notes, reached through the pointers below
 ```
 

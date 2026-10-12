@@ -197,7 +197,7 @@ The server currently exposes these tools:
 | `vault_read_section` | Body under a single heading (`heading` = text without `#`, case-insensitive) |
 | `vault_read_attachment` | Read a binary attachment by path; images return a renderable image block, other types base64 plus mime/size; `stat_only` checks size first (read-only) |
 | `vault_frontmatter` | Read YAML frontmatter from a note; optional `property` for a single key |
-| `vault_links` | Read outgoing wikilinks and optional backlinks |
+| `vault_links` | Read outgoing wikilinks and optional backlinks (answered by Obsidian when the CLI tools are on) |
 | `vault_create` | Create a new note |
 | `vault_update` | Replace a note's full contents; optional `base_version` rejects stale writes |
 | `vault_set_frontmatter_property` | Set one frontmatter property without rewriting the note body |
@@ -210,9 +210,10 @@ The server currently exposes these tools:
 | `vault_search_content` | Regex search in note bodies; optional `folder` to scope large vaults |
 | `vault_search_frontmatter` | Find notes by a frontmatter property (match type `exact`, `contains`, or `exists`) |
 | `vault_tags` | List all tags with note counts, or note paths for one `tag`; counts frontmatter and inline `#tag` |
-| `vault_periodic_note` | Read or create a daily, weekly, monthly, quarterly, or yearly note using a per-cadence path template |
+| `vault_periodic_note` | Read or create a daily, weekly, monthly, quarterly, or yearly note at the path the vault's Obsidian config or an env template sets |
 | `vault_clip_url` | Save a web page to the vault as a markdown note |
 | `vault_skim` | Return only the parts of selected notes relevant to a goal, judged chunk by chunk by an external decision model; plans first and sends nothing until confirmed. Listed only when a decision-model key is set (see [Skimming notes](#skimming-notes)) |
+| `vault_cli_help` / `vault_cli` | List and run Obsidian CLI commands against this vault. Opt-in, and listed only when the CLI reaches this vault (see [Obsidian CLI tools](#obsidian-cli-tools)) |
 | `vault_feedback` | Log a structured note when an agent gets stuck or wants a tool that doesn't exist |
 
 ## Server configuration
@@ -342,6 +343,11 @@ OPENAI_API_KEY=                        # optional; key for SKIM_PROVIDER=openai
 SKIM_MODEL=                            # optional; overrides the provider's default decision model
 SKIM_EXCLUDE_TAGS=private,health/*     # optional; notes with these tags are never sent by vault_skim
 SKIM_EXCLUDE_PATHS=03-Records/Journaling # optional; notes at or under these paths (.mcpignore syntax) are never sent by vault_skim
+OBSIDIAN_CLI_ENABLED=true             # optional; offers vault_cli when the obsidian CLI reaches this vault
+OBSIDIAN_CLI_PATH=                     # optional; the obsidian binary, when it isn't on PATH
+OBSIDIAN_CLI_VAULT=                    # optional; the vault's name in Obsidian, when it differs from the folder name
+OBSIDIAN_CLI_COMMANDS=                 # optional; command-palette IDs vault_cli may run (comma-separated, or *)
+OBSIDIAN_CLI_MCPIGNORE_ACK=            # optional; true allows the CLI tools while .mcpignore has rules
 PORT=3456
 # HOST=127.0.0.1                    # optional for a host-local proxy; in Docker restrict the published port instead
 ```
@@ -491,6 +497,26 @@ Notes are withheld in layers, and each layer can only withhold more:
 Path exclusions are checked against normalized requested paths and resolved file locations before note text is read, including during query selection. Equivalent spellings and symlinks cannot bypass an excluded folder. Plans list allowed aliases once, using the resolved vault-relative path. A path-excluded note in a query's scope is reported as withheld without reading it to test the query.
 
 A chunk the model couldn't judge (a failed request, a malformed answer) is kept and marked `unjudged`, so a provider failure can return more text than expected but never silently drops any.
+
+### Obsidian CLI tools
+
+When the server runs on a machine with the Obsidian app (1.12 or later, with its command-line interface turned on), it can hand work to Obsidian itself: Bases queries, tasks, file history, Sync, bookmarks, unresolved links, and anything a future CLI release adds. Two tools do this. `vault_cli_help` lists the commands parsed from `obsidian help`, and `vault_cli` runs one with `params` (key → value) and bare `flags`. New CLI commands work without a server update.
+
+They are off until `OBSIDIAN_CLI_ENABLED=true`. Then they are listed only if the `obsidian` binary is found (on `PATH`, or at `OBSIDIAN_CLI_PATH`) and `obsidian vault info=path` reports the same folder as the server's vault. The server passes the vault folder's name as `vault=`; set `OBSIDIAN_CLI_VAULT` if Obsidian knows the vault by another name. If the app later stops answering, the next failing call checks again and returns a clear error.
+
+The guards:
+
+- The vault is always the server's. `vault` is not a parameter, and a `vault` key or flag is refused.
+- Parameter keys and flags must be lowercase words (`a-z` and `-`). Each becomes one argument; there is no shell.
+- `eval`, `devtools`, `restart`, `reload`, `plugins:restrict`, `theme:install`, and every `dev:`, `plugin:` and `snippet:` command are always blocked. No setting unblocks them.
+- Command-palette execution (`command id=…`) is off unless `OBSIDIAN_CLI_COMMANDS` lists the allowed IDs. `*` allows every ID except those that look destructive (delete, remove, purge, trash and similar); those run only when listed by name.
+- With `VAULT_READ_ONLY=true`, only commands on a known-read list run, so a command added by a future CLI release is refused until it is reviewed.
+- `path`, `to` and `folder` go through the same path checks as every other tool, and `file` (a note name) is resolved by the server and passed as an exact `path`. A protected location gets the same "Not found" answer a missing note does. `name` can't contain a slash.
+- Calls are audit-logged with the command, parameter names and flags; parameter values are not logged.
+
+The trade-off: commands answer from Obsidian's whole vault, so their output (a search, a task list, a Base) can't be filtered by `.mcpignore`. While `.mcpignore` has rules, the CLI tools stay off unless `OBSIDIAN_CLI_MCPIGNORE_ACK=true` says you accept that. `.obsidian` and `.git` stay protected either way, since Obsidian doesn't index them.
+
+With the CLI available, `vault_links` also asks Obsidian for backlinks, which follows Obsidian's own link resolution (aliases, relative and path links) instead of the server's text search. Those results are filtered through the path policy, so this works with `.mcpignore` rules and needs no acknowledgment. If the call fails, the server's search answers instead. The result's `backlinks_source` says which one answered.
 
 ## Notes
 

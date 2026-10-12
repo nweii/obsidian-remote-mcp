@@ -42,6 +42,11 @@
 | `SKIM_MODEL` | no | Overrides the provider's default decision model (`jev-latest`, `typesafe/jev-1.13`, `gpt-6-luna`). |
 | `SKIM_EXCLUDE_TAGS` | no | Comma-separated tags whose notes `vault_skim` never sends. `x` matches `#x` only; `x/*` matches `#x` and nested tags. |
 | `SKIM_EXCLUDE_PATHS` | no | Comma-separated vault-relative path rules whose notes (and everything under them) `vault_skim` never sends. Rules use `.mcpignore` syntax, so `*`, `?` and `**` wildcards work. |
+| `OBSIDIAN_CLI_ENABLED` | no | `true` offers `vault_cli` and `vault_cli_help` when the `obsidian` CLI reaches this vault, and routes `vault_links` backlinks through Obsidian. Default off. |
+| `OBSIDIAN_CLI_PATH` | no | Path to the `obsidian` binary. Defaults to a lookup on `PATH`. |
+| `OBSIDIAN_CLI_VAULT` | no | The vault name passed to the CLI as `vault=`. Defaults to the vault folder's name. |
+| `OBSIDIAN_CLI_COMMANDS` | no | Comma-separated command-palette IDs `vault_cli` may run through `command`. `*` allows all except destructive-looking IDs, which must be listed by name. Unset, palette execution is off. |
+| `OBSIDIAN_CLI_MCPIGNORE_ACK` | no | `true` keeps the CLI tools on while `.mcpignore` has rules, accepting that CLI output can't be filtered by them. |
 | `HEALTH_TOKEN` | no | Dedicated bearer for `GET /health`. Default-closed: unset → the route 404s. Sent as `Authorization: Bearer`; separate from the OAuth and static-bearer secrets. |
 | `PORT` | no | HTTP port (default: `3456`) |
 | `HOST` | no | Bind address (default: `0.0.0.0`). Use `127.0.0.1` for a process behind a proxy on the same host; in Docker, restrict the published port instead. |

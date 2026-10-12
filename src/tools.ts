@@ -1,10 +1,11 @@
-// ABOUTME: Registers all vault tools on an McpServer - context, read (full/list), outline, read section, read attachment, frontmatter, links, writes, move/rename, title search, content search, tags, periodic note, clip URL, skim, feedback.
+// ABOUTME: Registers all vault tools on an McpServer - context, read (full/list), outline, read section, read attachment, frontmatter, links, writes, move/rename, title search, content search, tags, periodic note, clip URL, skim, Obsidian CLI, feedback.
 import type { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import * as vault from "./vault.js";
 import { frontmatterValueToString } from "./frontmatter.js";
 import { registerClipTool } from "./clip.js";
 import { registerSkimTool } from "./skim.js";
+import { registerCliTools, resolveBacklinks } from "./cli.js";
 import { structuredResult } from "mcp-server-kit";
 import { registerLogged, logFeedback, isLoggingEnabled, type ToolResult } from "./log.js";
 import { parseLocalYmd, localYmd } from "./date.js";
@@ -236,6 +237,10 @@ const linksOutput = z.object({
     }),
   ),
   backlinks: z.array(z.string()).optional().describe("Present when include_backlinks was set"),
+  backlinks_source: z
+    .enum(["obsidian", "server"])
+    .optional()
+    .describe("Which backend answered backlinks: Obsidian's own link resolution through its CLI, or the server's search"),
 });
 
 const tagsOutput = z.object({
@@ -314,6 +319,17 @@ export async function registerTools(server: McpServer) {
   } catch (err) {
     console.error(
       "[obsidian-remote-mcp] vault_skim registration failed; continuing with core tools.",
+      err instanceof Error ? err.message : err,
+    );
+  }
+
+  // Optional: vault_cli and vault_cli_help, registered only when opted in and the Obsidian CLI
+  // reaches this vault.
+  try {
+    await registerCliTools(server);
+  } catch (err) {
+    console.error(
+      "[obsidian-remote-mcp] Obsidian CLI tool registration failed; continuing with core tools.",
       err instanceof Error ? err.message : err,
     );
   }
@@ -626,14 +642,14 @@ export async function registerTools(server: McpServer) {
       if (!out.ok) return out.result;
       const links = await vault.getNoteLinks(out.ref.path);
       const backlinks = include_backlinks
-        ? await vault.getBacklinks(out.ref.path, backlinks_limit)
+        ? await resolveBacklinks(out.ref.path, backlinks_limit)
         : undefined;
       const body = structuredResult(
         linksOutput,
         {
           path: out.ref.path,
           outgoing: links.map((l) => ({ title: l.title, path: l.path })),
-          ...(backlinks !== undefined ? { backlinks } : {}),
+          ...(backlinks !== undefined ? { backlinks: backlinks.paths, backlinks_source: backlinks.source } : {}),
         },
         (parsed) => {
           const lines: string[] = ["## Outgoing links"];
@@ -645,7 +661,7 @@ export async function registerTools(server: McpServer) {
             }
           }
           if (parsed.backlinks !== undefined) {
-            lines.push("", "## Backlinks");
+            lines.push("", `## Backlinks (from ${parsed.backlinks_source === "obsidian" ? "Obsidian" : "the server's search"})`);
             if (parsed.backlinks.length === 0) {
               lines.push("(none found)");
             } else {

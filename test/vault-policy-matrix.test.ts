@@ -5,13 +5,21 @@ import { createHash } from 'crypto';
 import { lstat, mkdir, mkdtemp, readFile, readdir, readlink, rm, symlink, writeFile } from 'fs/promises';
 import os from 'os';
 import path from 'path';
+import { fakeCalls, installFakeObsidian } from './fake-obsidian.js';
 
 let vault: typeof import('../src/vault.js');
+let cli: typeof import('../src/cli.js');
+let cliLog: string;
 let base: string;
 let vaultPath: string;
 let outsidePath: string;
 let baseline: Map<string, string>;
 let previousEnv: Record<string, string | undefined>;
+
+const CLI_ENV = [
+  'VAULT_PATH', 'VAULT_READ_ONLY', 'OBSIDIAN_CLI_ENABLED', 'OBSIDIAN_CLI_MCPIGNORE_ACK', 'OBSIDIAN_CLI_PATH',
+  'OBSIDIAN_CLI_COMMANDS', 'FAKE_OBSIDIAN_VAULT', 'FAKE_OBSIDIAN_LOG', 'FAKE_OBSIDIAN_BACKLINKS',
+];
 
 // Protected file names carry NAME and their contents carry BODY. A path operation may echo the
 // caller's own path back, so it is checked for BODY only; scans are checked for both.
@@ -64,7 +72,7 @@ async function snapshot(): Promise<Map<string, string>> {
 }
 
 beforeAll(async () => {
-  previousEnv = Object.fromEntries(['VAULT_PATH', 'VAULT_READ_ONLY'].map(key => [key, process.env[key]]));
+  previousEnv = Object.fromEntries(CLI_ENV.map(key => [key, process.env[key]]));
   base = await mkdtemp(path.join(os.tmpdir(), 'vault-policy-matrix-'));
   vaultPath = path.join(base, 'vault');
   outsidePath = path.join(base, 'outside');
@@ -89,6 +97,17 @@ beforeAll(async () => {
   delete process.env.VAULT_READ_ONLY;
   const query = 'policy-matrix';
   vault = await import(`../src/vault.js?${query}`);
+  cli = await import('../src/cli.js');
+  // The fake CLI lives outside the vault so the snapshot doesn't see its call log.
+  const cliDir = await mkdtemp(path.join(os.tmpdir(), 'vault-policy-matrix-cli-'));
+  cliLog = path.join(cliDir, 'calls.log');
+  Object.assign(process.env, {
+    OBSIDIAN_CLI_ENABLED: 'true',
+    OBSIDIAN_CLI_MCPIGNORE_ACK: 'true',
+    OBSIDIAN_CLI_PATH: await installFakeObsidian(cliDir),
+    FAKE_OBSIDIAN_VAULT: vaultPath,
+    FAKE_OBSIDIAN_LOG: cliLog,
+  });
   baseline = await snapshot();
 });
 
@@ -132,6 +151,7 @@ const WRITE_OPS: Record<string, (p: string) => unknown> = {
   'moveFile (destination)': p => vault.moveFile('Movable.md', p),
   'moveWithReferences (source)': p => vault.moveWithReferences(p, 'Moved.md'),
   'moveWithReferences (destination)': p => vault.moveWithReferences('Movable.md', p),
+  resolveSafeWritePath: p => vault.resolveSafeWritePath(p),
 };
 
 // Operations that read one named path. Each must refuse every hostile existing path.
@@ -195,7 +215,7 @@ const FOLDER_OPS: Record<string, () => unknown> = {
 // Exports that take no caller-supplied vault path, so no hostile path can reach them.
 const NO_PATH_EXPORTS = [
   'getVaultRoot', 'getVaultDisplayName', 'getContextNotePath', 'isReadOnly', 'versionOf',
-  'invalidateResolverCache', 'getNoteTags', 'compileSearchPattern',
+  'invalidateResolverCache', 'getNoteTags', 'compileSearchPattern', 'hasIgnoreRules',
 ];
 
 function leaks(value: unknown, tokens: string[]): boolean {
@@ -260,5 +280,99 @@ describe('folder operations refuse a folder holding a hidden note', () => {
     const { result } = await outcome(run);
     expect(result).toBeUndefined();
     expect(await snapshot()).toEqual(baseline);
+  });
+});
+
+// The CLI tool hands arguments to another program, so a refusal must happen before it runs.
+describe('the Obsidian CLI tool refuses hostile input', () => {
+  async function refusedBeforeRunning(request: import('../src/cli.js').CliRequest): Promise<void> {
+    const before = (await fakeCalls(cliLog)).length;
+    const outcome = await cli.runCli(request);
+    expect(outcome.ok).toBe(false);
+    expect(leaks(outcome, [BODY])).toBe(false);
+    expect((await fakeCalls(cliLog)).length).toBe(before);
+    expect(await snapshot()).toEqual(baseline);
+  }
+
+  // Refusals would pass trivially if the fake CLI were unreachable.
+  test('an allowed call runs', async () => {
+    expect(await cli.runCli({ command: 'move', params: { file: 'Movable', to: 'Archive/Movable.md' } })).toMatchObject({ ok: true });
+    expect((await fakeCalls(cliLog)).at(-1)).toEqual(['vault=vault', 'move', 'to=Archive/Movable.md', 'path=Movable.md']);
+  });
+
+  for (const key of ['file', 'path', 'to', 'folder']) {
+    test.each(HOSTILE_WRITE)(`${key}=%s`, async hostile => {
+      await refusedBeforeRunning({ command: 'move', params: { [key]: hostile } });
+    });
+  }
+
+  test.each(['Private', 'Alias', 'Outside', '.obsidian', '../outside'])('hidden title or folder name as file=: %s', async name => {
+    await refusedBeforeRunning({ command: 'read', params: { file: `${name}/${NAME}-hidden` } });
+  });
+
+  test('a bare title of a hidden note', async () => {
+    await refusedBeforeRunning({ command: 'read', params: { file: `${NAME}-hidden` } });
+  });
+
+  test.each<{ params?: Record<string, string>; flags?: string[] }>([
+    { params: { vault: 'Other' } },
+    { params: { VAULT: 'Other' } },
+    { params: { 'path=Private/x.md query': 'x' } },
+    { params: { '--copy': 'x' } },
+    { flags: ['vault'] },
+    { flags: ['vault=Other'] },
+    { flags: ['--copy'] },
+    { flags: ['path=Private/ZNAME-hidden.md'] },
+    { flags: ['counts', ' open'] },
+    { params: { name: 'Private/new' } },
+  ])('argument injection: %j', async request => {
+    await refusedBeforeRunning({ command: 'search', ...request });
+  });
+
+  test.each(['eval', 'devtools', 'restart', 'reload', 'dev:cdp', 'dev:console', 'dev:debug', 'plugin:install',
+    'plugin:enable', 'plugin:reload', 'plugins:restrict', 'theme:install', 'snippet:enable', 'snippet:disable',
+    'search;eval', 'Eval', 'search ', ' eval'])('blocked or malformed command: %s', async command => {
+    await refusedBeforeRunning({ command });
+  });
+
+  test('palette IDs off the list', async () => {
+    await refusedBeforeRunning({ command: 'command', params: { id: 'app:go-back' } });
+    process.env.OBSIDIAN_CLI_COMMANDS = 'app:go-back';
+    try {
+      await refusedBeforeRunning({ command: 'command', params: { id: 'app:delete-file' } });
+      await refusedBeforeRunning({ command: 'command', params: {} });
+      process.env.OBSIDIAN_CLI_COMMANDS = '*';
+      await refusedBeforeRunning({ command: 'command', params: { id: 'app:delete-file' } });
+    } finally {
+      delete process.env.OBSIDIAN_CLI_COMMANDS;
+    }
+  });
+
+  test.each(['create', 'append', 'delete', 'move', 'property:set', 'daily', 'command', 'some-future-command'])('read-only mode refuses %s', async command => {
+    process.env.VAULT_READ_ONLY = 'true';
+    process.env.OBSIDIAN_CLI_COMMANDS = '*';
+    try {
+      await refusedBeforeRunning({ command, params: { path: 'Open.md', id: 'app:go-back' } });
+    } finally {
+      delete process.env.VAULT_READ_ONLY;
+      delete process.env.OBSIDIAN_CLI_COMMANDS;
+    }
+  });
+
+  test.each(HOSTILE_EXISTING)('backlinks for a protected note: %s', async hostile => {
+    const { result, error } = await outcome(() => cli.resolveBacklinks(hostile, 20));
+    expect(result).toBeUndefined();
+    expect(error).toBeInstanceOf(Error);
+    expect(leaks(error, [BODY])).toBe(false);
+  });
+
+  test('backlinks from Obsidian never name a protected note', async () => {
+    process.env.FAKE_OBSIDIAN_BACKLINKS = JSON.stringify(HOSTILE_EXISTING.map(file => ({ file })));
+    try {
+      const result = await cli.resolveBacklinks('Open.md', 0);
+      expect(result).toEqual({ paths: [], source: 'obsidian' });
+    } finally {
+      delete process.env.FAKE_OBSIDIAN_BACKLINKS;
+    }
   });
 });
