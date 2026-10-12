@@ -12,7 +12,7 @@ const ENV_KEYS = [
   'VAULT_PATH', 'VAULT_READ_ONLY', 'OBSIDIAN_CLI_ENABLED', 'OBSIDIAN_CLI_PATH', 'OBSIDIAN_CLI_VAULT',
   'OBSIDIAN_CLI_COMMANDS', 'OBSIDIAN_CLI_MCPIGNORE_ACK', 'FAKE_OBSIDIAN_VAULT', 'FAKE_OBSIDIAN_DOWN',
   'FAKE_OBSIDIAN_FAIL', 'FAKE_OBSIDIAN_BACKLINKS', 'FAKE_OBSIDIAN_LOG', 'MCP_CLIENT_ID', 'MCP_BASE_URL',
-  'MCP_STATIC_BEARER_TOKEN', 'APPROVAL_OPEN',
+  'MCP_STATIC_BEARER_TOKEN', 'APPROVAL_OPEN', 'OBSIDIAN_CLI_ALLOW_PUBLISH',
 ];
 let saved: Record<string, string | undefined>;
 let base: string;
@@ -197,6 +197,14 @@ describe('guards', () => {
     expect(await refused({ command: 'create', params: { path: 'New.md' } })).toContain('read-only');
     await refused({ command: 'some-future-command' });
     await refused({ command: 'command', params: { id: 'app:go-back' } });
+  });
+
+  test('publishing runs only when allowed', async () => {
+    expect(await refused({ command: 'publish:add', params: { path: 'Open.md' } })).toContain('OBSIDIAN_CLI_ALLOW_PUBLISH');
+    await refused({ command: 'publish:remove', params: { path: 'Open.md' } });
+    expect((await cli.runCli({ command: 'publish:status' })).ok).toBe(true);
+    process.env.OBSIDIAN_CLI_ALLOW_PUBLISH = 'true';
+    expect((await cli.runCli({ command: 'publish:add', params: { path: 'Open.md' } })).ok).toBe(true);
   });
 
   test('outside read-only mode unknown commands that are not blocked run', async () => {

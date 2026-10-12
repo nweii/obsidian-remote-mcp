@@ -348,6 +348,7 @@ OBSIDIAN_CLI_PATH=                     # optional; the obsidian binary, when it 
 OBSIDIAN_CLI_VAULT=                    # optional; the vault's name in Obsidian, when it differs from the folder name
 OBSIDIAN_CLI_COMMANDS=                 # optional; command-palette IDs vault_cli may run (comma-separated, or *)
 OBSIDIAN_CLI_MCPIGNORE_ACK=            # optional; true allows the CLI tools while .mcpignore has rules
+OBSIDIAN_CLI_ALLOW_PUBLISH=            # optional; true lets vault_cli add or remove notes on your Obsidian Publish site
 PORT=3456
 # HOST=127.0.0.1                    # optional for a host-local proxy; in Docker restrict the published port instead
 ```
@@ -510,6 +511,7 @@ The guards:
 - Parameter keys and flags must be lowercase words (`a-z` and `-`). Each becomes one argument; there is no shell.
 - `eval`, `devtools`, `restart`, `reload`, `plugins:restrict`, `theme:install`, and every `dev:`, `plugin:` and `snippet:` command are always blocked. No setting unblocks them.
 - Command-palette execution (`command id=…`) is off unless `OBSIDIAN_CLI_COMMANDS` lists the allowed IDs. `*` allows every ID except those that look destructive (delete, remove, purge, trash and similar); those run only when listed by name. `*` also covers community-plugin commands, and some of those run scripts (Templater, Shell commands), so prefer listing IDs.
+- `publish:add` and `publish:remove`, which change what your Obsidian Publish site shows, run only with `OBSIDIAN_CLI_ALLOW_PUBLISH=true`. Reading Publish status works without it.
 - With `VAULT_READ_ONLY=true`, only commands on a known-read list run, so a command added by a future CLI release is refused until it is reviewed.
 - `path`, `to` and `folder` go through the same path checks as every other tool, and `file` (a note name) is resolved by the server and passed as an exact `path`. A protected location gets the same "Not found" answer a missing note does. `name` can't contain a slash.
 - A command that may write can't target a folder through `path`; use `vault_move` or `vault_trash` for folders.

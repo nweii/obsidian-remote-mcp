@@ -47,6 +47,7 @@
 | `OBSIDIAN_CLI_VAULT` | no | The vault name passed to the CLI as `vault=`. Defaults to the vault folder's name. |
 | `OBSIDIAN_CLI_COMMANDS` | no | Comma-separated command-palette IDs `vault_cli` may run through `command`. `*` allows all except destructive-looking IDs, which must be listed by name. Unset, palette execution is off. |
 | `OBSIDIAN_CLI_MCPIGNORE_ACK` | no | `true` keeps the CLI tools on while `.mcpignore` has rules, accepting that CLI output can't be filtered by them. |
+| `OBSIDIAN_CLI_ALLOW_PUBLISH` | no | `true` lets `vault_cli` run `publish:add` and `publish:remove`. Default off, since they change a public site. |
 | `HEALTH_TOKEN` | no | Dedicated bearer for `GET /health`. Default-closed: unset → the route 404s. Sent as `Authorization: Bearer`; separate from the OAuth and static-bearer secrets. |
 | `PORT` | no | HTTP port (default: `3456`) |
 | `HOST` | no | Bind address (default: `0.0.0.0`). Use `127.0.0.1` for a process behind a proxy on the same host; in Docker, restrict the published port instead. |
