@@ -533,7 +533,7 @@ The guards:
 
 - The vault is always the server's. `vault` is not a parameter, and a `vault` key or flag is refused.
 - Parameter keys and flags are letters and hyphens starting lowercase (`paneType` is fine). Keys the guards check (`vault`, `path`, `to`, `folder`, `file`, `name`, `id`) must be lowercase. Each becomes one argument; there is no shell.
-- `eval`, `devtools`, `restart`, `reload`, `plugins:restrict`, `theme:install`, `vaults` (which lists every vault on the machine with its path), and every `dev:`, `plugin:` and `snippet:` command are always blocked. No setting unblocks them.
+- `eval`, `devtools`, `restart`, `reload`, `plugins:restrict`, `theme:install`, `vault` and `vaults` (which report host paths), and every `dev:`, `plugin:` and `snippet:` command are always blocked. No setting unblocks them.
 - Command-palette execution (`command id=…`) is off unless `OBSIDIAN_CLI_COMMANDS` lists the allowed IDs. `*` allows every ID except those that look destructive (delete, remove, purge, trash and similar); those run only when listed by name. `*` also covers community-plugin commands, and some of those run scripts (Templater, Shell commands), so prefer listing IDs.
 - With `VAULT_READ_ONLY=true`, and for a connection approved without "Edit notes", only commands on a known-read list run, so a command added by a future CLI release is refused until it is reviewed.
 - `path`, `to` and `folder` go through the same path checks as every other tool, and `file` (a note name) is resolved by the server and passed as an exact `path`. A protected location gets the same "Not found" answer a missing note does. `name` can't contain a slash.

@@ -24,9 +24,9 @@ const BACKLINKS_TIMEOUT_MS = 5_000;
 
 // --- Guards ----------------------------------------------------------------------
 
-// Commands that run code, change the app, or install code, and `vaults`, which lists every vault the
-// app knows with its host path. Fixed, with no env override.
-const BLOCKED_COMMANDS = new Set(["eval", "devtools", "restart", "reload", "plugins:restrict", "theme:install", "vaults"]);
+// Commands that run code, change the app, or install code, and `vault` and `vaults`, which report
+// host paths. Fixed, with no env override.
+const BLOCKED_COMMANDS = new Set(["eval", "devtools", "restart", "reload", "plugins:restrict", "theme:install", "vault", "vaults"]);
 const BLOCKED_PREFIXES = ["dev:", "plugin:", "snippet:"];
 
 // Commands that only read. In read-only mode nothing else runs, so a command added by a future CLI
@@ -38,7 +38,7 @@ const KNOWN_READ_COMMANDS = new Set([
   "plugins:enabled", "properties", "property:read", "publish:list", "publish:site", "publish:status",
   "random:read", "read", "recents", "search", "search:context", "snippets", "snippets:enabled", "sync:deleted",
   "sync:history", "sync:read", "sync:status", "tabs", "tag", "tags", "tasks", "template:read", "templates",
-  "theme", "themes", "unresolved", "vault", "wordcount", "workspace", "workspaces",
+  "theme", "themes", "unresolved", "wordcount", "workspace", "workspaces",
 ]);
 
 // Command-palette IDs matching this run only when listed by name, never through `*`.

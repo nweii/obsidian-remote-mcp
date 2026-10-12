@@ -153,7 +153,7 @@ describe('running commands', () => {
 
 describe('guards', () => {
   test.each(['eval', 'dev:console', 'dev:cdp', 'devtools', 'restart', 'reload', 'plugin:install', 'plugin:enable',
-    'plugins:restrict', 'theme:install', 'snippet:enable', 'vaults'])('always blocks %s', async command => {
+    'plugins:restrict', 'theme:install', 'snippet:enable', 'vault', 'vaults'])('always blocks %s', async command => {
     expect(await refused({ command })).toContain('blocked');
   });
 
