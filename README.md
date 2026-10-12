@@ -202,7 +202,7 @@ The server currently exposes these tools:
 | `vault_batch_frontmatter_update` | Set frontmatter properties on several notes in one call |
 | `vault_edit` | Append, prepend, or replace exact text within a note |
 | `vault_edit_section` | Append, prepend, or replace the body under one heading |
-| `vault_trash` | Move a note to `.trash` |
+| `vault_trash` | Move a file or folder to `.trash` |
 | `vault_move` | Move or rename a vault file or validated folder by explicit path and rewrite the wikilinks that point at it; defaults to a dry run that shows the plan and writes nothing |
 | `vault_search_title` | Find notes by filename (partial or exact); returns paths for `vault_read` |
 | `vault_search_content` | Regex search in note bodies; optional `folder` to scope large vaults |

@@ -37,6 +37,7 @@
 | `MCP_STATIC_BEARER_TOKEN` | no | Optional fixed secret: requests to `/mcp` with `Authorization: Bearer <same value>` are allowed (for clients that cannot use browser OAuth). Long random string; use HTTPS. Works alongside normal OAuth tokens. |
 | `VAULT_READ_ONLY` | no | Set to `true` to block all write operations. Write-only tools (create, update, edit, edit section, set and batch frontmatter, trash) are not advertised at all; tools that read or write depending on their arguments (`vault_periodic_note`, `vault_clip_url`, and `vault_move`, whose default dry run only plans) stay listed and refuse the write. |
 | `HEALTH_TOKEN` | no | Dedicated bearer for `GET /health`. Default-closed: unset → the route 404s. Sent as `Authorization: Bearer`; separate from the OAuth and static-bearer secrets. |
+| `WEB_CLIPPER_SETTINGS_PATH` | no | Web Clipper settings export used by `vault_clip_url`, absolute or vault-relative. Unset, the newest `obsidian-web-clipper-settings*.json` within four folder levels of the vault root is used, whether or not `.mcpignore` hides it. |
 | `PORT` | no | HTTP port (default: `3456`) |
 | `HOST` | no | Bind address (default: `0.0.0.0`). Use `127.0.0.1` for a process behind a proxy on the same host; in Docker, restrict the published port instead. |
 
