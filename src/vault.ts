@@ -383,6 +383,15 @@ export async function readNote(relativePath: string): Promise<string> {
   return fs.readFile(resolveSafePath(relativePath), 'utf-8');
 }
 
+// Resolve a note's actual vault-relative location without reading its body. Both the requested
+// path and the canonical target must satisfy vault containment and .mcpignore.
+export async function canonicalNotePath(relativePath: string): Promise<string> {
+  const target = await fs.realpath(resolveSafePath(relativePath));
+  const canonical = path.relative(getVaultRealRoot(), target);
+  resolveSafePath(canonical);
+  return canonical;
+}
+
 // --- Attachments (binary reads) ----------------------------------------------
 
 // Extension → MIME type for attachment reads. Explicit and small on purpose — no
@@ -1058,7 +1067,7 @@ const MAX_SEARCH_PATTERN_LENGTH = 1000;
 // (RE2) or running the match off-thread with a kill switch — a larger change than this fix, and
 // one worth agreeing on upstream first. The exposure is limited to an authenticated caller, so
 // the effect is a stall rather than a leak.
-function compileSearchPattern(pattern: string, flags: string): RegExp {
+export function compileSearchPattern(pattern: string, flags: string): RegExp {
   if (pattern.length > MAX_SEARCH_PATTERN_LENGTH) {
     throw new InvalidSearchPatternError(
       `Search pattern is ${pattern.length} characters, over the ${MAX_SEARCH_PATTERN_LENGTH}-character limit. Use a shorter pattern.`,
@@ -1120,6 +1129,14 @@ export async function searchContent(query: string, options: SearchOptions = {}):
     if (matches.length > 0) results.push({ path: relPath, matches });
   }
   return results;
+}
+
+// Every note path in the vault (or a folder), in sorted walk order. Honours dotfile skipping and
+// .mcpignore through walkVaultFiles.
+export async function listNotePaths(folder?: string): Promise<string[]> {
+  const paths: string[] = [];
+  for await (const { relPath } of walkVaultFiles({ folder, sort: true })) paths.push(relPath);
+  return paths;
 }
 
 export async function searchFilename(pattern: string): Promise<string[]> {
@@ -1719,6 +1736,17 @@ function collectNoteTags(content: string): string[] {
   const frontmatter = parseFrontmatter(content);
   const { body } = splitFrontmatter(content);
   return [...extractFrontmatterTags(frontmatter), ...extractInlineTags(body)];
+}
+
+// All tags on one note — frontmatter `tags` plus inline `#tag` — deduplicated case-insensitively,
+// keeping first-seen casing.
+export function getNoteTags(content: string): string[] {
+  const seen = new Map<string, string>();
+  for (const tag of collectNoteTags(content)) {
+    const key = tag.toLowerCase();
+    if (!seen.has(key)) seen.set(key, tag);
+  }
+  return [...seen.values()];
 }
 
 export interface TagScanOptions {
