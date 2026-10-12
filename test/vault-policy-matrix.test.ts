@@ -218,6 +218,7 @@ describe('reads refuse hostile paths', () => {
     test.each(HOSTILE_EXISTING)(`${name}: %s`, async hostile => {
       const { result, error } = await outcome(() => run(hostile));
       expect(result).toBeUndefined();
+      expect(error).toBeInstanceOf(vault.VaultPolicyError);
       expect(leaks(error, [BODY])).toBe(false);
       expect(await snapshot()).toEqual(baseline);
     });
