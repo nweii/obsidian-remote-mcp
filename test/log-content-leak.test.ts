@@ -173,15 +173,16 @@ describe('registered tool errors never write source text to the audit log', () =
     ['malformed tag', '!<DrReyesDiagnosis%FF> value', 'malformed tag name'],
   ])('%s names stay out of logged frontmatter errors', async (_, value, reason) => {
     const out = await callWithAuditLog(`---\nprivate: ${value}\n---\nbody\n`, 'vault_frontmatter', { path: 'note.md' });
-    expect(out.response.name).toBe('FrontmatterParseError');
-    expect(out.response.error).toContain(reason);
-    expect(out.response.error).toMatch(/line \d+/);
-    expect(out.response.error).toContain('Read the note and correct the frontmatter block');
-    expect(out.response.error).not.toContain('DrReyes');
+    expect(out.response.result.isError).toBe(true);
+    const message = out.response.result.content[0].text;
+    expect(message).toContain(reason);
+    expect(message).toMatch(/line \d+/);
+    expect(message).toContain('Read the note and correct the frontmatter block');
+    expect(JSON.stringify(out.response.result)).not.toContain('DrReyes');
     expect(out.entries).toHaveLength(1);
     expect(out.entries[0].tool).toBe('vault_frontmatter');
     expect(out.entries[0].ok).toBe(false);
-    expect(out.entries[0].error).toBe(out.response.error);
+    expect(out.entries[0].error).toBe(message);
     expect(out.auditText).not.toContain('DrReyes');
   });
 

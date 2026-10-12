@@ -13,8 +13,185 @@ import {
   coerceFrontmatterValue,
   frontmatterValueMatches,
   type FrontmatterMatchType,
+  FrontmatterParseError,
 } from './frontmatter.js';
 import { isoWeek, isoWeekYear, startOfIsoWeek, startOfMonth, startOfQuarter, startOfYear } from './date.js';
+
+// --- Errors ------------------------------------------------------------------
+//
+// Every expected way a vault operation can fail. Each class carries a literal `_tag`, and
+// VaultError is the union of them all, so the tool layer maps them with one exhaustive switch:
+// a class added to VAULT_ERROR_CLASSES without a case there fails the typecheck. Messages name
+// vault-relative paths and caller input only, never note text or host paths, because the audit
+// log records them. Anything else a vault function throws is a fault and propagates unchanged.
+
+// Thrown when the vault root itself can't be read. Distinct from VaultPolicyError: that means
+// "this path is not allowed", this means "the vault is not there, so no answer can be trusted".
+export class VaultUnavailableError extends Error {
+  readonly _tag = 'VaultUnavailableError';
+  constructor(message: string) {
+    super(message);
+    this.name = 'VaultUnavailableError';
+  }
+}
+
+// Thrown by resolveSafePath when a path is rejected for security/policy reasons.
+// `kind` says which rule refused it.
+export class VaultPolicyError extends Error {
+  readonly _tag = 'VaultPolicyError';
+  constructor(public readonly kind: 'escape' | 'mcpignore' | 'internal', message: string) {
+    super(message);
+    this.name = 'VaultPolicyError';
+  }
+}
+
+// Thrown when a note reference resolves to nothing, or when a file to read, move or trash is
+// missing.
+export class NotFoundError extends Error {
+  readonly _tag = 'NotFoundError';
+  constructor(message: string) {
+    super(message);
+    this.name = 'NotFoundError';
+  }
+}
+
+// Thrown when a folder is given where a note or file is expected.
+export class IsDirectoryError extends Error {
+  readonly _tag = 'IsDirectoryError';
+  constructor(message: string) {
+    super(message);
+    this.name = 'IsDirectoryError';
+  }
+}
+
+// Thrown by createNote, and by moves onto an occupied destination, when something already
+// exists at the target path.
+export class NoteExistsError extends Error {
+  readonly _tag = 'NoteExistsError';
+  constructor(message: string) {
+    super(message);
+    this.name = 'NoteExistsError';
+  }
+}
+
+// Thrown by updateNote when the note changed under the caller since its base_version.
+export class ConcurrentEditError extends Error {
+  readonly _tag = 'ConcurrentEditError';
+  constructor(message: string) {
+    super(message);
+    this.name = 'ConcurrentEditError';
+  }
+}
+
+// Thrown by readAttachment when the file is larger than the configured cap. Carries the
+// actual and max sizes so the tool layer can name the real size in its error.
+export class AttachmentTooLargeError extends Error {
+  readonly _tag = 'AttachmentTooLargeError';
+  constructor(public readonly bytes: number, public readonly maxBytes: number, message: string) {
+    super(message);
+    this.name = 'AttachmentTooLargeError';
+  }
+}
+
+// Thrown when a caller's search pattern can't be compiled or is implausibly long, instead of
+// letting a raw SyntaxError escape.
+export class InvalidSearchPatternError extends Error {
+  readonly _tag = 'InvalidSearchPatternError';
+  constructor(message: string) {
+    super(message);
+    this.name = 'InvalidSearchPatternError';
+  }
+}
+
+// Thrown by readNoteSection and editNoteSection when no heading in the note matches.
+export class HeadingNotFoundError extends Error {
+  readonly _tag = 'HeadingNotFoundError';
+  constructor(heading: string, relativePath: string) {
+    super(
+      `Heading "${heading}" not found in ${relativePath}. Call vault_outline first and copy the ` +
+        `heading text exactly (without the # prefix).`,
+    );
+    this.name = 'HeadingNotFoundError';
+  }
+}
+
+export type AmbiguousHeadingMatch = {
+  startIdx: number;
+  preview: string;
+};
+
+// Thrown by editNoteSection (and applySectionEdit) when the requested heading
+// matches more than one section. Carries enough information for the agent to
+// pick a unique anchor and retry via vault_edit. Mirrors the resolveNoteReference
+// "surface candidates, don't pick" pattern already used for ambiguous note titles.
+export class AmbiguousHeadingError extends Error {
+  readonly _tag = 'AmbiguousHeadingError';
+  readonly heading: string;
+  readonly relativePath: string;
+  readonly matches: AmbiguousHeadingMatch[];
+
+  constructor(opts: {
+    relativePath: string;
+    heading: string;
+    matches: AmbiguousHeadingMatch[];
+  }) {
+    // The message carries line numbers only — never the previews. The audit logger records
+    // error text verbatim (both the isError result's first content block and the message of
+    // any exception thrown out of a handler), so anything placed here lands in
+    // logs/tool-calls.jsonl on disk. Previews are note body text; they go to the agent
+    // through candidatesText() as a separate content block instead.
+    const lines = opts.matches.map(m => m.startIdx + 1).join(', ');
+    super(
+      `Heading "${opts.heading}" matches ${opts.matches.length} sections in ${opts.relativePath} ` +
+        `(lines ${lines}). vault_edit_section can't safely guess which one to edit. Use vault_edit ` +
+        `with a find-anchored replace on text unique to the target section, or vault_update for ` +
+        `the whole note.`,
+    );
+    this.name = 'AmbiguousHeadingError';
+    this.heading = opts.heading;
+    this.relativePath = opts.relativePath;
+    this.matches = opts.matches;
+  }
+
+  // The candidate list with a one-line body preview per match, for disambiguating by eye.
+  // Kept off `message` on purpose — see the constructor.
+  candidatesText(): string {
+    return this.matches
+      .map((m, i) => `  ${i + 1}. line ${m.startIdx + 1} — ${m.preview}`)
+      .join('\n');
+  }
+}
+
+// Thrown when a request can't be carried out as asked: a write to a read-only vault, a move onto
+// itself, a folder move whose link rewrites would be ambiguous, or listing a file as a folder.
+export class InvalidRequestError extends Error {
+  readonly _tag = 'InvalidRequestError';
+  constructor(message: string) {
+    super(message);
+    this.name = 'InvalidRequestError';
+  }
+}
+
+const VAULT_ERROR_CLASSES = [
+  VaultUnavailableError,
+  VaultPolicyError,
+  NotFoundError,
+  IsDirectoryError,
+  NoteExistsError,
+  ConcurrentEditError,
+  AttachmentTooLargeError,
+  InvalidSearchPatternError,
+  HeadingNotFoundError,
+  AmbiguousHeadingError,
+  FrontmatterParseError,
+  InvalidRequestError,
+] as const;
+
+export type VaultError = InstanceType<(typeof VAULT_ERROR_CLASSES)[number]>;
+
+export function isVaultError(e: unknown): e is VaultError {
+  return VAULT_ERROR_CLASSES.some((ErrorClass) => e instanceof ErrorClass);
+}
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 export const DEFAULT_CONTEXT_NOTE_CANDIDATES = ['AGENTS.md', 'CLAUDE.md'] as const;
@@ -146,22 +323,13 @@ export function getContextNotePath(): string | null {
 
 // --- .mcpignore --------------------------------------------------------------
 
-// Thrown when the vault root itself can't be read. Distinct from VaultPolicyError: that means
-// "this path is not allowed", this means "the vault is not there, so no answer can be trusted".
-export class VaultUnavailableError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'VaultUnavailableError';
-  }
-}
-
 // A missing ignore file is allowed only when the vault itself is available.
 function assertVaultRootReadable(root: string): void {
   try {
     if (!statSync(root).isDirectory()) throw new Error('Not a directory');
     accessSync(root, constants.R_OK | constants.X_OK);
   } catch {
-    throw new VaultUnavailableError(`Vault root is not a readable directory: ${root}. Refusing to serve without a usable vault.`);
+    throw new VaultUnavailableError('Vault root is not a readable directory. Refusing to serve without a usable vault.');
   }
 }
 
@@ -241,20 +409,11 @@ export function isReadOnly(): boolean {
 // Throws if VAULT_READ_ONLY=true is set in the environment.
 function assertWritable() {
   if (isReadOnly()) {
-    throw new Error('Vault is in read-only mode (VAULT_READ_ONLY=true)');
+    throw new InvalidRequestError('Vault is in read-only mode (VAULT_READ_ONLY=true)');
   }
 }
 
 // --- Path safety -------------------------------------------------------------
-
-// Thrown by resolveSafePath when a path is rejected for security/policy reasons.
-// Carries a typed `kind` so callers can match without parsing error text.
-export class VaultPolicyError extends Error {
-  constructor(public readonly kind: 'escape' | 'mcpignore' | 'internal', message: string) {
-    super(message);
-    this.name = 'VaultPolicyError';
-  }
-}
 
 // True when `candidate` is the root itself or sits underneath it. Both arguments must already
 // be absolute and normalized; neither is canonicalized here.
@@ -379,6 +538,18 @@ function resolveWritePath(relativePath: string, allowIgnored = false): string {
   return resolved;
 }
 
+// fs.stat that reports a missing path as a NotFoundError with the caller's vault-relative message,
+// instead of a raw ENOENT whose message carries the absolute host path.
+async function statExisting(absPath: string, notFoundMessage: string): Promise<Stats> {
+  try {
+    return await fs.stat(absPath);
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT' || code === 'ENOTDIR') throw new NotFoundError(notFoundMessage);
+    throw e;
+  }
+}
+
 export async function readNote(relativePath: string): Promise<string> {
   return fs.readFile(resolveSafePath(relativePath), 'utf-8');
 }
@@ -427,15 +598,6 @@ function mimeTypeFor(relativePath: string): string {
   return ATTACHMENT_MIME_TYPES[ext] ?? 'application/octet-stream';
 }
 
-// Thrown by readAttachment when the file is larger than the configured cap. Carries the
-// actual and max sizes so the tool layer can name the real size in its error.
-export class AttachmentTooLargeError extends Error {
-  constructor(public readonly bytes: number, public readonly maxBytes: number, message: string) {
-    super(message);
-    this.name = 'AttachmentTooLargeError';
-  }
-}
-
 export interface AttachmentResult {
   mimeType: string;
   bytes: number;       // size on disk
@@ -452,12 +614,8 @@ export async function readAttachment(
   statOnly = false,
 ): Promise<AttachmentResult> {
   const absPath = resolveSafePath(relativePath);
-  const st = await fs.stat(absPath);
-  if (st.isDirectory()) {
-    const err = new Error(`"${relativePath}" is a directory, not a file.`) as NodeJS.ErrnoException;
-    err.code = 'EISDIR';
-    throw err;
-  }
+  const st = await statExisting(absPath, `Attachment not found: ${relativePath}`);
+  if (st.isDirectory()) throw new IsDirectoryError(`"${relativePath}" is a directory, not a file.`);
 
   const mimeType = mimeTypeFor(relativePath);
   const isImage = IMAGE_MIME_TYPES.has(mimeType);
@@ -552,15 +710,6 @@ export async function writeNote(relativePath: string, content: string): Promise<
   invalidateResolverCache();
 }
 
-// Thrown by createNote when a note already exists at the target path. Typed so the tool layer
-// can turn it into a friendly isError result with caller-appropriate guidance.
-export class NoteExistsError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'NoteExistsError';
-  }
-}
-
 // Write a new note, refusing to overwrite one that already exists. Single source of truth for
 // the "create, don't clobber" guard shared by vault_create and the clip save-path.
 export async function createNote(relativePath: string, content: string): Promise<void> {
@@ -572,7 +721,9 @@ export async function createNote(relativePath: string, content: string): Promise
     await writeNote(relativePath, content);
     return;
   }
-  throw new NoteExistsError(`File already exists at ${relativePath}`);
+  throw new NoteExistsError(
+    `File already exists at ${relativePath}. To replace it, use vault_update; to modify part of it, use vault_edit.`,
+  );
 }
 
 // --- Concurrent-edit safety: optimistic versioning ---------------------------
@@ -582,15 +733,6 @@ export async function createNote(relativePath: string, content: string): Promise
 // back as `baseVersion`. If the note changed since the caller read it, the update is rejected
 // with a ConcurrentEditError ("re-read and retry") instead of silently overwriting the other
 // session's work. Omitting `baseVersion` keeps the old last-writer-wins overwrite.
-
-// Thrown by updateNote when the note changed under the caller. Typed (like VaultPolicyError)
-// so the tool layer can turn it into a friendly isError result.
-export class ConcurrentEditError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'ConcurrentEditError';
-  }
-}
 
 // Content-addressed version string for a note's text. Identical content always hashes to the
 // same value, so a caller's version matches iff the on-disk bytes are unchanged.
@@ -829,7 +971,7 @@ function assertMovableFile(absPath: string, relativePath: string, allowFileSymli
     st = lstatSync(absPath);
   } catch (e) {
     const code = (e as NodeJS.ErrnoException).code;
-    if (code === 'ENOENT' || code === 'ENOTDIR') throw new Error(`No file found at "${relativePath}".`);
+    if (code === 'ENOENT' || code === 'ENOTDIR') throw new NotFoundError(`No file found at "${relativePath}".`);
     throw e;
   }
   if (st.isSymbolicLink() && allowFileSymlink && statSync(absPath).isFile()) return st;
@@ -880,12 +1022,16 @@ function checkFileMove(source: string, destination: string, allowIgnoredDestinat
       key(path.relative(vaultRoot, fromAbs)) !== key(path.relative(realRoot, fromReal))) {
     throw new VaultPolicyError('escape', 'Move the folder through its canonical vault path instead of a parent symlink, so references can be rewritten safely.');
   }
-  if (fromAbs === toAbs) throw new Error(`Source and destination are the same path ("${source}").`);
+  if (fromAbs === toAbs) throw new InvalidRequestError(`Source and destination are the same path ("${source}").`);
   // Reject either ancestry direction before acquiring hierarchical endpoint locks.
   if (isWithin(key(fromReal), key(toReal)) || isWithin(key(toReal), key(fromReal))) {
     throw new VaultPolicyError('escape', 'Source and destination overlap; choose a destination outside the source folder.');
   }
-  if (pathEntryExists(toAbs)) throw new NoteExistsError(`File or folder already exists at ${destination}`);
+  if (pathEntryExists(toAbs)) {
+    throw new NoteExistsError(
+      `A file or folder already exists at ${destination}. Choose a different destination or trash the existing entry first.`,
+    );
+  }
   const fileSymlink = sourceStat.isSymbolicLink();
   if (fileSymlink) {
     // A standalone file shortcut can be renamed safely if its relative/absolute link text
@@ -1041,16 +1187,6 @@ interface WalkEntry {
 
 const isMarkdownFile = (name: string): boolean => name.toLowerCase().endsWith('.md');
 
-// Thrown when a caller's search pattern can't be compiled or is implausibly long. Typed so the
-// tool layer can turn it into a friendly isError result instead of letting a raw SyntaxError
-// escape the handler.
-export class InvalidSearchPatternError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'InvalidSearchPatternError';
-  }
-}
-
 // Generous enough for any real search, short enough that the pathological constructions people
 // paste from regex-golf threads don't get through.
 const MAX_SEARCH_PATTERN_LENGTH = 1000;
@@ -1086,6 +1222,9 @@ async function* walkVaultFiles(options: WalkVaultOptions = {}): AsyncGenerator<W
   const { folder, includeFile = isMarkdownFile, sort = false } = options;
   const vaultRoot = getVaultRoot();
   const root = resolveSafePath(folder || '');
+  if (folder && !(await statExisting(root, `Folder not found: ${folder}`)).isDirectory()) {
+    throw new InvalidRequestError(`Not a directory: ${folder}`);
+  }
 
   async function* walk(dir: string): AsyncGenerator<WalkEntry> {
     const entries = await fs.readdir(dir, { withFileTypes: true });
@@ -1244,9 +1383,9 @@ export async function getFolderTree(maxDepth: number): Promise<string[]> {
 export async function listVaultFolder(relativeDir = '', limit = 200): Promise<VaultFolderEntry[]> {
   const normalized = relativeDir.trim() === '' ? '.' : relativeDir;
   const absDir = resolveSafePath(normalized);
-  const st = await fs.stat(absDir);
+  const st = await statExisting(absDir, `Folder not found: ${relativeDir || '.'}`);
   if (!st.isDirectory()) {
-    throw new Error(`Not a directory: ${relativeDir || '.'}`);
+    throw new InvalidRequestError(`Not a directory: ${relativeDir || '.'}`);
   }
   const entries = await fs.readdir(absDir, { withFileTypes: true });
   const out: VaultFolderEntry[] = [];
@@ -1327,52 +1466,6 @@ function findAllSectionBounds(
   return results;
 }
 
-export type AmbiguousHeadingMatch = {
-  startIdx: number;
-  preview: string;
-};
-
-// Thrown by editNoteSection (and applySectionEdit) when the requested heading
-// matches more than one section. Carries enough information for the agent to
-// pick a unique anchor and retry via vault_edit. Mirrors the resolveNoteReference
-// "surface candidates, don't pick" pattern already used for ambiguous note titles.
-export class AmbiguousHeadingError extends Error {
-  readonly heading: string;
-  readonly relativePath: string;
-  readonly matches: AmbiguousHeadingMatch[];
-
-  constructor(opts: {
-    relativePath: string;
-    heading: string;
-    matches: AmbiguousHeadingMatch[];
-  }) {
-    // The message carries line numbers only — never the previews. The audit logger records
-    // error text verbatim (both the isError result's first content block and the message of
-    // any exception thrown out of a handler), so anything placed here lands in
-    // logs/tool-calls.jsonl on disk. Previews are note body text; they go to the agent
-    // through candidatesText() as a separate content block instead.
-    const lines = opts.matches.map(m => m.startIdx + 1).join(', ');
-    super(
-      `Heading "${opts.heading}" matches ${opts.matches.length} sections in ${opts.relativePath} ` +
-        `(lines ${lines}). vault_edit_section can't safely guess which one to edit. Use vault_edit ` +
-        `with a find-anchored replace on text unique to the target section, or vault_update for ` +
-        `the whole note.`,
-    );
-    this.name = 'AmbiguousHeadingError';
-    this.heading = opts.heading;
-    this.relativePath = opts.relativePath;
-    this.matches = opts.matches;
-  }
-
-  // The candidate list with a one-line body preview per match, for disambiguating by eye.
-  // Kept off `message` on purpose — see the constructor.
-  candidatesText(): string {
-    return this.matches
-      .map((m, i) => `  ${i + 1}. line ${m.startIdx + 1} — ${m.preview}`)
-      .join('\n');
-  }
-}
-
 function previewMatch(lines: string[], startIdx: number, endIdx: number): string {
   const headingLine = lines[startIdx].trim();
   for (let j = startIdx + 1; j < endIdx; j++) {
@@ -1395,7 +1488,7 @@ export async function readNoteSection(relativePath: string, heading: string): Pr
   const lines = content.split('\n');
   const matches = findAllSectionBounds(lines, heading);
   if (matches.length === 0) {
-    throw new Error(`Heading "${heading}" not found in ${relativePath}`);
+    throw new HeadingNotFoundError(heading, relativePath);
   }
   if (matches.length === 1) {
     const { startIdx, endIdx } = matches[0];
@@ -1446,7 +1539,7 @@ function applySectionEdit(
   const lines = existing.split('\n');
   const matches = findAllSectionBounds(lines, heading);
   if (matches.length === 0) {
-    throw new Error(`Heading "${heading}" not found in ${relativePath}`);
+    throw new HeadingNotFoundError(heading, relativePath);
   }
   if (matches.length > 1) {
     throw new AmbiguousHeadingError({
@@ -1568,7 +1661,7 @@ async function statOrNull(relativePath: string): Promise<import('fs').Stats | nu
 export async function resolveNoteReference(input: string): Promise<ResolvedReference> {
   const trimmed = input.trim().replace(/\/+$/, '');
   if (trimmed === '') {
-    throw new Error('Empty note reference');
+    throw new NotFoundError('Empty note reference');
   }
 
   const hasMdSuffix = /\.md$/i.test(trimmed);
@@ -1580,9 +1673,7 @@ export async function resolveNoteReference(input: string): Promise<ResolvedRefer
   const asGivenStat = await statOrNull(trimmed);
   if (asGivenStat) {
     if (asGivenStat.isDirectory()) {
-      const err = new Error(`"${trimmed}" is a directory, not a note.`) as NodeJS.ErrnoException;
-      err.code = 'EISDIR';
-      throw err;
+      throw new IsDirectoryError(`"${trimmed}" is a directory, not a note. Call vault_read with mode "list" to browse it.`);
     }
     if (asGivenStat.isFile() && hasMdSuffix) {
       return { path: trimmed, matchedVia: 'path' };
@@ -1613,7 +1704,7 @@ export async function resolveNoteReference(input: string): Promise<ResolvedRefer
     }
   }
 
-  throw new Error(
+  throw new NotFoundError(
     `Could not resolve "${input}" to a note. Try a full vault-relative path or call vault_search_title to discover it.`,
   );
 }
@@ -2110,7 +2201,7 @@ function folderRewriteTargets(movedFiles: MoveResult[]): FolderRewriteTargets {
     const ownerKey = `${kind}:${key}`;
     const existing = owners.get(ownerKey);
     if (existing !== undefined && existing !== source) {
-      throw new Error(`Cannot safely rewrite folder references: "${existing}" and "${source}" share the link target "${target}". Disambiguate these filenames or move the folder directly in Obsidian and review links manually.`);
+      throw new InvalidRequestError(`Cannot safely rewrite folder references: "${existing}" and "${source}" share the link target "${target}". Disambiguate these filenames or move the folder directly in Obsidian and review links manually.`);
     }
     owners.set(ownerKey, source);
     map.set(key, replacement);

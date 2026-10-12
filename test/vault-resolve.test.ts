@@ -99,14 +99,8 @@ describe('resolveNoteReference — title lookup', () => {
 });
 
 describe('resolveNoteReference — error semantics', () => {
-  test('directory input throws EISDIR', async () => {
-    try {
-      await vault.resolveNoteReference('vault-resolve-DailyDir');
-      throw new Error('expected EISDIR');
-    } catch (e) {
-      const err = e as NodeJS.ErrnoException;
-      expect(err.code).toBe('EISDIR');
-    }
+  test('directory input throws IsDirectoryError', async () => {
+    await expect(vault.resolveNoteReference('vault-resolve-DailyDir')).rejects.toThrow(vault.IsDirectoryError);
   });
 
   test('miss throws with a clear suggestion', async () => {

@@ -386,15 +386,9 @@ export function registerSkimTool(server: McpServer, options: { provider?: Decisi
       try {
         plan = await planSkim({ goal, paths, query, folder, exclude_tags, exclude_paths, max_notes }, provider);
       } catch (e) {
-        // Caller errors become results; nothing has been sent either way. A missing folder is
-        // named by the caller's own path, since the filesystem error carries the absolute one.
-        const code = (e as NodeJS.ErrnoException)?.code;
-        const message =
-          e instanceof vault.VaultPolicyError || e instanceof vault.InvalidSearchPatternError ? e.message
-          : folder && (code === "ENOENT" || code === "ENOTDIR") ? `Folder not found: ${folder}`
-          : null;
-        if (message === null) throw e;
-        return { content: [{ type: "text" as const, text: `Error: could not plan the skim: ${message}` }], isError: true };
+        // Caller errors become results; nothing has been sent either way.
+        if (!vault.isVaultError(e)) throw e;
+        return { content: [{ type: "text" as const, text: `Error: could not plan the skim: ${e.message}` }], isError: true };
       }
       const planText = formatPlan(plan, Math.min(MAX_NOTES_CAP, Math.max(1, max_notes)));
 
