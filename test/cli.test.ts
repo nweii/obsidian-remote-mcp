@@ -122,6 +122,14 @@ describe('running commands', () => {
     expect((await fakeCalls(logFile))[0]).toEqual(['vault=Vault', 'read', 'path=Open.md']);
   });
 
+  test('keeps file= for commands where it is an exact path, after the path policy', async () => {
+    await writeFile(path.join(vaultPath, '.mcpignore'), 'Private\n');
+    process.env.OBSIDIAN_CLI_MCPIGNORE_ACK = 'true';
+    expect(await refused({ command: 'bookmark', params: { file: 'Private/Secret.md' } })).toBe('Not found: Private/Secret.md');
+    await cli.runCli({ command: 'bookmark', params: { file: 'Assets/image.png' } });
+    expect((await fakeCalls(logFile))[0]).toEqual(['vault=Vault', 'bookmark', 'file=Assets/image.png']);
+  });
+
   test('a command failure re-probes, then reports the command error', async () => {
     process.env.FAKE_OBSIDIAN_FAIL = '1';
     const outcome = await cli.runCli({ command: 'search', params: { query: 'x' } });
@@ -145,7 +153,7 @@ describe('running commands', () => {
 
 describe('guards', () => {
   test.each(['eval', 'dev:console', 'dev:cdp', 'devtools', 'restart', 'reload', 'plugin:install', 'plugin:enable',
-    'plugins:restrict', 'theme:install', 'snippet:enable'])('always blocks %s', async command => {
+    'plugins:restrict', 'theme:install', 'snippet:enable', 'vaults'])('always blocks %s', async command => {
     expect(await refused({ command })).toContain('blocked');
   });
 

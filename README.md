@@ -480,7 +480,7 @@ Supported tokens:
 - `{ddd}`: short weekday name like `Mon`
 - `{dddd}`: full weekday name like `Monday`
 
-There are two week systems, and a weekly path has to use the one its notes were named with. ISO weeks (`{GGGG}`, `{WW}`) start Monday. Locale weeks (`{gggg}`, `{ww}`) are what Obsidian in English uses, and what Periodic Notes uses by default (`gggg-[W]ww`): they start Sunday, so a Sunday note is a week ahead of its ISO number. Locale weeks start on the first of these that is set: `PERIODIC_WEEK_START` (a day name), the week start chosen in the Calendar or Periodic Notes plugin settings, or Sunday.
+There are two week systems, and a weekly path has to use the one its notes were named with. ISO weeks (`{GGGG}`, `{WW}`) start Monday. Locale weeks (`{gggg}`, `{ww}`) are what Obsidian in English uses, and what Periodic Notes uses by default (`gggg-[W]ww`): they start Sunday, so a Sunday note is a week ahead of its ISO number. Locale weeks start on the first of these that is set: `PERIODIC_WEEK_START` (a day name), the week start chosen in the Calendar or Periodic Notes plugin settings, or Sunday. A week start left on Obsidian's locale default is read as Sunday, so with a Monday-start language set `PERIODIC_WEEK_START=monday`.
 
 Each week-year can differ from the calendar year (`{YYYY}`) around New Year. For example `2025-12-29` falls in week 1 of 2026 in both systems. Pair each week number with its own week-year (`{WW}` with `{GGGG}`, `{ww}` with `{gggg}`); pairing it with `{YYYY}` produces wrong paths at that boundary.
 
@@ -533,7 +533,7 @@ The guards:
 
 - The vault is always the server's. `vault` is not a parameter, and a `vault` key or flag is refused.
 - Parameter keys and flags are letters and hyphens starting lowercase (`paneType` is fine). Keys the guards check (`vault`, `path`, `to`, `folder`, `file`, `name`, `id`) must be lowercase. Each becomes one argument; there is no shell.
-- `eval`, `devtools`, `restart`, `reload`, `plugins:restrict`, `theme:install`, and every `dev:`, `plugin:` and `snippet:` command are always blocked. No setting unblocks them.
+- `eval`, `devtools`, `restart`, `reload`, `plugins:restrict`, `theme:install`, `vaults` (which lists every vault on the machine with its path), and every `dev:`, `plugin:` and `snippet:` command are always blocked. No setting unblocks them.
 - Command-palette execution (`command id=…`) is off unless `OBSIDIAN_CLI_COMMANDS` lists the allowed IDs. `*` allows every ID except those that look destructive (delete, remove, purge, trash and similar); those run only when listed by name. `*` also covers community-plugin commands, and some of those run scripts (Templater, Shell commands), so prefer listing IDs.
 - With `VAULT_READ_ONLY=true`, and for a connection approved without "Edit notes", only commands on a known-read list run, so a command added by a future CLI release is refused until it is reviewed.
 - `path`, `to` and `folder` go through the same path checks as every other tool, and `file` (a note name) is resolved by the server and passed as an exact `path`. A protected location gets the same "Not found" answer a missing note does. `name` can't contain a slash.

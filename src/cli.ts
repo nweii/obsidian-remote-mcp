@@ -24,8 +24,9 @@ const BACKLINKS_TIMEOUT_MS = 5_000;
 
 // --- Guards ----------------------------------------------------------------------
 
-// Commands that run code, change the app, or install code. Fixed, with no env override.
-const BLOCKED_COMMANDS = new Set(["eval", "devtools", "restart", "reload", "plugins:restrict", "theme:install"]);
+// Commands that run code, change the app, or install code, and `vaults`, which lists every vault the
+// app knows with its host path. Fixed, with no env override.
+const BLOCKED_COMMANDS = new Set(["eval", "devtools", "restart", "reload", "plugins:restrict", "theme:install", "vaults"]);
 const BLOCKED_PREFIXES = ["dev:", "plugin:", "snippet:"];
 
 // Commands that only read. In read-only mode nothing else runs, so a command added by a future CLI
@@ -45,6 +46,9 @@ const DESTRUCTIVE_PALETTE_ID = /delete|remove|purge|trash|erase|wipe|destroy|dis
 
 // Parameters naming a vault location. Each goes through the same path policy as every other tool.
 const PATH_PARAMS = ["path", "to", "folder"];
+// Commands whose file= is an exact path to any file rather than a note name; it is checked as a
+// path and kept as file=.
+const FILE_IS_PATH = new Set(["bookmark", "tab:open"]);
 
 const COMMAND_NAME = /^[a-z][a-z-]*(?::[a-z][a-z-]*)?$/;
 // Lowercase words with hyphens, or camelCase as some commands document (paneType).
@@ -124,7 +128,7 @@ const isVaultRoot = (value: string) => path.posix.normalize(value.trim().replace
 // Checks every path-like parameter against the vault policy, with the write checks (which also
 // protect .mcpignore) since a command may write there. file= (Obsidian's own name resolution)
 // becomes path= resolved by the server, so Obsidian can't pick a protected note the server
-// wouldn't. A command that may write can't target a folder through path=, since that would act on
+// wouldn't, except where file= is already an exact path. A command that may write can't target a folder through path=, since that would act on
 // descendants this check never sees; vault_move and vault_trash handle folders. A protected
 // location gets the same answer as a missing one.
 async function applyPathPolicy(
@@ -132,7 +136,8 @@ async function applyPathPolicy(
   params: Record<string, string>,
 ): Promise<{ ok: true; params: Record<string, string> } | { ok: false; outcome: CliOutcome }> {
   const out = { ...params };
-  if (out.file !== undefined) {
+  const pathKeys = FILE_IS_PATH.has(command) ? ["file", ...PATH_PARAMS] : PATH_PARAMS;
+  if (out.file !== undefined && !FILE_IS_PATH.has(command)) {
     if (out.path !== undefined) return { ok: false, outcome: { ok: false, error: "Pass file or path, not both." } };
     try {
       out.path = (await vault.resolveNoteReference(out.file)).path;
@@ -141,7 +146,7 @@ async function applyPathPolicy(
     }
     delete out.file;
   }
-  for (const key of PATH_PARAMS) {
+  for (const key of pathKeys) {
     const value = out[key];
     if (value === undefined || isVaultRoot(value) && key !== "to" && KNOWN_READ_COMMANDS.has(command)) continue;
     let abs: string;
