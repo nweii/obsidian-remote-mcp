@@ -39,10 +39,6 @@ const KNOWN_READ_COMMANDS = new Set([
   "theme", "themes", "unresolved", "vault", "wordcount", "workspace", "workspaces",
 ]);
 
-// Commands that put notes on the public web through Obsidian Publish. Off unless the operator
-// sets OBSIDIAN_CLI_ALLOW_PUBLISH=true.
-const PUBLISH_COMMANDS = new Set(["publish:add", "publish:remove"]);
-
 // Command-palette IDs matching this run only when listed by name, never through `*`.
 const DESTRUCTIVE_PALETTE_ID = /delete|remove|purge|trash|erase|wipe|destroy|discard|uninstall|reset|clear|overwrite/i;
 
@@ -75,9 +71,6 @@ function commandRefusal(command: string): string | null {
   if (isBlocked(command)) return `"${command}" is blocked: it can run code or change the app.`;
   if (vault.isReadOnly() && !KNOWN_READ_COMMANDS.has(command)) {
     return `"${command}" is not on the known-read list, and the vault is in read-only mode.`;
-  }
-  if (PUBLISH_COMMANDS.has(command) && !envIsTrue("OBSIDIAN_CLI_ALLOW_PUBLISH")) {
-    return `"${command}" changes what Obsidian Publish shows publicly. The server operator can allow it with OBSIDIAN_CLI_ALLOW_PUBLISH=true.`;
   }
   if (command === "command" && paletteAllowlist().length === 0) {
     return `Command-palette execution is off. The server operator can list allowed command IDs in OBSIDIAN_CLI_COMMANDS.`;
