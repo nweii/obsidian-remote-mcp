@@ -1,4 +1,4 @@
-// ABOUTME: Local-timezone date helpers for periodic notes — parse and format YYYY-MM-DD, compute ISO week numbers, and bucket a date into the week, month, quarter, or year containing it, matching the convention used by formatPeriodicNotePath in vault.ts.
+// ABOUTME: Local-timezone date helpers for periodic notes — parse and format YYYY-MM-DD, compute ISO week numbers, and bucket a date into the week, month, quarter, or year containing it, matching the buckets periodic.ts formats paths from.
 
 // Parse a "YYYY-MM-DD" string as local midnight (not UTC) so the day of the
 // resulting Date matches the calendar day the caller named, regardless of the

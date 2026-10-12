@@ -195,8 +195,7 @@ const FOLDER_OPS: Record<string, () => unknown> = {
 // Exports that take no caller-supplied vault path, so no hostile path can reach them.
 const NO_PATH_EXPORTS = [
   'getVaultRoot', 'getVaultDisplayName', 'getContextNotePath', 'isReadOnly', 'versionOf',
-  'invalidateResolverCache', 'getPeriodicNoteTemplate', 'getPeriodicNoteTemplateEnvVar',
-  'getPeriodicNotePath', 'getNoteTags', 'compileSearchPattern',
+  'invalidateResolverCache', 'getNoteTags', 'compileSearchPattern',
 ];
 
 function leaks(value: unknown, tokens: string[]): boolean {

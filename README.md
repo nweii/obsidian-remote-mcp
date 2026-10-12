@@ -323,11 +323,12 @@ VAULT_PATH=/path/to/your/vault         # optional if obsidian.json is available
 OBSIDIAN_VAULT_ID=personal             # optional when obsidian.json contains multiple vaults
 VAULT_DISPLAY_NAME=Personal            # optional; defaults to the vault directory name
 VAULT_CONTEXT_PATH=AGENTS.md           # optional; defaults to AGENTS.md, then CLAUDE.md
-DAILY_NOTE_PATH_TEMPLATE=Daily/{YYYY}-{MM}-{DD}.md
-WEEKLY_NOTE_PATH_TEMPLATE=Weekly/{GGGG}-W{WW}.md       # optional; opt-in cadence
-MONTHLY_NOTE_PATH_TEMPLATE=Monthly/{YYYY}-{MM}.md      # optional; opt-in cadence
-QUARTERLY_NOTE_PATH_TEMPLATE=Quarterly/{YYYY}-Q{Q}.md  # optional; opt-in cadence
-YEARLY_NOTE_PATH_TEMPLATE=Yearly/{YYYY}.md             # optional; opt-in cadence
+DAILY_NOTE_PATH_TEMPLATE=Daily/{YYYY}-{MM}-{DD}.md     # optional; overrides the vault's Obsidian config
+WEEKLY_NOTE_PATH_TEMPLATE=Weekly/{GGGG}-W{WW}.md       # optional; overrides the vault's Obsidian config
+MONTHLY_NOTE_PATH_TEMPLATE=Monthly/{YYYY}-{MM}.md      # optional; overrides the vault's Obsidian config
+QUARTERLY_NOTE_PATH_TEMPLATE=Quarterly/{YYYY}-Q{Q}.md  # optional; overrides the vault's Obsidian config
+YEARLY_NOTE_PATH_TEMPLATE=Yearly/{YYYY}.md             # optional; overrides the vault's Obsidian config
+OBSIDIAN_CONFIG_DIR=.obsidian          # optional; where periodic-note settings are read from
 # CORS_ALLOWED_ORIGINS=https://vault.example,https://my-vault-chat.example # optional; replaces the site-origin default
 TOKEN_STORE_PATH=./tokens.json         # optional
 MCP_STATIC_BEARER_TOKEN=               # optional; API key for /mcp (see Authentication)
@@ -413,9 +414,14 @@ If you do not want to maintain one, the server still works without it.
 
 ### Periodic note paths
 
-`vault_periodic_note` reads or creates a note for one of five cadences — `daily`, `weekly`, `monthly`, `quarterly`, `yearly`. It replaces the earlier `vault_daily_note` tool; clients pick up the new tool on their next tool-list refresh, and `period: daily` behaves exactly as the old daily tool did. The tool takes an optional `date` (`YYYY-MM-DD`), which is bucketed into the week, month, quarter, or year that contains it, so any day in a period maps to the same note.
+`vault_periodic_note` reads or creates a note for one of five cadences — `daily`, `weekly`, `monthly`, `quarterly`, `yearly`. It replaces the earlier `vault_daily_note` tool; clients pick up the new tool on their next tool-list refresh. The tool takes an optional `date` (`YYYY-MM-DD`), which is bucketed into the week, month, quarter, or year that contains it, so any day in a period maps to the same note.
 
-Each cadence has its own opt-in path template env var:
+Each cadence takes its path from the first of these that configures it:
+
+1. Its env var (table below).
+2. The [Periodic Notes](https://github.com/liamcain/obsidian-periodic-notes) community plugin, when it is enabled and that cadence is turned on in it.
+3. For `daily` only, the core Daily notes plugin's folder and date format.
+4. For `daily` only, the built-in default `Daily/{YYYY}-{MM}-{DD}.md`.
 
 | Cadence | Env var |
 |---------|---------|
@@ -425,13 +431,9 @@ Each cadence has its own opt-in path template env var:
 | `quarterly` | `QUARTERLY_NOTE_PATH_TEMPLATE` |
 | `yearly` | `YEARLY_NOTE_PATH_TEMPLATE` |
 
-Only the daily cadence has a built-in default:
+So a vault that already sets these up in Obsidian needs no env vars: with the Daily notes folder `01-Days` and format `YYYY-MM-DD-ddd`, today's note is `01-Days/2026-10-12-Mon.md`. The server reads the plugin settings from the vault's `.obsidian` folder on each call (set `OBSIDIAN_CONFIG_DIR` if Obsidian uses a different config folder); tools still can't read `.obsidian`. A deployment that mounts only the notes falls back to the env vars and the built-in default.
 
-```text
-Daily/{YYYY}-{MM}-{DD}.md
-```
-
-The other four are opt-in — calling a cadence with no template configured returns an error naming the env var to set. These are convenience templates; many vaults use different layouts, so you will likely want to override them.
+Obsidian date formats are translated into the tokens below, with `[bracketed]` text kept literal. A format using any other token (for example `Do` for "12th", or the locale-week `gggg-[W]ww` that Periodic Notes uses for weekly notes by default) returns an error naming the token rather than a guessed path. Switch weekly notes to ISO weeks (`GGGG-[W]WW`) or set the env var. A cadence nothing configures returns an error naming its env var and the config files checked.
 
 Supported tokens:
 

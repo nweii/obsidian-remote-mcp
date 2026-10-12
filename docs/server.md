@@ -24,11 +24,12 @@
 | `OBSIDIAN_VAULT_ID` | when multiple vaults | Which `vaults` entry in `obsidian.json` to use (matches id case-insensitively) |
 | `VAULT_DISPLAY_NAME` | no | Optional label shown on the OAuth approval page. Defaults to the resolved vault directory name. |
 | `VAULT_CONTEXT_PATH` | no | Relative path for the note returned by `vault_context`. Defaults to `AGENTS.md`, then `CLAUDE.md`. |
-| `DAILY_NOTE_PATH_TEMPLATE` | no | Daily-cadence path template for `vault_periodic_note`. Defaults to `Daily/{YYYY}-{MM}-{DD}.md`. |
-| `WEEKLY_NOTE_PATH_TEMPLATE` | no | Weekly-cadence path template. Opt-in; `period: weekly` errors until set. |
-| `MONTHLY_NOTE_PATH_TEMPLATE` | no | Monthly-cadence path template. Opt-in; `period: monthly` errors until set. |
-| `QUARTERLY_NOTE_PATH_TEMPLATE` | no | Quarterly-cadence path template. Opt-in; `period: quarterly` errors until set. |
-| `YEARLY_NOTE_PATH_TEMPLATE` | no | Yearly-cadence path template. Opt-in; `period: yearly` errors until set. |
+| `DAILY_NOTE_PATH_TEMPLATE` | no | Daily-cadence path template for `vault_periodic_note`. Overrides the Periodic Notes and core Daily notes config; without either, defaults to `Daily/{YYYY}-{MM}-{DD}.md`. |
+| `WEEKLY_NOTE_PATH_TEMPLATE` | no | Weekly-cadence path template. Overrides the Periodic Notes config; `period: weekly` errors when neither sets it. |
+| `MONTHLY_NOTE_PATH_TEMPLATE` | no | Monthly-cadence path template, with the same precedence as weekly. |
+| `QUARTERLY_NOTE_PATH_TEMPLATE` | no | Quarterly-cadence path template, with the same precedence as weekly. |
+| `YEARLY_NOTE_PATH_TEMPLATE` | no | Yearly-cadence path template, with the same precedence as weekly. |
+| `OBSIDIAN_CONFIG_DIR` | no | The vault's Obsidian config folder, relative to the vault root, read for periodic-note settings. Defaults to `.obsidian`. |
 | `VAULT_ATTACHMENT_MAX_BYTES` | no | Max bytes `vault_read_attachment` will read before rejecting. Defaults to `10485760` (10 MB). |
 | `CORS_ALLOWED_ORIGINS` | no | Exact comma-separated HTTP(S) browser-origin allowlist for `/mcp`. Unset/empty allows only the MCP_BASE_URL origin (local fallback http://localhost:PORT). An explicit list replaces those defaults. A standalone `*` opts into any origin; partial/mixed wildcards, `null` entries, paths, and credentials are refused at startup. Requests without Origin remain authenticated normally. |
 | `TOKEN_STORE_PATH` | no | Path to the persisted bearer token store. Defaults to `./tokens.json`. |

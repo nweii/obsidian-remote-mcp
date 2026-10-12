@@ -14,11 +14,9 @@ import {
   frontmatterValueMatches,
   type FrontmatterMatchType,
 } from './frontmatter.js';
-import { isoWeek, isoWeekYear, startOfIsoWeek, startOfMonth, startOfQuarter, startOfYear } from './date.js';
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 export const DEFAULT_CONTEXT_NOTE_CANDIDATES = ['AGENTS.md', 'CLAUDE.md'] as const;
-export const DEFAULT_DAILY_NOTE_TEMPLATE = 'Daily/{YYYY}-{MM}-{DD}.md';
 
 function collectVaultPaths(vaults: Record<string, { path?: string }>): { id: string; absPath: string }[] {
   const out: { id: string; absPath: string }[] = [];
@@ -2322,90 +2320,4 @@ function recomputeFileContent(
     isRename: plan.isRename,
     allowBare: !plan.basenameCollision,
   }).content;
-}
-
-// --- Periodic notes ----------------------------------------------------------
-
-export type PeriodicCadence = 'daily' | 'weekly' | 'monthly' | 'quarterly' | 'yearly';
-
-// The env var that holds each cadence's path template. A cadence with no
-// template configured is reported using this name so the user knows what to set.
-const PERIODIC_TEMPLATE_ENV_VARS: Record<PeriodicCadence, string> = {
-  daily: 'DAILY_NOTE_PATH_TEMPLATE',
-  weekly: 'WEEKLY_NOTE_PATH_TEMPLATE',
-  monthly: 'MONTHLY_NOTE_PATH_TEMPLATE',
-  quarterly: 'QUARTERLY_NOTE_PATH_TEMPLATE',
-  yearly: 'YEARLY_NOTE_PATH_TEMPLATE',
-};
-
-// Bucket a date into the start of the week, month, quarter, or year that
-// contains it. Daily keeps the date itself. The bucketed date is what the
-// template's date tokens are formatted from, so any date in a period maps to
-// the same note path.
-function bucketForCadence(date: Date, cadence: PeriodicCadence): Date {
-  if (cadence === 'weekly') return startOfIsoWeek(date);
-  if (cadence === 'monthly') return startOfMonth(date);
-  if (cadence === 'quarterly') return startOfQuarter(date);
-  if (cadence === 'yearly') return startOfYear(date);
-  return date;
-}
-
-function formatPeriodicNotePath(date: Date, template: string): string {
-  const year = date.getFullYear();
-  const shortYear = String(year).slice(-2);
-  const weekYear = isoWeekYear(date);
-  const shortWeekYear = String(weekYear).slice(-2);
-  const week = String(isoWeek(date)).padStart(2, '0');
-  const quarter = String(Math.floor(date.getMonth() / 3) + 1);
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const monthNumber = String(date.getMonth() + 1);
-  const day = String(date.getDate()).padStart(2, '0');
-  const dayNumber = String(date.getDate());
-  const dayIndex = date.getDay();
-  const shortWeekday = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'][dayIndex];
-  const shortDayName = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][dayIndex];
-  const longDayName = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][dayIndex];
-  const shortMonthName = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][date.getMonth()];
-  const longMonthName = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'][date.getMonth()];
-
-  return template
-    .replaceAll('{YYYY}', String(year))
-    .replaceAll('{YY}', shortYear)
-    .replaceAll('{GGGG}', String(weekYear))
-    .replaceAll('{GG}', shortWeekYear)
-    .replaceAll('{WW}', week)
-    .replaceAll('{Q}', quarter)
-    .replaceAll('{MM}', month)
-    .replaceAll('{M}', monthNumber)
-    .replaceAll('{DD}', day)
-    .replaceAll('{D}', dayNumber)
-    .replaceAll('{MMMM}', longMonthName)
-    .replaceAll('{MMM}', shortMonthName)
-    .replaceAll('{dddd}', longDayName)
-    .replaceAll('{ddd}', shortDayName)
-    .replaceAll('{dd}', shortWeekday);
-}
-
-// The daily cadence keeps a built-in default; every other cadence is opt-in and
-// has no template until its env var is set. Returns null for an unconfigured
-// non-daily cadence so callers can report which env var to set.
-export function getPeriodicNoteTemplate(cadence: PeriodicCadence): string | null {
-  const configured = process.env[PERIODIC_TEMPLATE_ENV_VARS[cadence]]?.trim();
-  if (configured) return configured;
-  if (cadence === 'daily') return DEFAULT_DAILY_NOTE_TEMPLATE;
-  return null;
-}
-
-export function getPeriodicNoteTemplateEnvVar(cadence: PeriodicCadence): string {
-  return PERIODIC_TEMPLATE_ENV_VARS[cadence];
-}
-
-// Periodic notes use a per-cadence path template with date tokens like {YYYY},
-// {GGGG}, {WW}, {Q}, {MM}, and {DD}. The date is bucketed into its containing
-// period before formatting. Returns null when the cadence has no template.
-export function getPeriodicNotePath(cadence: PeriodicCadence, date?: Date): string | null {
-  const template = getPeriodicNoteTemplate(cadence);
-  if (template === null) return null;
-  const bucketed = bucketForCadence(date ?? new Date(), cadence);
-  return formatPeriodicNotePath(bucketed, template);
 }

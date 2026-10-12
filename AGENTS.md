@@ -20,7 +20,8 @@ References:
 src/
   server.ts       — Builds the app via createApp() and starts it with the kit's startServer (persists tokens on shutdown)
   app.ts          — createApp(): maps env vars to the kit's createAuth / createApp, guards /mcp origins, registers the vault tools
-  vault.ts        — Vault filesystem operations, path policy, search and link indices, vault discovery, config-derived defaults
+  vault.ts        — Vault filesystem operations, path policy, search and link indices, vault discovery
+  periodic.ts     — Periodic note paths from env templates or the vault's Obsidian config (moment format translation)
   tools.ts        — MCP tool definitions; converts vault errors into tool results
   frontmatter.ts  — Frontmatter parsing and the textual key splice
   ignore.ts       — Compiles .mcpignore literal/glob rules with case and Unicode normalization
@@ -56,7 +57,7 @@ Endpoints: OAuth discovery `GET /.well-known/oauth-authorization-server`, token 
 
 - Path checks, `.mcpignore`, hidden folders, or anything that reads, writes or walks vault files: read [docs/vault-access-policy.md](docs/vault-access-policy.md).
 - Write paths, locking, atomic writes, frontmatter or section edits: [docs/writes.md](docs/writes.md).
-- Tool behaviour (context note, periodic notes, frontmatter search, batch tools): [docs/tools.md](docs/tools.md).
+- Tool behaviour (context note, periodic notes and their Obsidian config, frontmatter search, batch tools): [docs/tools.md](docs/tools.md).
 - Server setup, OAuth, origins, environment variables: [docs/server.md](docs/server.md).
 - Audit log contents and redaction: [docs/audit-logging.md](docs/audit-logging.md).
 - Reviewing a diff: apply [CODING_STANDARDS.md](CODING_STANDARDS.md).
