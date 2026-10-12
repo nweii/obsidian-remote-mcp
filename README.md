@@ -439,7 +439,7 @@ Each cadence takes its path from the first of these that configures it:
 
 So a vault that already sets these up in Obsidian needs no env vars: with the Daily notes folder `01-Days` and format `YYYY-MM-DD-ddd`, today's note is `01-Days/2026-10-12-Mon.md`. The server reads the plugin settings from the vault's `.obsidian` folder on each call (set `OBSIDIAN_CONFIG_DIR` if Obsidian uses a different config folder); tools still can't read `.obsidian`. A deployment that mounts only the notes falls back to the env vars and the built-in default.
 
-Obsidian date formats are translated into the tokens below, with `[bracketed]` text kept literal. A format using any other token (for example `Do` for "12th", or the locale-week `gggg-[W]ww` that Periodic Notes uses for weekly notes by default) returns an error naming the token rather than a guessed path. Switch weekly notes to ISO weeks (`GGGG-[W]WW`) or set the env var. A cadence nothing configures returns an error naming its env var and the config files checked.
+Obsidian date formats are translated into the tokens below, with `[bracketed]` text kept literal. Month and weekday names are English; if Obsidian runs in another language, set the env templates instead. A format using any other token (for example `Do` for "12th", or the locale-week `gggg-[W]ww` that Periodic Notes uses for weekly notes by default) returns an error naming the token rather than a guessed path. Switch weekly notes to ISO weeks (`GGGG-[W]WW`) or set the env var. A cadence nothing configures returns an error naming its env var and the config files checked.
 
 Supported tokens:
 
@@ -509,12 +509,13 @@ The guards:
 - The vault is always the server's. `vault` is not a parameter, and a `vault` key or flag is refused.
 - Parameter keys and flags must be lowercase words (`a-z` and `-`). Each becomes one argument; there is no shell.
 - `eval`, `devtools`, `restart`, `reload`, `plugins:restrict`, `theme:install`, and every `dev:`, `plugin:` and `snippet:` command are always blocked. No setting unblocks them.
-- Command-palette execution (`command id=…`) is off unless `OBSIDIAN_CLI_COMMANDS` lists the allowed IDs. `*` allows every ID except those that look destructive (delete, remove, purge, trash and similar); those run only when listed by name.
+- Command-palette execution (`command id=…`) is off unless `OBSIDIAN_CLI_COMMANDS` lists the allowed IDs. `*` allows every ID except those that look destructive (delete, remove, purge, trash and similar); those run only when listed by name. `*` also covers community-plugin commands, and some of those run scripts (Templater, Shell commands), so prefer listing IDs.
 - With `VAULT_READ_ONLY=true`, only commands on a known-read list run, so a command added by a future CLI release is refused until it is reviewed.
 - `path`, `to` and `folder` go through the same path checks as every other tool, and `file` (a note name) is resolved by the server and passed as an exact `path`. A protected location gets the same "Not found" answer a missing note does. `name` can't contain a slash.
-- Calls are audit-logged with the command, parameter names and flags; parameter values are not logged.
+- A command that may write can't target a folder through `path`; use `vault_move` or `vault_trash` for folders.
+- Calls are audit-logged with the command, parameter names and flags. Parameter values stay out of the logged arguments, though an error message can name the path or command ID it refused.
 
-The trade-off: commands answer from Obsidian's whole vault, so their output (a search, a task list, a Base) can't be filtered by `.mcpignore`. While `.mcpignore` has rules, the CLI tools stay off unless `OBSIDIAN_CLI_MCPIGNORE_ACK=true` says you accept that. `.obsidian` and `.git` stay protected either way, since Obsidian doesn't index them.
+The trade-off: commands answer from Obsidian's whole vault, so their output (a search, a task list, a Base) can't be filtered by `.mcpignore`, and commands with an implicit target (`daily:append`, a task reference, a template) aren't checked against it either. While `.mcpignore` has rules, the CLI tools stay off unless `OBSIDIAN_CLI_MCPIGNORE_ACK=true` says you accept that. `.obsidian` and `.git` stay protected either way, since Obsidian doesn't index them.
 
 With the CLI available, `vault_links` also asks Obsidian for backlinks, which follows Obsidian's own link resolution (aliases, relative and path links) instead of the server's text search. Those results are filtered through the path policy, so this works with `.mcpignore` rules and needs no acknowledgment. If the call fails, the server's search answers instead. The result's `backlinks_source` says which one answered.
 

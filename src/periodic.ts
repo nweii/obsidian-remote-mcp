@@ -24,25 +24,28 @@ export class PeriodicConfigError extends Error {
   }
 }
 
-export const DEFAULT_DAILY_NOTE_TEMPLATE = 'Daily/{YYYY}-{MM}-{DD}.md';
+const DEFAULT_DAILY_NOTE_TEMPLATE = 'Daily/{YYYY}-{MM}-{DD}.md';
+const DEFAULT_DAILY_FORMAT = 'YYYY-MM-DD';
 
-const TEMPLATE_ENV_VARS: Record<PeriodicCadence, string> = {
-  daily: 'DAILY_NOTE_PATH_TEMPLATE',
-  weekly: 'WEEKLY_NOTE_PATH_TEMPLATE',
-  monthly: 'MONTHLY_NOTE_PATH_TEMPLATE',
-  quarterly: 'QUARTERLY_NOTE_PATH_TEMPLATE',
-  yearly: 'YEARLY_NOTE_PATH_TEMPLATE',
+// Per-cadence facts: the env var holding its template, its key inside a Periodic Notes 1.x calendar
+// set, the plugin's own default format, and how a date is bucketed into its period so any date in
+// the period formats to the same note. The weekly default uses locale week tokens, which the
+// translation refuses, so a vault relying on it is asked to set an ISO format.
+const CADENCES: Record<PeriodicCadence, { envVar: string; calendarSetKey: string; defaultFormat: string; bucket: (d: Date) => Date }> = {
+  daily: { envVar: 'DAILY_NOTE_PATH_TEMPLATE', calendarSetKey: 'day', defaultFormat: DEFAULT_DAILY_FORMAT, bucket: d => d },
+  weekly: { envVar: 'WEEKLY_NOTE_PATH_TEMPLATE', calendarSetKey: 'week', defaultFormat: 'gggg-[W]ww', bucket: startOfIsoWeek },
+  monthly: { envVar: 'MONTHLY_NOTE_PATH_TEMPLATE', calendarSetKey: 'month', defaultFormat: 'YYYY-MM', bucket: startOfMonth },
+  quarterly: { envVar: 'QUARTERLY_NOTE_PATH_TEMPLATE', calendarSetKey: 'quarter', defaultFormat: 'YYYY-[Q]Q', bucket: startOfQuarter },
+  yearly: { envVar: 'YEARLY_NOTE_PATH_TEMPLATE', calendarSetKey: 'year', defaultFormat: 'YYYY', bucket: startOfYear },
 };
-
-export function getPeriodicNoteTemplateEnvVar(cadence: PeriodicCadence): string {
-  return TEMPLATE_ENV_VARS[cadence];
-}
 
 // --- Date tokens ---------------------------------------------------------------
 
 // The date tokens a path can use. Env templates spell them in braces ({YYYY}); moment formats
 // spell them bare. Every other moment token is refused rather than approximated, so a format this
-// server can't reproduce exactly fails instead of naming the wrong note.
+// server can't reproduce exactly fails instead of naming the wrong note. Month and weekday names
+// are English, matching Obsidian in English; a vault whose app language changes moment's names
+// should set the env templates.
 const TOKENS = ['YYYY', 'YY', 'GGGG', 'GG', 'WW', 'Q', 'MMMM', 'MMM', 'MM', 'M', 'DD', 'D', 'dddd', 'ddd', 'dd'] as const;
 type Token = (typeof TOKENS)[number];
 type Segment = { literal: string } | { token: Token };
@@ -138,14 +141,14 @@ function configDir(): string {
 // Parsed JSON, or undefined when the file is missing, unreadable or not JSON.
 function readConfigJson(rel: string): unknown {
   try {
-    return JSON.parse(readFileSync(path.resolve(getVaultRoot(), configDir(), rel), 'utf-8'));
+    return JSON.parse(readFileSync(path.resolve(getVaultRoot(), rel), 'utf-8'));
   } catch {
     return undefined;
   }
 }
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
-const str = (v: unknown): string => (typeof v === 'string' ? v.trim() : '');
+const trimmedString = (v: unknown): string => (typeof v === 'string' ? v.trim() : '');
 
 interface ConfiguredFormat {
   folder: string;
@@ -154,49 +157,36 @@ interface ConfiguredFormat {
 
 type Lookup = { found: ConfiguredFormat } | { skipped: string };
 
+// Config files, as vault-relative paths (also how errors name them).
+const configFile = (name: string) => `${configDir()}/${name}`;
+const periodicNotesFile = () => configFile('plugins/periodic-notes/data.json');
+const dailyNotesFile = () => configFile('daily-notes.json');
+
 // Periodic Notes keeps cadences keyed by name (0.x) or inside the active calendar set (1.x).
-const CALENDAR_SET_KEYS: Record<PeriodicCadence, string> = {
-  daily: 'day', weekly: 'week', monthly: 'month', quarterly: 'quarter', yearly: 'year',
-};
-
-// The plugin's own defaults for an empty format. Weekly uses locale week tokens, which the
-// translation refuses, so a vault relying on that default is asked to set an ISO format.
-const PERIODIC_NOTES_DEFAULT_FORMATS: Record<PeriodicCadence, string> = {
-  daily: 'YYYY-MM-DD', weekly: 'gggg-[W]ww', monthly: 'YYYY-MM', quarterly: 'YYYY-[Q]Q', yearly: 'YYYY',
-};
-
-function periodicNotesFile(): string {
-  return `${configDir()}/plugins/periodic-notes/data.json`;
-}
-
 function lookupPeriodicNotes(cadence: PeriodicCadence): Lookup {
-  const enabled = readConfigJson('community-plugins.json');
+  const enabled = readConfigJson(configFile('community-plugins.json'));
   if (!Array.isArray(enabled) || !enabled.includes('periodic-notes')) return { skipped: 'plugin not enabled' };
-  const data = readConfigJson('plugins/periodic-notes/data.json');
+  const data = readConfigJson(periodicNotesFile());
   if (!isRecord(data)) return { skipped: 'not found or unreadable' };
   let settings: unknown = data[cadence];
   if (Array.isArray(data.calendarSets)) {
     const sets = data.calendarSets.filter(isRecord);
     const active = sets.find(s => s.id === data.activeCalendarSet) ?? sets[0];
-    settings = active?.[CALENDAR_SET_KEYS[cadence]];
+    settings = active?.[CADENCES[cadence].calendarSetKey];
   }
   if (!isRecord(settings) || settings.enabled !== true) return { skipped: `${cadence} not enabled` };
-  return { found: { folder: str(settings.folder), format: str(settings.format) || PERIODIC_NOTES_DEFAULT_FORMATS[cadence] } };
-}
-
-function dailyNotesFile(): string {
-  return `${configDir()}/daily-notes.json`;
+  return { found: { folder: trimmedString(settings.folder), format: trimmedString(settings.format) || CADENCES[cadence].defaultFormat } };
 }
 
 // core-plugins.json is a list of enabled ids in older Obsidian and an id → boolean map in newer.
 // Without it, Daily notes counts as on, as it is in a fresh vault.
 function lookupCoreDailyNotes(): Lookup {
-  const core = readConfigJson('core-plugins.json');
+  const core = readConfigJson(configFile('core-plugins.json'));
   const disabled = Array.isArray(core) ? !core.includes('daily-notes') : isRecord(core) && core['daily-notes'] === false;
   if (disabled) return { skipped: 'plugin not enabled' };
-  const data = readConfigJson('daily-notes.json');
+  const data = readConfigJson(dailyNotesFile());
   if (!isRecord(data)) return { skipped: 'not found or unreadable' };
-  return { found: { folder: str(data.folder), format: str(data.format) || 'YYYY-MM-DD' } };
+  return { found: { folder: trimmedString(data.folder), format: trimmedString(data.format) || DEFAULT_DAILY_FORMAT } };
 }
 
 function configuredPath(date: Date, { folder, format }: ConfiguredFormat, source: string): string {
@@ -207,23 +197,13 @@ function configuredPath(date: Date, { folder, format }: ConfiguredFormat, source
 
 // --- Resolution ----------------------------------------------------------------
 
-// Bucket a date into the start of its week, month, quarter or year, so any date in a period
-// formats to the same note path.
-function bucketForCadence(date: Date, cadence: PeriodicCadence): Date {
-  if (cadence === 'weekly') return startOfIsoWeek(date);
-  if (cadence === 'monthly') return startOfMonth(date);
-  if (cadence === 'quarterly') return startOfQuarter(date);
-  if (cadence === 'yearly') return startOfYear(date);
-  return date;
-}
-
 // Resolves a cadence's note path for a date (today by default), trying each source in order. A
 // source that is present but can't be translated throws instead of falling through, because a
 // later source would name a note the vault owner doesn't use. Throws PeriodicConfigError when no
 // source configures the cadence, listing every source checked.
 export function resolvePeriodicNotePath(cadence: PeriodicCadence, date: Date = new Date()): PeriodicNotePath {
-  const bucketed = bucketForCadence(date, cadence);
-  const envVar = TEMPLATE_ENV_VARS[cadence];
+  const { envVar, bucket } = CADENCES[cadence];
+  const bucketed = bucket(date);
   const template = process.env[envVar]?.trim();
   if (template) return { path: formatSegments(bucketed, parseTemplate(template)), source: 'env' };
 

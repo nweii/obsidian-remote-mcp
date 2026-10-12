@@ -3,7 +3,7 @@
 // or reaching around the vault access policy. Also answers backlinks from Obsidian when it can.
 import type { McpServer } from "@modelcontextprotocol/server";
 import { execFile } from "node:child_process";
-import { accessSync, constants, realpathSync } from "node:fs";
+import { accessSync, constants, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import * as vault from "./vault.js";
@@ -15,6 +15,11 @@ const MAX_OUTPUT_BYTES = 10 * 1024 * 1024;
 // How long an unavailable result stands before the next request probes again. Obsidian may still
 // be starting when the server does.
 const UNAVAILABLE_RECHECK_MS = 30_000;
+// A pass is re-checked this often too, so the CLI's vault name can't drift to another folder
+// for long without the server noticing.
+const AVAILABLE_RECHECK_MS = 5 * 60_000;
+// Backlinks fall back to the server's search, so a slow app shouldn't hold vault_links up.
+const BACKLINKS_TIMEOUT_MS = 5_000;
 
 // --- Guards ----------------------------------------------------------------------
 
@@ -95,32 +100,64 @@ function argumentRefusal(params: Record<string, string>, flags: string[]): strin
   return null;
 }
 
+const notFound = (value: string): CliOutcome => ({ ok: false, error: `Not found: ${value}` });
+
+// The vault root, however it is spelled. It is a valid folder for listings but overlaps the
+// policy file, so the write check would refuse it.
+const isVaultRoot = (value: string) => path.posix.normalize(value.trim().replace(/^\/+/, "") || ".") === ".";
+
 // Checks every path-like parameter against the vault policy, with the write checks (which also
 // protect .mcpignore) since a command may write there. file= (Obsidian's own name resolution)
 // becomes path= resolved by the server, so Obsidian can't pick a protected note the server
-// wouldn't. A protected location gets the same answer as a missing one.
-async function applyPathPolicy(params: Record<string, string>): Promise<{ ok: true; params: Record<string, string> } | { ok: false; error: string }> {
+// wouldn't. A command that may write can't target a folder through path=, since that would act on
+// descendants this check never sees; vault_move and vault_trash handle folders. A protected
+// location gets the same answer as a missing one.
+async function applyPathPolicy(
+  command: string,
+  params: Record<string, string>,
+): Promise<{ ok: true; params: Record<string, string> } | { ok: false; outcome: CliOutcome }> {
   const out = { ...params };
   if (out.file !== undefined) {
-    if (out.path !== undefined) return { ok: false, error: "Pass file or path, not both." };
+    if (out.path !== undefined) return { ok: false, outcome: { ok: false, error: "Pass file or path, not both." } };
     try {
       out.path = (await vault.resolveNoteReference(out.file)).path;
     } catch {
-      return { ok: false, error: `Not found: ${out.file}` };
+      return { ok: false, outcome: notFound(out.file) };
     }
     delete out.file;
   }
   for (const key of PATH_PARAMS) {
     const value = out[key];
-    if (value === undefined) continue;
+    if (value === undefined || isVaultRoot(value) && key !== "to" && KNOWN_READ_COMMANDS.has(command)) continue;
+    let abs: string;
     try {
-      vault.resolveSafeWritePath(value);
+      abs = vault.resolveSafeWritePath(value);
     } catch (e) {
-      if (e instanceof vault.VaultPolicyError) return { ok: false, error: `Not found: ${value}` };
+      if (e instanceof vault.VaultPolicyError) return { ok: false, outcome: notFound(value) };
       throw e;
+    }
+    if (key === "path" && !KNOWN_READ_COMMANDS.has(command) && isDirectory(abs)) {
+      return { ok: false, outcome: { ok: false, error: `vault_cli can't run "${command}" on a folder. Use vault_move or vault_trash for folders.` } };
     }
   }
   return { ok: true, params: out };
+}
+
+function isDirectory(abs: string): boolean {
+  try {
+    return statSync(abs).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function exists(abs: string): boolean {
+  try {
+    statSync(abs);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 // --- Process -----------------------------------------------------------------------
@@ -222,24 +259,27 @@ async function probe(config: CliConfig): Promise<Availability> {
   return { ok: true };
 }
 
-// Whether the CLI works for the server's vault. A pass is kept until a call fails; a failure is
-// kept briefly, then probed again. The gate is a working CLI, not the presence of the desktop app.
+// Whether the CLI works for the server's vault. A result is kept until a call fails or it ages
+// out, then probed again. The gate is a working CLI, not the presence of the desktop app.
 async function cliReachable(config: CliConfig): Promise<Availability> {
   const key = [config.binary, config.vaultName, config.root].join("\n");
-  const fresh = probeCache?.key === key && (probeCache.result.ok || Date.now() - probeCache.at < UNAVAILABLE_RECHECK_MS);
+  const ttl = probeCache?.result.ok ? AVAILABLE_RECHECK_MS : UNAVAILABLE_RECHECK_MS;
+  const fresh = probeCache?.key === key && Date.now() - probeCache.at < ttl;
   if (!fresh) probeCache = { key, result: await probe(config), at: Date.now() };
   return probeCache!.result;
 }
 
+const envIsTrue = (name: string) => process.env[name]?.trim().toLowerCase() === "true";
+
 function optedIn(): boolean {
-  return process.env.OBSIDIAN_CLI_ENABLED?.trim().toLowerCase() === "true";
+  return envIsTrue("OBSIDIAN_CLI_ENABLED");
 }
 
 // CLI output can't be filtered by path, so the tools stay off while .mcpignore hides anything,
 // unless the operator acknowledges that.
 function mcpignoreRefusal(): string | null {
   if (!vault.hasIgnoreRules()) return null;
-  if (process.env.OBSIDIAN_CLI_MCPIGNORE_ACK?.trim().toLowerCase() === "true") return null;
+  if (envIsTrue("OBSIDIAN_CLI_MCPIGNORE_ACK")) return null;
   return ".mcpignore has rules, and CLI output can't be filtered by them. Set OBSIDIAN_CLI_MCPIGNORE_ACK=true to accept that.";
 }
 
@@ -251,6 +291,8 @@ export async function cliToolsAvailability(): Promise<Availability> {
   return cliReachable(cliConfig());
 }
 
+const unavailable = (reason: string): CliOutcome => ({ ok: false, error: `The Obsidian CLI is unavailable: ${reason}.` });
+
 // Runs a command; on failure, probes again so an app that went away is reported as such rather
 // than as the command's own error.
 async function execChecked(config: CliConfig, args: string[]): Promise<CliOutcome> {
@@ -258,7 +300,7 @@ async function execChecked(config: CliConfig, args: string[]): Promise<CliOutcom
   if (result.ok) return { ok: true, output: result.stdout };
   probeCache = null;
   const reachable = await cliReachable(config);
-  if (!reachable.ok) return { ok: false, error: `The Obsidian CLI is unavailable: ${reachable.reason}.` };
+  if (!reachable.ok) return unavailable(reachable.reason);
   return { ok: false, error: `Error: ${result.error}`, output: result.output };
 }
 
@@ -273,14 +315,21 @@ export async function runCli(request: CliRequest): Promise<CliOutcome> {
     argumentRefusal(params, flags);
   if (refusal) return { ok: false, error: refusal };
 
-  const policed = await applyPathPolicy(params);
-  if (!policed.ok) return { ok: false, error: policed.error };
+  const policed = await applyPathPolicy(request.command, params);
+  if (!policed.ok) return policed.outcome;
 
   const available = await cliToolsAvailability();
-  if (!available.ok) return { ok: false, error: `The Obsidian CLI is unavailable: ${available.reason}.` };
+  if (!available.ok) return unavailable(available.reason);
 
   const args = [request.command, ...Object.entries(policed.params).map(([k, v]) => `${k}=${v}`), ...flags];
-  return execChecked(cliConfig(), args);
+  const outcome = await execChecked(cliConfig(), args);
+  // A failure naming a missing note answers exactly as a protected one does, so the difference
+  // can't confirm that a protected note exists.
+  if (!outcome.ok && policed.params.path !== undefined && !isVaultRoot(policed.params.path) &&
+      !exists(vault.resolveSafeWritePath(policed.params.path))) {
+    return notFound(policed.params.path);
+  }
+  return outcome;
 }
 
 interface HelpEntry {
@@ -307,7 +356,7 @@ export async function cliHelp(command?: string): Promise<CliOutcome> {
     if (refusal) return { ok: false, error: refusal };
   }
   const available = await cliToolsAvailability();
-  if (!available.ok) return { ok: false, error: `The Obsidian CLI is unavailable: ${available.reason}.` };
+  if (!available.ok) return unavailable(available.reason);
   const result = await execChecked(cliConfig(), command === undefined ? ["help"] : ["help", command]);
   if (!result.ok || command !== undefined) return result;
   const entries = parseHelp(result.output).filter(e => commandRefusal(e.name) === null);
@@ -328,7 +377,7 @@ function backlinkPaths(output: string): string[] {
   });
 }
 
-function allowed(relPath: string): boolean {
+function isAllowedPath(relPath: string): boolean {
   try {
     vault.resolveSafePath(relPath);
     return true;
@@ -351,10 +400,10 @@ export async function resolveBacklinks(relPath: string, limit: number): Promise<
   if (optedIn()) {
     const config = cliConfig();
     if ((await cliReachable(config)).ok) {
-      const result = await exec(config, ["backlinks", `path=${relPath}`, "format=json"]);
+      const result = await exec(config, ["backlinks", `path=${relPath}`, "format=json"], BACKLINKS_TIMEOUT_MS);
       try {
         if (!result.ok) throw new Error(result.error);
-        const paths = backlinkPaths(result.stdout).filter(p => p !== relPath && allowed(p));
+        const paths = backlinkPaths(result.stdout).filter(p => p !== relPath && isAllowedPath(p));
         return { paths: limit > 0 ? paths.slice(0, limit) : paths, source: "obsidian" };
       } catch {
         probeCache = null;

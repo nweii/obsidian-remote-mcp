@@ -212,6 +212,22 @@ describe('guards', () => {
     expect(missing).toBe('Not found: Nope');
   });
 
+  test('a missing path= that makes the command fail answers like a blocked one', async () => {
+    process.env.FAKE_OBSIDIAN_FAIL = '1';
+    expect(await cli.runCli({ command: 'read', params: { path: 'Nope.md' } })).toEqual({ ok: false, error: 'Not found: Nope.md' });
+  });
+
+  test('a command that may write refuses a folder in path=', async () => {
+    expect(await refused({ command: 'delete', params: { path: 'Private' } })).toContain('folder');
+    expect((await cli.runCli({ command: 'files', params: { folder: 'Private' } })).ok).toBe(true);
+  });
+
+  test('the vault root works as a folder for read commands only', async () => {
+    expect((await cli.runCli({ command: 'files', params: { folder: '/' } })).ok).toBe(true);
+    await rm(logFile, { force: true });
+    await refused({ command: 'delete', params: { path: '/' } });
+  });
+
   test('stays off while .mcpignore has rules and no acknowledgment', async () => {
     await writeFile(path.join(vaultPath, '.mcpignore'), 'Private\n');
     await refused({ command: 'search', params: { query: 'x' } });
