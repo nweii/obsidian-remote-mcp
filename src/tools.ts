@@ -1,13 +1,15 @@
-// ABOUTME: Registers all vault tools on an McpServer - context, read (full/list), outline, read section, read attachment, frontmatter, links, writes, move/rename, title search, content search, tags, periodic note, clip URL, skim, feedback.
+// ABOUTME: Registers all vault tools on an McpServer - context, read (full/list), outline, read section, read attachment, frontmatter, links, writes, move/rename, title search, content search, tags, periodic note, clip URL, skim, Obsidian CLI, feedback.
 import type { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import * as vault from "./vault.js";
 import { frontmatterValueToString } from "./frontmatter.js";
 import { registerClipTool } from "./clip.js";
 import { registerSkimTool } from "./skim.js";
+import { registerCliTools, resolveBacklinks } from "./cli.js";
 import { structuredResult } from "mcp-server-kit";
 import { registerLogged, logFeedback, isLoggingEnabled, type ToolResult } from "./log.js";
 import { parseLocalYmd, localYmd } from "./date.js";
+import { resolvePeriodicNotePath, PeriodicConfigError } from "./periodic.js";
 
 // Hard cap on the folder-tree walk inside vault_context. The tree is a bonus orientation
 // section; if filesystem traversal stalls (slow disk, network mount, huge vault) we'd rather
@@ -251,6 +253,10 @@ const linksOutput = z.object({
     }),
   ),
   backlinks: z.array(z.string()).optional().describe("Present when include_backlinks was set"),
+  backlinks_source: z
+    .enum(["obsidian", "server"])
+    .optional()
+    .describe("Which backend answered backlinks: Obsidian's own link resolution through its CLI, or the server's search"),
 });
 
 const tagsOutput = z.object({
@@ -329,6 +335,17 @@ export async function registerTools(server: McpServer) {
   } catch (err) {
     console.error(
       "[obsidian-remote-mcp] vault_skim registration failed; continuing with core tools.",
+      err instanceof Error ? err.message : err,
+    );
+  }
+
+  // Optional: vault_cli and vault_cli_help, registered only when opted in and the Obsidian CLI
+  // reaches this vault.
+  try {
+    await registerCliTools(server);
+  } catch (err) {
+    console.error(
+      "[obsidian-remote-mcp] Obsidian CLI tool registration failed; continuing with core tools.",
       err instanceof Error ? err.message : err,
     );
   }
@@ -617,14 +634,14 @@ export async function registerTools(server: McpServer) {
       const ref = await vault.resolveNoteReference(path);
       const links = await vault.getNoteLinks(ref.path);
       const backlinks = include_backlinks
-        ? await vault.getBacklinks(ref.path, backlinks_limit)
+        ? await resolveBacklinks(ref.path, backlinks_limit)
         : undefined;
       const body = structuredResult(
         linksOutput,
         {
           path: ref.path,
           outgoing: links.map((l) => ({ title: l.title, path: l.path })),
-          ...(backlinks !== undefined ? { backlinks } : {}),
+          ...(backlinks !== undefined ? { backlinks: backlinks.paths, backlinks_source: backlinks.source } : {}),
         },
         (parsed) => {
           const lines: string[] = ["## Outgoing links"];
@@ -636,7 +653,7 @@ export async function registerTools(server: McpServer) {
             }
           }
           if (parsed.backlinks !== undefined) {
-            lines.push("", "## Backlinks");
+            lines.push("", `## Backlinks (from ${parsed.backlinks_source === "obsidian" ? "Obsidian" : "the server's search"})`);
             if (parsed.backlinks.length === 0) {
               lines.push("(none found)");
             } else {
@@ -984,7 +1001,7 @@ export async function registerTools(server: McpServer) {
     {
       annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
       title: "Get or create periodic note",
-      description: `Get or create a daily, weekly, monthly, quarterly, or yearly note using the cadence's configured path template. The optional date is bucketed into the week, month, quarter, or year that contains it. Defaults to today.`,
+      description: `Get or create a daily, weekly, monthly, quarterly, or yearly note at the path the vault's Obsidian config (or the server's path template) sets for that cadence. The optional date is bucketed into the week, month, quarter, or year that contains it. Defaults to today.`,
       inputSchema: z.object({
         period: z.enum(["daily", "weekly", "monthly", "quarterly", "yearly"]).describe("Which cadence of note to get or create"),
         date: z.string().optional().describe("Date in YYYY-MM-DD format, bucketed into its containing period (defaults to today)"),
@@ -1004,13 +1021,12 @@ export async function registerTools(server: McpServer) {
         }
         parsed = p;
       }
-      const notePath = vault.getPeriodicNotePath(period, parsed);
-      if (notePath === null) {
-        const envVar = vault.getPeriodicNoteTemplateEnvVar(period);
-        return {
-          content: [{ type: "text", text: `Error: no ${period} note template configured. Set the ${envVar} environment variable.` }],
-          isError: true,
-        };
+      let notePath: string;
+      try {
+        notePath = resolvePeriodicNotePath(period, parsed).path;
+      } catch (e) {
+        if (!(e instanceof PeriodicConfigError)) throw e;
+        return { content: [{ type: "text", text: `Error: ${e.message}` }], isError: true };
       }
       const dateStr = date ?? localYmd(new Date());
 

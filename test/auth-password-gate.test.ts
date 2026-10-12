@@ -91,7 +91,7 @@ describe('approval page without a password (click-to-approve)', () => {
       const { base, close } = await listen(app);
       try {
         const html = await (await getAuthorize(base)).text();
-        expect(html).toContain('Approve');
+        expect(html).toContain('Allow access');
         expect(html).not.toContain('name="password"');
       } finally {
         await close();

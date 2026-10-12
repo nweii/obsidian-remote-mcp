@@ -70,9 +70,9 @@ Access to the vault is controlled in layers.
 - **[OAuth 2.1 + PKCE](#oauth-browser-sign-in)** — browser sign-in, presenting your `MCP_CLIENT_ID`.
 - **[API key](#api-key-static-bearer-token)** (`MCP_STATIC_BEARER_TOKEN`) — a fixed bearer token, for clients that can't open a browser.
 
-**Approval** — with OAuth, a client is granted access at the approval page, so the server won't start until access is guarded. Set [`APPROVAL_PASSWORD`](#password-gate) to require a password there, or rely on a client secret (`MCP_CLIENT_SECRET`), which guards token exchange instead. If a gateway like Cloudflare Zero Trust already fronts `/authorize`, set `APPROVAL_OPEN=true`.
+**Approval** — with OAuth, a client is granted access at the approval page, so the server won't start until access is guarded. Set [`APPROVAL_PASSWORD`](#password-gate) to require a password there, or rely on a client secret (`MCP_CLIENT_SECRET`), which guards token exchange instead. If a gateway like Cloudflare Zero Trust already fronts `/authorize`, set `APPROVAL_OPEN=true`. When you approve a connection, you also choose what it may do beyond reading: [edit notes, and control the Obsidian app](#choosing-what-each-connection-can-do).
 
-**Scope** — `.mcpignore` blocks paths from access, `VAULT_READ_ONLY` disables writes, and `CORS_ALLOWED_ORIGINS` limits browser origins. Paths are always confined to the vault root.
+**Scope** — `.mcpignore` blocks paths from access, `VAULT_READ_ONLY` disables writes for every connection, and `CORS_ALLOWED_ORIGINS` limits browser origins. Paths are always confined to the vault root.
 
 **Outbound note text** — `vault_skim` is the only tool that sends note text off the server, and only when a decision-model key is configured. It returns a plan first and sends nothing until called again with that plan's id. `SKIM_EXCLUDE_TAGS` and `SKIM_EXCLUDE_PATHS` withhold notes from it entirely. See [Skimming notes](#skimming-notes).
 
@@ -197,7 +197,7 @@ The server currently exposes these tools:
 | `vault_read_section` | Body under a single heading (`heading` = text without `#`, case-insensitive) |
 | `vault_read_attachment` | Read a binary attachment by path; images return a renderable image block, other types base64 plus mime/size; `stat_only` checks size first (read-only) |
 | `vault_frontmatter` | Read YAML frontmatter from a note; optional `property` for a single key |
-| `vault_links` | Read outgoing wikilinks and optional backlinks |
+| `vault_links` | Read outgoing wikilinks and optional backlinks (answered by Obsidian when the CLI tools are on) |
 | `vault_create` | Create a new note |
 | `vault_update` | Replace a note's full contents; optional `base_version` rejects stale writes |
 | `vault_set_frontmatter_property` | Set one frontmatter property without rewriting the note body |
@@ -210,9 +210,10 @@ The server currently exposes these tools:
 | `vault_search_content` | Regex search in note bodies; optional `folder` to scope large vaults |
 | `vault_search_frontmatter` | Find notes by a frontmatter property (match type `exact`, `contains`, or `exists`) |
 | `vault_tags` | List all tags with note counts, or note paths for one `tag`; counts frontmatter and inline `#tag` |
-| `vault_periodic_note` | Read or create a daily, weekly, monthly, quarterly, or yearly note using a per-cadence path template |
+| `vault_periodic_note` | Read or create a daily, weekly, monthly, quarterly, or yearly note at the path the vault's Obsidian config or an env template sets |
 | `vault_clip_url` | Save a web page to the vault as a markdown note |
 | `vault_skim` | Return only the parts of selected notes relevant to a goal, judged chunk by chunk by an external decision model; plans first and sends nothing until confirmed. Listed only when a decision-model key is set (see [Skimming notes](#skimming-notes)) |
+| `vault_cli_help` / `vault_cli` | List and run Obsidian CLI commands against this vault. Opt-in, and listed only when the CLI reaches this vault (see [Obsidian CLI tools](#obsidian-cli-tools)) |
 | `vault_feedback` | Log a structured note when an agent gets stuck or wants a tool that doesn't exist |
 
 ## Server configuration
@@ -244,6 +245,8 @@ For scripts and clients that cannot open a browser, use a long random string as 
 The client will then use this for every `/mcp` request. The server compares it directly, skipping `/authorize`, `POST /token`, and `TOKEN_STORE_PATH` for that client. This works alongside OAuth — setting it does not disable the browser flow for other clients.
 
 The trade-off versus OAuth is that the token is long-lived and held by the client service. You'll need to replace this token with a new one if you ever suspect exposure.
+
+The API key has full access by default. To narrow it, set `MCP_STATIC_BEARER_SCOPES` to the permissions it should keep: `vault:write` (edit notes), `vault:cli` (control the Obsidian app), both separated by a comma, or `none` for reading only.
 
 To generate a random, secure API key, run this in your terminal:
 
@@ -282,6 +285,17 @@ The integration tests exercise password approval, PKCE exchange, MCP initializat
 The OAuth approval page must be guarded, and the server refuses to start otherwise. Set `APPROVAL_PASSWORD` to require a password on that page before a code is issued; it's checked on every authorization. A client secret (`MCP_CLIENT_SECRET`) satisfies the guard instead, by blocking token exchange.
 
 If a reverse proxy or zero-trust gateway already guards `/authorize` (the stronger control), set `APPROVAL_OPEN=true` for the click-to-approve page instead.
+
+#### Choosing what each connection can do
+
+Every connection can read your notes. When you approve a new one, the approval page also asks whether it may:
+
+- **Edit notes**: create, edit, move and trash notes. Leave it unticked for a connection that should only read.
+- **Control the Obsidian app**: use `vault_cli` to run plugin and command-palette commands and change Publish and Sync. This box appears only while the [Obsidian CLI tools](#obsidian-cli-tools) are on. Without editing, such a connection runs only commands that read.
+
+Both are ticked by default, so approving without changes gives full access. Your server settings stay the limit: with `VAULT_READ_ONLY=true` no connection can edit, and the CLI box appears only when `OBSIDIAN_CLI_ENABLED=true`. A connection gets only what was ticked when it was approved, so after turning on editing or the CLI tools, connect again to give a connection that access. Connections approved before these choices existed keep full access.
+
+To change a connection's access, connect it again and choose differently. A connection approved without "Edit notes" sees no editing tools, and tools that can write tell the agent the connection is read-only.
 
 ### Health endpoint
 
@@ -323,14 +337,17 @@ VAULT_PATH=/path/to/your/vault         # optional if obsidian.json is available
 OBSIDIAN_VAULT_ID=personal             # optional when obsidian.json contains multiple vaults
 VAULT_DISPLAY_NAME=Personal            # optional; defaults to the vault directory name
 VAULT_CONTEXT_PATH=AGENTS.md           # optional; defaults to AGENTS.md, then CLAUDE.md
-DAILY_NOTE_PATH_TEMPLATE=Daily/{YYYY}-{MM}-{DD}.md
-WEEKLY_NOTE_PATH_TEMPLATE=Weekly/{GGGG}-W{WW}.md       # optional; opt-in cadence
-MONTHLY_NOTE_PATH_TEMPLATE=Monthly/{YYYY}-{MM}.md      # optional; opt-in cadence
-QUARTERLY_NOTE_PATH_TEMPLATE=Quarterly/{YYYY}-Q{Q}.md  # optional; opt-in cadence
-YEARLY_NOTE_PATH_TEMPLATE=Yearly/{YYYY}.md             # optional; opt-in cadence
+DAILY_NOTE_PATH_TEMPLATE=Daily/{YYYY}-{MM}-{DD}.md     # optional; overrides the vault's Obsidian config
+WEEKLY_NOTE_PATH_TEMPLATE=Weekly/{GGGG}-W{WW}.md       # optional; overrides the vault's Obsidian config
+MONTHLY_NOTE_PATH_TEMPLATE=Monthly/{YYYY}-{MM}.md      # optional; overrides the vault's Obsidian config
+QUARTERLY_NOTE_PATH_TEMPLATE=Quarterly/{YYYY}-Q{Q}.md  # optional; overrides the vault's Obsidian config
+YEARLY_NOTE_PATH_TEMPLATE=Yearly/{YYYY}.md             # optional; overrides the vault's Obsidian config
+OBSIDIAN_CONFIG_DIR=.obsidian          # optional; where periodic-note settings are read from
+PERIODIC_WEEK_START=sunday             # optional; first day of locale weeks ({gggg}, {ww})
 # CORS_ALLOWED_ORIGINS=https://vault.example,https://my-vault-chat.example # optional; replaces the site-origin default
 TOKEN_STORE_PATH=./tokens.json         # optional
 MCP_STATIC_BEARER_TOKEN=               # optional; API key for /mcp (see Authentication)
+MCP_STATIC_BEARER_SCOPES=              # optional; narrows the API key: vault:write, vault:cli, or none
 HEALTH_TOKEN=                          # optional; enables GET /health (see Health endpoint)
 VAULT_READ_ONLY=true                   # optional
 VAULT_ATTACHMENT_MAX_BYTES=10485760    # optional; vault_read_attachment size cap, defaults to 10 MB
@@ -341,6 +358,11 @@ OPENAI_API_KEY=                        # optional; key for SKIM_PROVIDER=openai
 SKIM_MODEL=                            # optional; overrides the provider's default decision model
 SKIM_EXCLUDE_TAGS=private,health/*     # optional; notes with these tags are never sent by vault_skim
 SKIM_EXCLUDE_PATHS=03-Records/Journaling # optional; notes at or under these paths (.mcpignore syntax) are never sent by vault_skim
+OBSIDIAN_CLI_ENABLED=true             # optional; offers vault_cli when the obsidian CLI reaches this vault
+OBSIDIAN_CLI_PATH=                     # optional; the obsidian binary, when it isn't on PATH
+OBSIDIAN_CLI_VAULT=                    # optional; the vault's name in Obsidian, when it differs from the folder name
+OBSIDIAN_CLI_COMMANDS=                 # optional; command-palette IDs vault_cli may run (comma-separated, or *)
+OBSIDIAN_CLI_MCPIGNORE_ACK=            # optional; true allows the CLI tools while .mcpignore has rules
 PORT=3456
 # HOST=127.0.0.1                    # optional for a host-local proxy; in Docker restrict the published port instead
 ```
@@ -368,7 +390,7 @@ Run setup again after dependency updates: it rebuilds the clipper bundle using t
 
 ### Audit-log privacy
 
-With logging enabled, paths, titles, search queries, tags, and frontmatter field names can appear in logs in clear text. Note-body arguments and frontmatter values are redacted, and known parser/section errors are sanitized, but these metadata can still be sensitive. Feedback text is stored as written. Set `LOG_ENABLED=false` to disable tool-call and feedback logging. Logs do not rotate automatically.
+With logging enabled, paths, titles, search queries, tags, and frontmatter field names can appear in logs in clear text. Each entry also names the connection that made the call (`client`, plus `client_name` for clients that registered themselves). Note-body arguments and frontmatter values are redacted, and known parser/section errors are sanitized, but these metadata can still be sensitive. Feedback text is stored as written. Set `LOG_ENABLED=false` to disable tool-call and feedback logging. Logs do not rotate automatically.
 
 ### Vault path
 
@@ -413,9 +435,14 @@ If you do not want to maintain one, the server still works without it.
 
 ### Periodic note paths
 
-`vault_periodic_note` reads or creates a note for one of five cadences — `daily`, `weekly`, `monthly`, `quarterly`, `yearly`. It replaces the earlier `vault_daily_note` tool; clients pick up the new tool on their next tool-list refresh, and `period: daily` behaves exactly as the old daily tool did. The tool takes an optional `date` (`YYYY-MM-DD`), which is bucketed into the week, month, quarter, or year that contains it, so any day in a period maps to the same note.
+`vault_periodic_note` reads or creates a note for one of five cadences — `daily`, `weekly`, `monthly`, `quarterly`, `yearly`. It replaces the earlier `vault_daily_note` tool; clients pick up the new tool on their next tool-list refresh. The tool takes an optional `date` (`YYYY-MM-DD`), which is bucketed into the week, month, quarter, or year that contains it, so any day in a period maps to the same note.
 
-Each cadence has its own opt-in path template env var:
+Each cadence takes its path from the first of these that configures it:
+
+1. Its env var (table below).
+2. The [Periodic Notes](https://github.com/liamcain/obsidian-periodic-notes) community plugin, when it is enabled and that cadence is turned on in it.
+3. For `daily` only, the core Daily notes plugin's folder and date format.
+4. For `daily` only, the built-in default `Daily/{YYYY}-{MM}-{DD}.md`.
 
 | Cadence | Env var |
 |---------|---------|
@@ -425,13 +452,9 @@ Each cadence has its own opt-in path template env var:
 | `quarterly` | `QUARTERLY_NOTE_PATH_TEMPLATE` |
 | `yearly` | `YEARLY_NOTE_PATH_TEMPLATE` |
 
-Only the daily cadence has a built-in default:
+So a vault that already sets these up in Obsidian needs no env vars: with the Daily notes folder `01-Days` and format `YYYY-MM-DD-ddd`, today's note is `01-Days/2026-10-12-Mon.md`. The server reads the plugin settings from the vault's `.obsidian` folder on each call (set `OBSIDIAN_CONFIG_DIR` if Obsidian uses a different config folder); tools still can't read `.obsidian`. A deployment that mounts only the notes falls back to the env vars and the built-in default.
 
-```text
-Daily/{YYYY}-{MM}-{DD}.md
-```
-
-The other four are opt-in — calling a cadence with no template configured returns an error naming the env var to set. These are convenience templates; many vaults use different layouts, so you will likely want to override them.
+Obsidian date formats are translated into the tokens below, with `[bracketed]` text kept literal. Month, weekday and ordinal names are English; if Obsidian runs in another language, set the env templates instead. A format using any other token returns an error naming the token rather than a guessed path. A cadence nothing configures returns an error naming its env var and the config files checked.
 
 Supported tokens:
 
@@ -440,18 +463,26 @@ Supported tokens:
 - `{GGGG}`: 4-digit ISO week-year (use with `{WW}`, not `{YYYY}`)
 - `{GG}`: 2-digit ISO week-year
 - `{WW}`: 2-digit ISO week number (weeks start Monday; week 1 contains the first Thursday)
+- `{W}`: ISO week number without zero padding
+- `{gggg}`: 4-digit locale week-year (use with `{ww}`)
+- `{gg}`: 2-digit locale week-year
+- `{ww}`: 2-digit locale week number (weeks start Sunday unless set otherwise; week 1 contains January 1)
+- `{w}`: locale week number without zero padding
 - `{Q}`: quarter number (`1`–`4`)
 - `{MM}`: 2-digit month
 - `{M}`: month without zero padding
 - `{DD}`: 2-digit day
 - `{D}`: day without zero padding
+- `{Do}`: day as an ordinal like `12th`
 - `{MMM}`: short month name like `Mar`
 - `{MMMM}`: full month name like `March`
 - `{dd}`: short weekday name like `Th`
 - `{ddd}`: short weekday name like `Mon`
 - `{dddd}`: full weekday name like `Monday`
 
-The ISO week-year (`{GGGG}`) differs from the calendar year (`{YYYY}`) around New Year — for example `2025-12-29` falls in ISO week 1 of 2026. Pair `{WW}` with `{GGGG}` so the year matches the week; pairing it with `{YYYY}` produces wrong paths at that boundary.
+There are two week systems, and a weekly path has to use the one its notes were named with. ISO weeks (`{GGGG}`, `{WW}`) start Monday. Locale weeks (`{gggg}`, `{ww}`) are what Obsidian in English uses, and what Periodic Notes uses by default (`gggg-[W]ww`): they start Sunday, so a Sunday note is a week ahead of its ISO number. Locale weeks start on the first of these that is set: `PERIODIC_WEEK_START` (a day name), the week start chosen in the Calendar or Periodic Notes plugin settings, or Sunday. A week start left on Obsidian's locale default is read as Sunday, so with a Monday-start language set `PERIODIC_WEEK_START=monday`.
+
+Each week-year can differ from the calendar year (`{YYYY}`) around New Year. For example `2025-12-29` falls in week 1 of 2026 in both systems. Pair each week number with its own week-year (`{WW}` with `{GGGG}`, `{ww}` with `{gggg}`); pairing it with `{YYYY}` produces wrong paths at that boundary.
 
 Examples:
 
@@ -490,6 +521,29 @@ Path exclusions are checked against normalized requested paths and resolved file
 
 A chunk the model couldn't judge (a failed request, a malformed answer) is kept and marked `unjudged`, so a provider failure can return more text than expected but never silently drops any.
 
+### Obsidian CLI tools
+
+When the server runs on a machine with the Obsidian app (1.12 or later, with its command-line interface turned on), it can hand work to Obsidian itself: Bases queries, tasks, file history, Sync, bookmarks, unresolved links, and anything a future CLI release adds. Two tools do this. `vault_cli_help` lists the commands parsed from `obsidian help`, and `vault_cli` runs one with `params` (key → value) and bare `flags`. New CLI commands work without a server update.
+
+They are off until `OBSIDIAN_CLI_ENABLED=true`. Then they are listed only if the `obsidian` binary is found (on `PATH`, or at `OBSIDIAN_CLI_PATH`) and `obsidian vault info=path` reports the same folder as the server's vault. The server passes the vault folder's name as `vault=`; set `OBSIDIAN_CLI_VAULT` if Obsidian knows the vault by another name. If the app later stops answering, the next failing call checks again and returns a clear error.
+
+Turning the CLI tools on gives agents most of what you can do in Obsidian: creating, editing, moving and deleting notes, and adding or removing notes on your Obsidian Publish site. To keep a connection from using them, untick "Control the Obsidian app" when you [approve it](#choosing-what-each-connection-can-do); untick "Edit notes" to limit it to commands that read. `VAULT_READ_ONLY` limits every connection to reading. The server log says so whenever the tools come on or go off, and why.
+
+The guards:
+
+- The vault is always the server's. `vault` is not a parameter, and a `vault` key or flag is refused.
+- Parameter keys and flags are letters and hyphens starting lowercase (`paneType` is fine). Keys the guards check (`vault`, `path`, `to`, `folder`, `file`, `name`, `id`) must be lowercase. Each becomes one argument; there is no shell.
+- `eval`, `devtools`, `restart`, `reload`, `plugins:restrict`, `theme:install`, `vault` and `vaults` (which report host paths), and every `dev:`, `plugin:` and `snippet:` command are always blocked. No setting unblocks them.
+- Command-palette execution (`command id=…`) is off unless `OBSIDIAN_CLI_COMMANDS` lists the allowed IDs. `*` allows every ID except those that look destructive (delete, remove, purge, trash and similar); those run only when listed by name. `*` also covers community-plugin commands, and some of those run scripts (Templater, Shell commands), so prefer listing IDs.
+- With `VAULT_READ_ONLY=true`, and for a connection approved without "Edit notes", only commands on a known-read list run, so a command added by a future CLI release is refused until it is reviewed.
+- `path`, `to` and `folder` go through the same path checks as every other tool, and `file` (a note name) is resolved by the server and passed as an exact `path`. A protected location gets the same "Not found" answer a missing note does. `name` can't contain a slash.
+- A command that may write can't target a folder through `path`; use `vault_move` or `vault_trash` for folders.
+- Calls are audit-logged with the command, parameter names and flags. Parameter values stay out of the logged arguments, though an error message can name the path or command ID it refused.
+
+The trade-off: commands answer from Obsidian's whole vault, so their output (a search, a task list, a Base) can't be filtered by `.mcpignore`, and commands with an implicit target (`daily:append`, a task reference, a template) aren't checked against it either. While `.mcpignore` has rules, the CLI tools stay off unless `OBSIDIAN_CLI_MCPIGNORE_ACK=true` says you accept that. `.obsidian` and `.git` stay protected either way, since Obsidian doesn't index them.
+
+With the CLI available, `vault_links` also asks Obsidian for backlinks, which follows Obsidian's own link resolution (aliases, relative and path links) instead of the server's text search. Those results are filtered through the path policy, so this works with `.mcpignore` rules and needs no acknowledgment. If the call fails, the server's search answers instead. The result's `backlinks_source` says which one answered.
+
 ## Notes
 
 ### MCP and HTTP
@@ -509,7 +563,7 @@ A chunk the model couldn't judge (a failed request, a malformed answer) is kept 
 - `.trash` stays readable by explicit path, so an agent can read or restore what `vault_trash` moved there. Add `.trash` to `.mcpignore` to hide deleted notes; trashing still works.
 - `vault_move` and `vault_trash` also support folders. The entire subtree (including hidden entries) must pass access checks before anything moves; a protected descendant rejects the whole operation. Folder trees containing symlinks or special files are refused; use the real source folder path rather than a symlinked parent shortcut. Every mapped destination is checked too. For `vault_move`, write folder paths with trailing slashes, such as `Projects/` → `Archive/Projects/`; dry runs validate and preview without creating directories. Folder moves update path-qualified wikilinks and canvas paths, including references inside the moved folder; bare note names stay unchanged. As with file moves, relative `./`/`../` links and standard Markdown links are not rewritten and need manual review. Trash does not rewrite links.
 - Other hidden entries are omitted from ordinary searches and listings, but explicit paths (including `VAULT_CONTEXT_PATH=.claude/CLAUDE.md`) remain accessible unless blocked by `.mcpignore`.
-- `VAULT_READ_ONLY=true` blocks all write operations. Write-only tools are left out of the tool list entirely, so agents never see a tool that can only fail; `vault_periodic_note`, `vault_clip_url`, and `vault_move` (whose default dry run only plans) stay listed and refuse the write.
+- `VAULT_READ_ONLY=true` blocks all write operations for every connection; a connection approved without "Edit notes" gets the same treatment on its own. Write-only tools are left out of the tool list entirely, so agents never see a tool that can only fail; `vault_periodic_note`, `vault_clip_url`, and `vault_move` (whose default dry run only plans) stay listed and refuse the write.
 - `vault_search_title` defaults to `limit=50`; `vault_search_content` defaults to `limit=20`. Limits are adjustable; `0` means no limit.
 - `vault_tags` defaults to `limit=100` when listing all tags; passing a `tag` returns the matching note paths without a limit. Counts are case-insensitive (displayed in first-seen casing) and nested tags match exactly — `parent` does not include `parent/child`.
 - `vault_frontmatter` and `vault_set_frontmatter_property` let agents work with frontmatter properties without reading or rewriting the whole note body.

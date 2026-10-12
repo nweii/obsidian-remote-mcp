@@ -20,19 +20,22 @@ References:
 src/
   server.ts       — Builds the app via createApp() and starts it with the kit's startServer (persists tokens on shutdown)
   app.ts          — createApp(): maps env vars to the kit's createAuth / createApp, guards /mcp origins, registers the vault tools
-  vault.ts        — Vault filesystem operations, path policy, search and link indices, vault discovery, config-derived defaults
+  vault.ts        — Vault filesystem operations, path policy, search and link indices, vault discovery
+  periodic.ts     — Periodic note paths from env templates or the vault's Obsidian config (moment format translation)
   tools.ts        — MCP tool definitions; converts vault errors into tool results
   frontmatter.ts  — Frontmatter parsing and the textual key splice
   ignore.ts       — Compiles .mcpignore literal/glob rules with case and Unicode normalization
   lock.ts         — Per-path async mutex for read-modify-write
+  access.ts       — Per-connection access: the approval page's scopes (edit notes, Obsidian CLI) and whether the current request's connection holds one
   clip.ts         — Registers vault_clip_url when the optional web-clipper-headless is installed
+  cli.ts          — Registers vault_cli / vault_cli_help when the obsidian CLI is opted in and reaches this vault: guards, probe, help parsing; backlinks via Obsidian
   skim.ts         — Registers vault_skim when a decision-model key is set: note selection, exclusions, plan ids, rendering
   chunk.ts        — Line-aware chunker with overlap used by vault_skim
   decision.ts     — Decision-model client (TypeSafe, OpenRouter, OpenAI): provider resolution, request shapes, batching, retries
   log.ts          — Configures the kit's audit logger and its redaction
   date.ts         — Local-timezone date helpers for periodic notes (parsing, ISO weeks, period buckets)
 scripts/          — setup-clipper.ts builds the optional clipper from the root lockfile
-test/             — One file per area; vault-policy-matrix.test.ts covers every vault export against hostile paths
+test/             — One file per area; vault-policy-matrix.test.ts covers every vault export and the CLI tool against hostile input; fake-obsidian.ts stands in for the CLI
 docs/             — Design notes, reached through the pointers below
 ```
 
@@ -55,7 +58,7 @@ Endpoints: OAuth discovery `GET /.well-known/oauth-authorization-server`, token 
 
 - Path checks, `.mcpignore`, hidden folders, or anything that reads, writes or walks vault files: read [docs/vault-access-policy.md](docs/vault-access-policy.md).
 - Write paths, locking, atomic writes, frontmatter or section edits: [docs/writes.md](docs/writes.md).
-- Tool behaviour (context note, periodic notes, frontmatter search, batch tools): [docs/tools.md](docs/tools.md).
+- Tool behaviour (context note, periodic notes and their Obsidian config, frontmatter search, batch tools): [docs/tools.md](docs/tools.md).
 - Server setup, OAuth, origins, environment variables: [docs/server.md](docs/server.md).
 - Audit log contents and redaction: [docs/audit-logging.md](docs/audit-logging.md).
 - Reviewing a diff: apply [CODING_STANDARDS.md](CODING_STANDARDS.md).

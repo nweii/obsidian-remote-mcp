@@ -1,4 +1,4 @@
-// ABOUTME: Local-timezone date helpers for periodic notes — parse and format YYYY-MM-DD, compute ISO week numbers, and bucket a date into the week, month, quarter, or year containing it, matching the convention used by formatPeriodicNotePath in vault.ts.
+// ABOUTME: Local-timezone date helpers for periodic notes — parse and format YYYY-MM-DD, compute ISO and locale week numbers, and bucket a date into the week, month, quarter, or year containing it, matching the buckets periodic.ts formats paths from.
 
 // Parse a "YYYY-MM-DD" string as local midnight (not UTC) so the day of the
 // resulting Date matches the calendar day the caller named, regardless of the
@@ -54,6 +54,48 @@ export function startOfIsoWeek(d: Date): Date {
   const t = new Date(d.getFullYear(), d.getMonth(), d.getDate());
   const isoDay = (t.getDay() + 6) % 7; // Mon=0 .. Sun=6
   t.setDate(t.getDate() - isoDay);
+  return t;
+}
+
+// Locale weeks, as moment.js computes them for gggg/ww: weeks start on `dow` (0 = Sunday) and
+// week 1 is the week containing January (7 + dow - doy). Obsidian in English uses dow 0, doy 6:
+// Sunday-start weeks where week 1 holds January 1, so 2025-12-28 opens week 1 of 2026.
+export interface WeekConvention {
+  dow: number;
+  doy: number;
+}
+
+const isLeapYear = (y: number) => (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0;
+const daysInYear = (y: number) => (isLeapYear(y) ? 366 : 365);
+
+function dayOfYear(d: Date): number {
+  return Math.round((new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime() - new Date(d.getFullYear(), 0, 1).getTime()) / 86400000) + 1;
+}
+
+// Day-of-year offset of week 1's first day from January 1 (moment's firstWeekOffset).
+function firstWeekOffset(year: number, { dow, doy }: WeekConvention): number {
+  const fwd = 7 + dow - doy;
+  const fwdlw = (7 + new Date(year, 0, fwd).getDay() - dow) % 7;
+  return -fwdlw + fwd - 1;
+}
+
+function weeksInYear(year: number, conv: WeekConvention): number {
+  return (daysInYear(year) - firstWeekOffset(year, conv) + firstWeekOffset(year + 1, conv)) / 7;
+}
+
+// Locale week number and the week-year that owns it.
+export function localeWeek(d: Date, conv: WeekConvention): { week: number; year: number } {
+  const year = d.getFullYear();
+  const week = Math.floor((dayOfYear(d) - firstWeekOffset(year, conv) - 1) / 7) + 1;
+  if (week < 1) return { week: week + weeksInYear(year - 1, conv), year: year - 1 };
+  if (week > weeksInYear(year, conv)) return { week: week - weeksInYear(year, conv), year: year + 1 };
+  return { week, year };
+}
+
+// First day (local midnight) of the locale week starting on `dow` that contains the given date.
+export function startOfLocaleWeek(d: Date, dow: number): Date {
+  const t = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  t.setDate(t.getDate() - ((t.getDay() - dow + 7) % 7));
   return t;
 }
 

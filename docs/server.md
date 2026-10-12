@@ -7,6 +7,7 @@
 - The OAuth approval page must be guarded, and the server refuses to start otherwise: the kit's `createAuth` throws at construction (in `createApp`, so `server.ts` exits before listening) when the approval page is unguarded. Any one of three satisfies the check: `APPROVAL_PASSWORD` (a password on `/authorize`, compared constant-time, re-rendering the page with a 401 on a wrong guess), `MCP_CLIENT_SECRET` (which guards token exchange instead), or `APPROVAL_OPEN=true` (for deployments fronted by a reverse proxy / zero-trust gateway). There is no username — the password is the whole secret.
 - MCP defaults to the exact configured site origin; `CORS_ALLOWED_ORIGINS` replaces all defaults with an explicit allowlist, or standalone `*` to accept any origin. No client-specific website origins are built in; OAuth callback permissions do not grant browser-origin access. When restricted, invalid/disallowed Origin headers are refused before MCP handling, including non-preflight requests. Server-to-server clients without Origin remain supported. Origin trust never derives from request Host/forwarded headers; OAuth/discovery retain the SDK behavior.
 - Tokens persist to `TOKEN_STORE_PATH` (default `./tokens.json`) and expire after 30 days.
+- The approval page offers two scopes, declared in `src/access.ts`: `vault:write` ("Edit notes", offered unless `VAULT_READ_ONLY=true`) and `vault:cli` ("Control the Obsidian app", offered while `OBSIDIAN_CLI_ENABLED=true`, whether or not Obsidian is reachable at that moment). Both start ticked; the kit stores the ticked ones with the token. Each request runs as its caller (`currentCaller()` from the kit), so `registerTools` and every tool see that connection's scopes. Env settings are the limit and scopes only narrow them. A connection approved while a box wasn't offered doesn't hold that scope until it is approved again. A token issued before scopes existed holds every scope.
 
 ## Environment variables
 
@@ -24,23 +25,31 @@
 | `OBSIDIAN_VAULT_ID` | when multiple vaults | Which `vaults` entry in `obsidian.json` to use (matches id case-insensitively) |
 | `VAULT_DISPLAY_NAME` | no | Optional label shown on the OAuth approval page. Defaults to the resolved vault directory name. |
 | `VAULT_CONTEXT_PATH` | no | Relative path for the note returned by `vault_context`. Defaults to `AGENTS.md`, then `CLAUDE.md`. |
-| `DAILY_NOTE_PATH_TEMPLATE` | no | Daily-cadence path template for `vault_periodic_note`. Defaults to `Daily/{YYYY}-{MM}-{DD}.md`. |
-| `WEEKLY_NOTE_PATH_TEMPLATE` | no | Weekly-cadence path template. Opt-in; `period: weekly` errors until set. |
-| `MONTHLY_NOTE_PATH_TEMPLATE` | no | Monthly-cadence path template. Opt-in; `period: monthly` errors until set. |
-| `QUARTERLY_NOTE_PATH_TEMPLATE` | no | Quarterly-cadence path template. Opt-in; `period: quarterly` errors until set. |
-| `YEARLY_NOTE_PATH_TEMPLATE` | no | Yearly-cadence path template. Opt-in; `period: yearly` errors until set. |
+| `DAILY_NOTE_PATH_TEMPLATE` | no | Daily-cadence path template for `vault_periodic_note`. Overrides the Periodic Notes and core Daily notes config; without either, defaults to `Daily/{YYYY}-{MM}-{DD}.md`. |
+| `WEEKLY_NOTE_PATH_TEMPLATE` | no | Weekly-cadence path template. Overrides the Periodic Notes config; `period: weekly` errors when neither sets it. |
+| `MONTHLY_NOTE_PATH_TEMPLATE` | no | Monthly-cadence path template, with the same precedence as weekly. |
+| `QUARTERLY_NOTE_PATH_TEMPLATE` | no | Quarterly-cadence path template, with the same precedence as weekly. |
+| `YEARLY_NOTE_PATH_TEMPLATE` | no | Yearly-cadence path template, with the same precedence as weekly. |
+| `OBSIDIAN_CONFIG_DIR` | no | The vault's Obsidian config folder, relative to the vault root, read for periodic-note settings. Defaults to `.obsidian`. |
+| `PERIODIC_WEEK_START` | no | First day of locale weeks (`gggg`, `ww` tokens) as a day name, such as `monday`. Overrides a week start set in the Calendar or Periodic Notes plugin; defaults to Sunday. |
 | `VAULT_ATTACHMENT_MAX_BYTES` | no | Max bytes `vault_read_attachment` will read before rejecting. Defaults to `10485760` (10 MB). |
 | `CORS_ALLOWED_ORIGINS` | no | Exact comma-separated HTTP(S) browser-origin allowlist for `/mcp`. Unset/empty allows only the MCP_BASE_URL origin (local fallback http://localhost:PORT). An explicit list replaces those defaults. A standalone `*` opts into any origin; partial/mixed wildcards, `null` entries, paths, and credentials are refused at startup. Requests without Origin remain authenticated normally. |
 | `TOKEN_STORE_PATH` | no | Path to the persisted bearer token store. Defaults to `./tokens.json`. |
 | `LOG_ENABLED` | no | Set to `false` to disable tool-call logging and skip registering `vault_feedback`. Defaults to `true`. |
 | `LOG_DIR` | no | Directory for JSONL logs (`tool-calls.jsonl`, `feedback.jsonl`). Defaults to `./logs`. Created on first write. Skipped when `VAULT_MCP_TEST=1` or `LOG_ENABLED=false`. |
-| `MCP_STATIC_BEARER_TOKEN` | no | Optional fixed secret: requests to `/mcp` with `Authorization: Bearer <same value>` are allowed (for clients that cannot use browser OAuth). Long random string; use HTTPS. Works alongside normal OAuth tokens. |
-| `VAULT_READ_ONLY` | no | Set to `true` to block all write operations. Write-only tools (create, update, edit, edit section, set and batch frontmatter, trash) are not advertised at all; tools that read or write depending on their arguments (`vault_periodic_note`, `vault_clip_url`, and `vault_move`, whose default dry run only plans) stay listed and refuse the write. |
+| `MCP_STATIC_BEARER_TOKEN` | no | Optional fixed secret: requests to `/mcp` with `Authorization: Bearer <same value>` are allowed (for clients that cannot use browser OAuth). Long random string; use HTTPS. Works alongside normal OAuth tokens. Requests using it are logged as client `static-bearer`. |
+| `MCP_STATIC_BEARER_SCOPES` | no | Narrows `MCP_STATIC_BEARER_TOKEN`: a comma-separated list of the scopes it keeps (`vault:write`, `vault:cli`), or `none` for reading only. Unset gives full access. An unknown scope stops the server at startup. |
+| `VAULT_READ_ONLY` | no | Set to `true` to block all write operations for every connection, whatever it was granted at approval. Write-only tools (create, update, edit, edit section, set and batch frontmatter, trash) are not advertised at all; tools that read or write depending on their arguments (`vault_periodic_note`, `vault_clip_url`, and `vault_move`, whose default dry run only plans) stay listed and refuse the write. |
 | `SKIM_PROVIDER` | no | Decision-model provider for `vault_skim`: `typesafe` (default), `openrouter`, or `openai`. `vault_skim` is registered only when that provider's key is set. An unknown value disables the tool and logs why. |
 | `TYPESAFE_API_KEY` / `OPENROUTER_API_KEY` / `OPENAI_API_KEY` | no | Key for the chosen `SKIM_PROVIDER`. |
 | `SKIM_MODEL` | no | Overrides the provider's default decision model (`jev-latest`, `typesafe/jev-1.13`, `gpt-6-luna`). |
 | `SKIM_EXCLUDE_TAGS` | no | Comma-separated tags whose notes `vault_skim` never sends. `x` matches `#x` only; `x/*` matches `#x` and nested tags. |
 | `SKIM_EXCLUDE_PATHS` | no | Comma-separated vault-relative path rules whose notes (and everything under them) `vault_skim` never sends. Rules use `.mcpignore` syntax, so `*`, `?` and `**` wildcards work. |
+| `OBSIDIAN_CLI_ENABLED` | no | `true` offers `vault_cli` and `vault_cli_help` when the `obsidian` CLI reaches this vault, and routes `vault_links` backlinks through Obsidian. Default off. |
+| `OBSIDIAN_CLI_PATH` | no | Path to the `obsidian` binary. Defaults to a lookup on `PATH`. |
+| `OBSIDIAN_CLI_VAULT` | no | The vault name passed to the CLI as `vault=`. Defaults to the vault folder's name. |
+| `OBSIDIAN_CLI_COMMANDS` | no | Comma-separated command-palette IDs `vault_cli` may run through `command`. `*` allows all except destructive-looking IDs, which must be listed by name. Unset, palette execution is off. |
+| `OBSIDIAN_CLI_MCPIGNORE_ACK` | no | `true` keeps the CLI tools on while `.mcpignore` has rules, accepting that CLI output can't be filtered by them. |
 | `HEALTH_TOKEN` | no | Dedicated bearer for `GET /health`. Default-closed: unset → the route 404s. Sent as `Authorization: Bearer`; separate from the OAuth and static-bearer secrets. |
 | `WEB_CLIPPER_SETTINGS_PATH` | no | Web Clipper settings export used by `vault_clip_url`, absolute or vault-relative. Unset, the newest `obsidian-web-clipper-settings*.json` within four folder levels of the vault root is used, whether or not `.mcpignore` hides it. |
 | `PORT` | no | HTTP port (default: `3456`) |
