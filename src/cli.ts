@@ -454,8 +454,22 @@ function toResult(outcome: CliOutcome): ToolResult {
   return { content, isError: true };
 }
 
+// Tools register on every request, so the operator log notes only changes in availability.
+let lastLoggedAvailability: string | null = null;
+
+function logAvailability(available: Availability): void {
+  const line = available.ok
+    ? `vault_cli enabled: agents can run Obsidian commands, including creating, editing, moving and deleting notes and changing Obsidian Publish${vault.isReadOnly() ? " (read-only mode: known-read commands only)" : ""}`
+    : `vault_cli not offered: ${available.reason}`;
+  if (line === lastLoggedAvailability) return;
+  lastLoggedAvailability = line;
+  console.error(`[obsidian-remote-mcp] ${line}`);
+}
+
 export async function registerCliTools(server: McpServer): Promise<void> {
+  if (!optedIn()) return;
   const available = await cliToolsAvailability();
+  logAvailability(available);
   if (!available.ok) return;
 
   registerCliTool<{ command?: string }>(server,

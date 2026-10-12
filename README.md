@@ -504,7 +504,7 @@ When the server runs on a machine with the Obsidian app (1.12 or later, with its
 
 They are off until `OBSIDIAN_CLI_ENABLED=true`. Then they are listed only if the `obsidian` binary is found (on `PATH`, or at `OBSIDIAN_CLI_PATH`) and `obsidian vault info=path` reports the same folder as the server's vault. The server passes the vault folder's name as `vault=`; set `OBSIDIAN_CLI_VAULT` if Obsidian knows the vault by another name. If the app later stops answering, the next failing call checks again and returns a clear error.
 
-Turning the CLI tools on gives agents most of what you can do in Obsidian: creating, editing, moving and deleting notes, and adding or removing notes on your Obsidian Publish site. Turn on `VAULT_READ_ONLY` if agents should only read.
+Turning the CLI tools on gives agents most of what you can do in Obsidian: creating, editing, moving and deleting notes, and adding or removing notes on your Obsidian Publish site. Turn on `VAULT_READ_ONLY` if agents should only read. The server log says so whenever the tools come on or go off, and why.
 
 The guards:
 
