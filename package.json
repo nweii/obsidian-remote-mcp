@@ -15,7 +15,7 @@
     "express": "4.22.2",
     "hono": "4.13.7",
     "js-yaml": "4.3.2",
-    "mcp-server-kit": "git+https://github.com/nweii/mcp-server-kit.git#32bba33d4a6c18a7f7aa5abfb4d431ec338f663a",
+    "mcp-server-kit": "git+https://github.com/nweii/mcp-server-kit.git#19bccd845ce4e290e95361961bed47549a51648f",
     "zod": "4.2.0"
   },
   "optionalDependencies": {
