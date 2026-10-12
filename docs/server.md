@@ -42,6 +42,7 @@
 | `SKIM_EXCLUDE_TAGS` | no | Comma-separated tags whose notes `vault_skim` never sends. `x` matches `#x` only; `x/*` matches `#x` and nested tags. |
 | `SKIM_EXCLUDE_PATHS` | no | Comma-separated vault-relative path rules whose notes (and everything under them) `vault_skim` never sends. Rules use `.mcpignore` syntax, so `*`, `?` and `**` wildcards work. |
 | `HEALTH_TOKEN` | no | Dedicated bearer for `GET /health`. Default-closed: unset → the route 404s. Sent as `Authorization: Bearer`; separate from the OAuth and static-bearer secrets. |
+| `WEB_CLIPPER_SETTINGS_PATH` | no | Web Clipper settings export used by `vault_clip_url`, absolute or vault-relative. Unset, the newest `obsidian-web-clipper-settings*.json` within four folder levels of the vault root is used, whether or not `.mcpignore` hides it. |
 | `PORT` | no | HTTP port (default: `3456`) |
 | `HOST` | no | Bind address (default: `0.0.0.0`). Use `127.0.0.1` for a process behind a proxy on the same host; in Docker, restrict the published port instead. |
 
