@@ -116,14 +116,15 @@ describe('moveWithReferences locking', () => {
     const release = deferred();
     const originalRead = fsPromises.readFile;
     let intercepted = false;
-    const reads = spyOn(fsPromises, 'readFile').mockImplementation(async (file, options) => {
+    // readFile's overloads return different types; the cast lets one wrapper forward them all.
+    const reads = spyOn(fsPromises, 'readFile').mockImplementation((async (file, options) => {
       if (String(file) === abs('Source/Reference.md') && !intercepted) {
         intercepted = true;
         planning.resolve();
         await release.promise;
       }
       return originalRead(file, options);
-    });
+    }) as typeof fsPromises.readFile);
     const moving = vault.moveWithReferences('Source', 'Archive/Moved');
     try {
       await Promise.race([planning.promise, moving.then(() => {

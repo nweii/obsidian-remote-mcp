@@ -14,6 +14,11 @@ const hasClipper = existsSync(join(installedModules, 'obsidian-clipper', 'src', 
 
 // Optional dependencies may be intentionally omitted. Always test the missing-source failure,
 // while the build/render integration tests run only when the optional sources are installed.
+// CI sets REQUIRE_CLIPPER=1 so a missing install fails instead of silently skipping them.
+test('optional clipper sources are installed when REQUIRE_CLIPPER=1', () => {
+  if (process.env.REQUIRE_CLIPPER === '1') expect(hasClipper).toBe(true);
+});
+
 test('clipper setup reports missing optional sources without installing anything', async () => {
   const root = await mkdtemp(join(tmpdir(), 'orm-clipper-missing-'));
   try {
@@ -44,6 +49,37 @@ async function makeBuildRoot(): Promise<string> {
   await cp(join(installedModules, 'web-clipper-headless', 'scripts', 'build-upstream.ts'), join(scripts, 'build-upstream.ts'));
   return root;
 }
+
+const hasBuiltClipper = hasClipper && existsSync(join(installedModules, 'obsidian-clipper', 'dist', 'api.mjs'));
+
+// Runs from the project root so the project's own tsconfig and resolution apply, the way the
+// server starts in production.
+(hasBuiltClipper ? test : test.skip)('the server registers vault_clip_url when the clipper is built', async () => {
+  const vaultPath = await mkdtemp(join(tmpdir(), 'orm-clipper-register-'));
+  try {
+    const child = Bun.spawn({
+      cmd: [process.execPath, '-e', `
+        const names = [];
+        const { registerTools } = await import('./src/tools.ts');
+        await registerTools({ registerTool(name) { names.push(name); } });
+        console.log(JSON.stringify(names));
+      `],
+      cwd: projectRoot,
+      env: { ...process.env, VAULT_PATH: vaultPath },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+    expect(exitCode, stderr).toBe(0);
+    expect(JSON.parse(stdout.trim().split('\n').pop()!)).toContain('vault_clip_url');
+  } finally {
+    await rm(vaultPath, { recursive: true, force: true });
+  }
+});
 
 (hasClipper ? describe : describe.skip)('clipper setup with locked optional dependencies', () => {
   test('fresh and stale bundles build, patch, and render local HTML with root dependencies', async () => {

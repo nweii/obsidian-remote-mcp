@@ -6,6 +6,7 @@
   "scripts": {
     "start": "bun run src/server.ts",
     "test": "VAULT_MCP_TEST=1 bun test",
+    "typecheck": "tsc -p .",
     "audit": "bun audit",
     "setup:clipper": "bun run scripts/setup-clipper.ts"
   },
@@ -22,9 +23,11 @@
   },
   "devDependencies": {
     "@modelcontextprotocol/client": "2.2.0",
+    "@types/bun": "1.3.11",
     "@types/express": "^5.0.1",
     "@types/js-yaml": "^4.0.9",
-    "@types/node": "^22.0.0"
+    "@types/node": "^22.0.0",
+    "typescript": "6.0.3"
   },
   "overrides": {
     "body-parser": "1.20.6",
