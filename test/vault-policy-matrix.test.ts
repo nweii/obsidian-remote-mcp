@@ -192,7 +192,7 @@ const FOLDER_OPS: Record<string, () => unknown> = {
 const NO_PATH_EXPORTS = [
   'getVaultRoot', 'getVaultDisplayName', 'getContextNotePath', 'isReadOnly', 'versionOf',
   'invalidateResolverCache', 'getPeriodicNoteTemplate', 'getPeriodicNoteTemplateEnvVar',
-  'getPeriodicNotePath',
+  'getPeriodicNotePath', 'isVaultError',
 ];
 
 function leaks(value: unknown, tokens: string[]): boolean {
