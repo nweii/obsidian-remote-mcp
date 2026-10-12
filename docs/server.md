@@ -40,7 +40,7 @@
 | `TYPESAFE_API_KEY` / `OPENROUTER_API_KEY` / `OPENAI_API_KEY` | no | Key for the chosen `SKIM_PROVIDER`. |
 | `SKIM_MODEL` | no | Overrides the provider's default decision model (`jev-latest`, `typesafe/jev-1.13`, `gpt-6-luna`). |
 | `SKIM_EXCLUDE_TAGS` | no | Comma-separated tags whose notes `vault_skim` never sends. `x` matches `#x` only; `x/*` matches `#x` and nested tags. |
-| `SKIM_EXCLUDE_PATHS` | no | Comma-separated vault-relative paths whose notes (and everything under them) `vault_skim` never sends. |
+| `SKIM_EXCLUDE_PATHS` | no | Comma-separated vault-relative path rules whose notes (and everything under them) `vault_skim` never sends. Rules use `.mcpignore` syntax, so `*`, `?` and `**` wildcards work. |
 | `HEALTH_TOKEN` | no | Dedicated bearer for `GET /health`. Default-closed: unset → the route 404s. Sent as `Authorization: Bearer`; separate from the OAuth and static-bearer secrets. |
 | `PORT` | no | HTTP port (default: `3456`) |
 | `HOST` | no | Bind address (default: `0.0.0.0`). Use `127.0.0.1` for a process behind a proxy on the same host; in Docker, restrict the published port instead. |

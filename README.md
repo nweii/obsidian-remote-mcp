@@ -340,7 +340,7 @@ OPENROUTER_API_KEY=                    # optional; key for SKIM_PROVIDER=openrou
 OPENAI_API_KEY=                        # optional; key for SKIM_PROVIDER=openai
 SKIM_MODEL=                            # optional; overrides the provider's default decision model
 SKIM_EXCLUDE_TAGS=private,health/*     # optional; notes with these tags are never sent by vault_skim
-SKIM_EXCLUDE_PATHS=03-Records/Journaling # optional; notes at or under these paths are never sent by vault_skim
+SKIM_EXCLUDE_PATHS=03-Records/Journaling # optional; notes at or under these paths (.mcpignore syntax) are never sent by vault_skim
 PORT=3456
 # HOST=127.0.0.1                    # optional for a host-local proxy; in Docker restrict the published port instead
 ```
@@ -483,7 +483,7 @@ Because note text leaves the server, the tool works in two steps. A call without
 Notes are withheld in layers, and each layer can only withhold more:
 
 1. `.mcpignore`, which blocks the paths from every tool.
-2. `SKIM_EXCLUDE_TAGS` and `SKIM_EXCLUDE_PATHS` (comma-separated), which apply to every `vault_skim` call. `private` matches only `#private`; `work/*` matches `#work` and every tag nested under it. Tags are read from frontmatter and inline `#tag`. A path rule covers that path and everything under it.
+2. `SKIM_EXCLUDE_TAGS` and `SKIM_EXCLUDE_PATHS` (comma-separated), which apply to every `vault_skim` call. `private` matches only `#private`; `work/*` matches `#work` and every tag nested under it. Tags are read from frontmatter and inline `#tag`. A path rule covers that path and everything under it, and uses the same syntax as `.mcpignore`, so `*`, `?` and `**` wildcards work (`**/Private` withholds every `Private` folder).
 3. `exclude_tags` and `exclude_paths` on a call, which add to the server's rules for that call only.
 
 Path exclusions are checked against normalized requested paths and resolved file locations before note text is read, including during query selection. Equivalent spellings and symlinks cannot bypass an excluded folder. Plans list allowed aliases once, using the resolved vault-relative path. A path-excluded note in a query's scope is reported as withheld without reading it to test the query.

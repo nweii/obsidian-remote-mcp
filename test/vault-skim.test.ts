@@ -241,6 +241,16 @@ describe('exclusion rules', () => {
   test('path patterns cover the path and everything under it', () => {
     expect(pathMatches('03-Records/Journaling/2026.md', '03-Records/Journaling')).toBe(true);
     expect(pathMatches('03-Records/Journaling-old/x.md', '03-Records/Journaling')).toBe(false);
+    expect(pathMatches('03-records/journaling/2026.md', '03-Records/Journaling')).toBe(true);
+  });
+
+  test('path patterns accept .mcpignore wildcards', () => {
+    expect(pathMatches('03-Records/Journaling/2026.md', '03-Records/*')).toBe(true);
+    expect(pathMatches('Projects/Acme/Private/plan.md', '**/Private')).toBe(true);
+    expect(pathMatches('Private.md', '**/Private')).toBe(false);
+    expect(pathMatches('Notes/draft-1.md', 'Notes/draft-?.md')).toBe(true);
+    expect(pathMatches('Notes/draft-10.md', 'Notes/draft-?.md')).toBe(false);
+    expect(pathMatches('anything.md', '/')).toBe(true);
   });
 
   test('request rules add to config rules', () => {

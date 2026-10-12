@@ -9,6 +9,7 @@ import { z } from "zod";
 import * as vault from "./vault.js";
 import { chunkText, type Chunk } from "./chunk.js";
 import { judgeChunks, resolveDecisionProvider, type DecisionProvider, type JudgeOptions } from "./decision.js";
+import { compileIgnoreRules } from "./ignore.js";
 import { registerLogged } from "./log.js";
 
 export const DEFAULT_MAX_NOTES = 20;
@@ -23,7 +24,7 @@ type RuleOrigin = "server config" | "this request";
 
 interface ExclusionRules {
   tags: { pattern: string; origin: RuleOrigin }[];
-  paths: { pattern: string; origin: RuleOrigin }[];
+  paths: { pattern: string; origin: RuleOrigin; matches: (relPath: string) => boolean }[];
 }
 
 const splitList = (raw: string | undefined): string[] =>
@@ -39,7 +40,10 @@ export function exclusionRules(
   env: NodeJS.ProcessEnv = process.env,
 ): ExclusionRules {
   const tag = (origin: RuleOrigin) => (t: string) => ({ pattern: normalizeTag(t), origin });
-  const path = (origin: RuleOrigin) => (p: string) => ({ pattern: normalizePath(p), origin });
+  const path = (origin: RuleOrigin) => (p: string) => {
+    const pattern = normalizePath(p);
+    return { pattern, origin, matches: pathMatcher(pattern) };
+  };
   return {
     tags: [
       ...splitList(env.SKIM_EXCLUDE_TAGS).map(tag("server config")),
@@ -62,15 +66,21 @@ export function tagMatches(tag: string, pattern: string): boolean {
   return t === pattern;
 }
 
-// A path rule matches the path itself or anything under it, case-insensitively.
+// A path rule uses .mcpignore's syntax and matching: it covers the path and everything under it,
+// ignoring case, and `*`, `?` and `**` wildcards are allowed. "." (or "/") covers the whole vault.
+function pathMatcher(pattern: string): (relPath: string) => boolean {
+  const rule = normalizePath(pattern);
+  if (rule === ".") return () => true;
+  const ignored = compileIgnoreRules(rule);
+  return relPath => ignored(normalizePath(relPath));
+}
+
 export function pathMatches(relPath: string, pattern: string): boolean {
-  const p = normalizePath(relPath).toLowerCase();
-  const rule = normalizePath(pattern).toLowerCase();
-  return rule === "." || p === rule || p.startsWith(rule + "/");
+  return pathMatcher(pattern)(relPath);
 }
 
 function pathExclusion(relPath: string, rules: ExclusionRules): string | null {
-  const rule = rules.paths.find(r => pathMatches(relPath, r.pattern));
+  const rule = rules.paths.find(r => r.matches(relPath));
   return rule ? `path ${rule.pattern} (${rule.origin})` : null;
 }
 
@@ -358,7 +368,7 @@ export function registerSkimTool(server: McpServer, options: { provider?: Decisi
         query: z.string().optional().describe("Regex; skim the notes whose text matches it (as vault_search_content)."),
         folder: z.string().optional().describe('Limit query to this folder, or with no query, skim every note in it (e.g. "03-Records/Working").'),
         exclude_tags: z.array(z.string()).optional().describe('Also withhold notes carrying these tags, for this call. "work/*" covers #work and its nested tags.'),
-        exclude_paths: z.array(z.string()).optional().describe("Also withhold notes at or under these vault-relative paths, for this call."),
+        exclude_paths: z.array(z.string()).optional().describe('Also withhold notes at or under these vault-relative paths, for this call. Wildcards as in .mcpignore: "**/Private" covers every Private folder.'),
         max_notes: z.number().int().optional().default(DEFAULT_MAX_NOTES).describe(`Max notes to send (default ${DEFAULT_MAX_NOTES}, up to ${MAX_NOTES_CAP}).`),
         threshold: z.number().min(0).max(1).optional().default(DEFAULT_THRESHOLD).describe("Keep chunks with P(relevant) at or above this (default 0.5). Lower it if nothing comes back."),
         max_chunks_per_note: z.number().int().optional().describe("Keep at most this many chunks per note, best first."),
