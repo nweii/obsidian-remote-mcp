@@ -144,8 +144,12 @@ describe('cadences from the Periodic Notes plugin config', () => {
     yearly: { enabled: true, folder: 'Years', format: 'YYYY' },
   };
 
+  // ISO week formats go with a Monday week start, which Obsidian also applies when bucketing.
+  const mondayStart = () => config('app.json', { weekStart: 'monday' });
+
   test('each enabled cadence follows its folder and format', async () => {
     await periodicNotes(legacy);
+    await mondayStart();
     expect(resolvePeriodicNotePath('daily', MON)).toEqual({ path: 'Days/2026-10-12.md', source: 'Periodic Notes plugin' });
     expect(resolvePeriodicNotePath('weekly', MON).path).toBe('Weeks/2026-W42.md');
     expect(resolvePeriodicNotePath('monthly', MON).path).toBe('Months/2026-10.md');
@@ -155,7 +159,14 @@ describe('cadences from the Periodic Notes plugin config', () => {
 
   test('ISO week tokens use the ISO week-year at New Year', async () => {
     await periodicNotes(legacy);
+    await mondayStart();
     expect(resolvePeriodicNotePath('weekly', new Date(2025, 11, 31)).path).toBe('Weeks/2026-W01.md');
+  });
+
+  test('an ISO format under a Sunday week start names the week its Sunday falls in, as Obsidian does', async () => {
+    await periodicNotes(legacy);
+    // Monday 2026-10-12 starts from Sunday 2026-10-11, which closes ISO week 41.
+    expect(resolvePeriodicNotePath('weekly', MON).path).toBe('Weeks/2026-W41.md');
   });
 
   test('the calendar-set format of newer plugin versions', async () => {
@@ -166,6 +177,7 @@ describe('cadences from the Periodic Notes plugin config', () => {
         { id: 'b', week: { enabled: true, folder: 'Right', format: 'GGGG-[W]WW' } },
       ],
     });
+    await mondayStart();
     expect(resolvePeriodicNotePath('weekly', MON).path).toBe('Right/2026-W42.md');
   });
 
@@ -199,6 +211,14 @@ describe('cadences from the Periodic Notes plugin config', () => {
     // Sunday 2026-10-11 opens locale week 42; in ISO weeks it closes week 41.
     expect(resolvePeriodicNotePath('weekly', new Date(2026, 9, 11)).path).toBe('Weeks/2026-W42.md');
     expect(resolvePeriodicNotePath('weekly', new Date(2026, 9, 10)).path).toBe('Weeks/2026-W41.md');
+  });
+
+  test('a configured weekly date format names the first day of the configured week', async () => {
+    await periodicNotes({ weekly: { enabled: true, folder: '', format: 'YYYY-MM-DD' } });
+    expect(resolvePeriodicNotePath('weekly', new Date(2026, 9, 11)).path).toBe('2026-10-11.md');
+    expect(resolvePeriodicNotePath('weekly', new Date(2026, 9, 17)).path).toBe('2026-10-11.md');
+    await config('app.json', { weekStart: 'monday' });
+    expect(resolvePeriodicNotePath('weekly', new Date(2026, 9, 11)).path).toBe('2026-10-05.md');
   });
 
   test('an unconfigured cadence names its env var and every source checked', async () => {

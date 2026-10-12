@@ -3,7 +3,7 @@
 // or reaching around the vault access policy. Also answers backlinks from Obsidian when it can.
 import type { McpServer } from "@modelcontextprotocol/server";
 import { execFile } from "node:child_process";
-import { accessSync, constants, realpathSync, statSync } from "node:fs";
+import { realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import * as vault from "./vault.js";
@@ -183,24 +183,10 @@ interface CliConfig {
   root: string;
 }
 
-function findOnPath(name: string): string | null {
-  for (const dir of (process.env.PATH ?? "").split(path.delimiter)) {
-    if (!dir) continue;
-    const candidate = path.join(dir, name);
-    try {
-      accessSync(candidate, constants.X_OK);
-      return candidate;
-    } catch {
-      // keep looking
-    }
-  }
-  return null;
-}
-
 function cliConfig(): CliConfig {
   const root = vault.getVaultRoot();
   return {
-    binary: process.env.OBSIDIAN_CLI_PATH?.trim() || findOnPath("obsidian"),
+    binary: process.env.OBSIDIAN_CLI_PATH?.trim() || Bun.which("obsidian", { PATH: process.env.PATH ?? "" }),
     vaultName: process.env.OBSIDIAN_CLI_VAULT?.trim() || path.basename(root),
     root,
   };
@@ -508,7 +494,8 @@ export async function registerCliTools(server: McpServer): Promise<void> {
   registerCliTool<CliRequest>(server,
     "vault_cli",
     {
-      annotations: { readOnlyHint: vault.isReadOnly(), destructiveHint: !vault.isReadOnly(), openWorldHint: false },
+      // Open world: commands such as web, publish:* and sync:* reach beyond the vault.
+      annotations: { readOnlyHint: vault.isReadOnly(), destructiveHint: !vault.isReadOnly(), openWorldHint: true },
       title: "Run an Obsidian CLI command",
       description:
         "Runs one Obsidian CLI command against this vault, answered by the Obsidian app with its own link resolution, search and plugins. Call vault_cli_help first for the commands and their parameters. Pass parameters as params (key → value) and bare flags as flags. Target notes with path= (vault-relative) or file= (a name, resolved by the server). The vault is fixed by the server.",

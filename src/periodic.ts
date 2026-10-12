@@ -39,8 +39,8 @@ const DEFAULT_DAILY_FORMAT = 'YYYY-MM-DD';
 
 // Per-cadence facts: the env var holding its template, its key inside a Periodic Notes 1.x calendar
 // set, the plugin's own default format, and how a date is bucketed into its period so any date in
-// the period formats to the same note. A weekly path that uses locale week tokens is bucketed by
-// the locale week instead (see bucketFor).
+// the period formats to the same note. A weekly path from Obsidian's config, or one using locale
+// week tokens, is bucketed to the start of the configured week instead (see resolvePeriodicNotePath).
 const CADENCES: Record<PeriodicCadence, { envVar: string; calendarSetKey: string; defaultFormat: string; bucket: (d: Date) => Date }> = {
   daily: { envVar: 'DAILY_NOTE_PATH_TEMPLATE', calendarSetKey: 'day', defaultFormat: DEFAULT_DAILY_FORMAT, bucket: d => d },
   weekly: { envVar: 'WEEKLY_NOTE_PATH_TEMPLATE', calendarSetKey: 'week', defaultFormat: 'gggg-[W]ww', bucket: startOfIsoWeek },
@@ -274,15 +274,17 @@ function configuredSegments({ folder, format }: ConfiguredFormat, source: string
 // source configures the cadence, listing every source checked.
 export function resolvePeriodicNotePath(cadence: PeriodicCadence, date: Date = new Date()): PeriodicNotePath {
   const { envVar } = CADENCES[cadence];
-  const format = (segments: Segment[], source: PeriodicSource): PeriodicNotePath => {
-    const locale = usesLocaleWeeks(segments);
-    const weeks = locale ? weekConvention() : DEFAULT_WEEKS;
-    const bucketed = cadence === 'weekly' && locale ? startOfLocaleWeek(date, weeks.dow) : CADENCES[cadence].bucket(date);
+  // Obsidian starts a configured weekly note on the configured first day of the week, whatever
+  // tokens its format uses, so a Sunday-start YYYY-MM-DD names the Sunday.
+  const format = (segments: Segment[], source: PeriodicSource, configured = false): PeriodicNotePath => {
+    const byWeekStart = cadence === 'weekly' && (configured || usesLocaleWeeks(segments));
+    const weeks = byWeekStart || usesLocaleWeeks(segments) ? weekConvention() : DEFAULT_WEEKS;
+    const bucketed = byWeekStart ? startOfLocaleWeek(date, weeks.dow) : CADENCES[cadence].bucket(date);
     return { path: formatSegments(bucketed, segments, weeks), source };
   };
   // Obsidian adds .md to a configured format unless the format already renders it.
   const formatConfigured = (segments: Segment[], source: PeriodicSource): PeriodicNotePath => {
-    const out = format(segments, source);
+    const out = format(segments, source, true);
     return out.path.endsWith('.md') ? out : { ...out, path: `${out.path}.md` };
   };
 
