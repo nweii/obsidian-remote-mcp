@@ -406,6 +406,29 @@ describe('vault_skim over a temp vault', () => {
     await client.close();
   });
 
+  test('tool rejects bad queries and missing folders without naming host paths', async () => {
+    process.env.VAULT_PATH = vaultPath;
+    const calls: unknown[] = [];
+    const server = new McpServer({ name: 'skim-test', version: '0' });
+    registerSkimTool(server, { provider: typesafe, transport: scoringTransport('tomatoes', calls), sleep: noSleep });
+    const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverSide);
+    const client = new Client({ name: 'skim-test-client', version: '0' });
+    await client.connect(clientSide);
+
+    for (const query of ['(', 'a'.repeat(1001)]) {
+      const result = await client.callTool({ name: 'vault_skim', arguments: { goal: 'stakes', query } }) as any;
+      expect(result.isError).toBe(true);
+    }
+    const missing = await client.callTool({ name: 'vault_skim', arguments: { goal: 'stakes', folder: 'Nowhere' } }) as any;
+    expect(missing.isError).toBe(true);
+    expect(missing.content[0].text).toContain('Folder not found: Nowhere');
+    expect(missing.content[0].text).not.toContain(vaultPath);
+    expect(calls.length).toBe(0);
+
+    await client.close();
+  });
+
   test('tool is not registered without a provider', async () => {
     const server = new McpServer({ name: 'skim-test', version: '0' });
     registerSkimTool(server, { provider: null });

@@ -151,7 +151,7 @@ export async function planSkim(req: SkimRequest, provider: DecisionProvider, env
   const maxNotes = Math.min(MAX_NOTES_CAP, Math.max(1, req.max_notes ?? DEFAULT_MAX_NOTES));
   const { selection, paths, missing } = await candidatePaths(req);
   // Match as vault_search_content does, but only after skim path exclusions have been applied.
-  const query = !(req.paths && req.paths.length > 0) && req.query ? new RegExp(req.query, "i") : null;
+  const query = !(req.paths && req.paths.length > 0) && req.query ? vault.compileSearchPattern(req.query, "i") : null;
 
   const notes: PlannedNote[] = [];
   const excluded: SkimPlan["excluded"] = [];
@@ -372,20 +372,18 @@ export function registerSkimTool(server: McpServer, options: { provider?: Decisi
           isError: true,
         };
       }
-      if (query) {
-        try {
-          new RegExp(query);
-        } catch (e) {
-          return { content: [{ type: "text" as const, text: `Error: invalid query regex: ${e instanceof Error ? e.message : String(e)}` }], isError: true };
-        }
-      }
-
       let plan: SkimPlan;
       try {
         plan = await planSkim({ goal, paths, query, folder, exclude_tags, exclude_paths, max_notes }, provider);
       } catch (e) {
-        // Policy refusals and a missing folder are caller errors; nothing has been sent either way.
-        const message = e instanceof Error ? e.message : String(e);
+        // Caller errors become results; nothing has been sent either way. A missing folder is
+        // named by the caller's own path, since the filesystem error carries the absolute one.
+        const code = (e as NodeJS.ErrnoException)?.code;
+        const message =
+          e instanceof vault.VaultPolicyError || e instanceof vault.InvalidSearchPatternError ? e.message
+          : folder && (code === "ENOENT" || code === "ENOTDIR") ? `Folder not found: ${folder}`
+          : null;
+        if (message === null) throw e;
         return { content: [{ type: "text" as const, text: `Error: could not plan the skim: ${message}` }], isError: true };
       }
       const planText = formatPlan(plan, Math.min(MAX_NOTES_CAP, Math.max(1, max_notes)));

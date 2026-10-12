@@ -387,8 +387,7 @@ export async function readNote(relativePath: string): Promise<string> {
 // path and the canonical target must satisfy vault containment and .mcpignore.
 export async function canonicalNotePath(relativePath: string): Promise<string> {
   const target = await fs.realpath(resolveSafePath(relativePath));
-  const root = await fs.realpath(getVaultRoot());
-  const canonical = path.relative(root, target);
+  const canonical = path.relative(getVaultRealRoot(), target);
   resolveSafePath(canonical);
   return canonical;
 }
@@ -1068,7 +1067,7 @@ const MAX_SEARCH_PATTERN_LENGTH = 1000;
 // (RE2) or running the match off-thread with a kill switch — a larger change than this fix, and
 // one worth agreeing on upstream first. The exposure is limited to an authenticated caller, so
 // the effect is a stall rather than a leak.
-function compileSearchPattern(pattern: string, flags: string): RegExp {
+export function compileSearchPattern(pattern: string, flags: string): RegExp {
   if (pattern.length > MAX_SEARCH_PATTERN_LENGTH) {
     throw new InvalidSearchPatternError(
       `Search pattern is ${pattern.length} characters, over the ${MAX_SEARCH_PATTERN_LENGTH}-character limit. Use a shorter pattern.`,
