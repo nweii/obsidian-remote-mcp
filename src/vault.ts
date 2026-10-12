@@ -5,7 +5,7 @@ import { createHash } from 'crypto';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { withPathLock, withPathsLock } from './lock.js';
-import { compileIgnoreRules } from './ignore.js';
+import { compileIgnoreRules, parseIgnoreRules } from './ignore.js';
 import { readOnlyReason } from './access.js';
 import {
   splitFrontmatter,
@@ -373,10 +373,7 @@ function getIgnoreRules(): IgnoreMatcher {
 // it does. Throws, like every policy read, when an existing policy can't be read.
 export function hasIgnoreRules(): boolean {
   getIgnoreRules();
-  return (ignoreCache?.text ?? '').split('\n').some(line => {
-    const rule = line.trim();
-    return rule !== '' && !rule.startsWith('#');
-  });
+  return parseIgnoreRules(ignoreCache?.text ?? '').length > 0;
 }
 
 // Single-level listings show symlinked entries, so each child is resolved in full, the same

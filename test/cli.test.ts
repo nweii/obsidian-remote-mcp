@@ -91,7 +91,7 @@ describe('availability', () => {
   });
 
   test('is withheld while .mcpignore has rules, unless acknowledged', async () => {
-    await writeFile(path.join(vaultPath, '.mcpignore'), '# comment only\n');
+    await writeFile(path.join(vaultPath, '.mcpignore'), '# comment only\n/\n./\n/# anchored comment\n');
     expect((await cli.cliToolsAvailability()).ok).toBe(true);
     await writeFile(path.join(vaultPath, '.mcpignore'), 'Private\n');
     const withheld = await cli.cliToolsAvailability();
