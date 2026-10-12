@@ -109,13 +109,13 @@ async function resolveForWrite(input: string): Promise<string> {
 
 // vault_move takes explicit vault-relative paths, not bare titles — a move is a mutation and
 // title resolution adds an ambiguity layer exactly where it isn't wanted. A bare title has no
-// file extension; an explicit path always points at a file with one (e.g. `Notes/Foo.md`,
-// `attachments/img.png`). Returns the rejection text if the input looks like a bare title,
+// file extension; explicit files use extensions (e.g. `Notes/Foo.md`) and folders
+// use a trailing slash (e.g. `Projects/`). Returns the rejection text if the input looks like a bare title,
 // or null if it's an acceptable path.
 function rejectBareTitle(input: string): string | null {
   const base = input.split("/").pop() ?? input;
-  if (base.includes(".")) return null;
-  return `Error: "${input}" looks like a bare title, not a vault-relative path. vault_move needs explicit paths with extensions (e.g. "Notes/Foo.md"); call vault_search_title to find the path first.`;
+  if (base.includes(".") || input.endsWith("/")) return null;
+  return `Error: "${input}" looks like a bare title, not a vault-relative path. vault_move needs explicit file paths with extensions (e.g. "Notes/Foo.md") or folder paths ending in / (e.g. "Projects/"); call vault_search_title to find the path first.`;
 }
 
 // The .base flags and skipped-bare-link warnings shared by the dry-run plan and the write report.
@@ -141,6 +141,10 @@ function formatMoveCaveats(
 function formatMovePlan(plan: vault.RewritePlan): string {
   const kind = plan.isRename ? "rename" : "move";
   const lines: string[] = [`Dry run — planned ${kind} of \`${plan.from}\` to \`${plan.to}\`. Nothing was written.`];
+
+  if (plan.isDirectory) {
+    lines.push("Folder moves preserve bare note names. Relative ./../ links and standard Markdown links are not rewritten; review those manually.");
+  }
 
   if (plan.files.length === 0) {
     lines.push("", "No links to rewrite.");
@@ -833,10 +837,10 @@ export async function registerTools(server: McpServer) {
     "vault_trash",
     {
       annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
-      title: "Trash vault note",
-      description: "Move a note to .trash (recoverable). Prefixes with a timestamp to avoid collisions.",
+      title: "Trash vault file or folder",
+      description: "Move a file or folder to .trash (recoverable). A folder is checked in full first; protected entries and symlinks cause the whole operation to be refused.",
       inputSchema: z.object({
-        path: z.string().describe("Relative path to the note"),
+        path: z.string().describe("Relative path to the file or folder"),
       }),
     },
     async ({ path }) => {
@@ -849,12 +853,12 @@ export async function registerTools(server: McpServer) {
     "vault_move",
     {
       annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
-      title: "Move or rename a vault file",
+      title: "Move or rename a vault file or folder",
       description:
-        "Move or rename a file within the vault and rewrite the wikilinks that point at it. source and destination are explicit vault-relative paths (with extension) — bare titles are not resolved; call vault_search_title first to find the path. Works on any file type (notes, canvases, bases, attachments). Creates missing parent folders and fails if a file already exists at the destination. dry_run defaults to true: it shows the full rewrite plan and writes nothing. Pass dry_run: false to move the file and apply the rewrites. A pure move (same name, new folder) leaves bare [[Name]] links alone; a rename rewrites every form. .base files are never edited, only flagged for review.",
+        "Move or rename a file or folder within the vault and rewrite affected wikilinks and canvas paths. For folders, end both paths with / (e.g. Projects/ to Archive/Projects/). The entire subtree is checked first, including hidden entries; protected entries and symlinks cause refusal. source and destination are explicit vault-relative paths (files with extensions, folders with trailing slashes) — bare titles are not resolved; call vault_search_title first to find the path. Works on any file type (notes, canvases, bases, attachments). Creates missing parent folders and fails if a file already exists at the destination. dry_run defaults to true: it shows the full rewrite plan and writes nothing. Pass dry_run: false to move the file and apply the rewrites. A pure move (same name, new folder) leaves bare [[Name]] links alone; a file rename rewrites every form; folder moves leave bare basenames unchanged. Relative ./../ links and standard Markdown links are not rewritten. .base files are never edited, only flagged for review.",
       inputSchema: z.object({
-        source: z.string().describe("Explicit vault-relative path of the file to move (with extension)"),
-        destination: z.string().describe("Explicit vault-relative path to move the file to (with extension)"),
+        source: z.string().describe("Explicit vault-relative source: file with extension or folder ending in /"),
+        destination: z.string().describe("Explicit vault-relative destination: file with extension or folder ending in /"),
         dry_run: z.boolean().optional().default(true).describe("If true (default), return the rewrite plan and write nothing. Pass false to move the file and rewrite links."),
       }),
     },
@@ -864,31 +868,18 @@ export async function registerTools(server: McpServer) {
         return { content: [{ type: "text", text: bareTitle }], isError: true };
       }
 
-      // Dry run: plan only, write nothing — not even the move. The plan reports every file it
-      // would touch, .base files to review, and ambiguous links it would skip.
-      if (dry_run) {
-        try {
+      // Use the same actionable errors for previews and writes. The write workflow holds
+      // endpoint locks across planning and rename so queued edits cannot stale the plan.
+      try {
+        if (dry_run) {
           const plan = await vault.planReferenceRewrite(source, destination);
           return { content: [{ type: "text", text: formatMovePlan(plan) }] };
-        } catch (e) {
-          if (e instanceof vault.VaultPolicyError) {
-            return { content: [{ type: "text", text: e.message }], isError: true };
-          }
-          throw e;
         }
-      }
-
-      // Write mode: plan, move the file (the near-infallible step), then apply the rewrites (the
-      // many-failure-point step). Planning before the move means link matching sees the file at its
-      // old path; the rewrite recomputes against current text under each file's lock.
-      try {
-        const plan = await vault.planReferenceRewrite(source, destination);
-        await vault.moveFile(source, destination);
-        const result = await vault.applyReferenceRewrite(plan);
+        const result = await vault.moveWithReferences(source, destination);
         return { content: [{ type: "text", text: formatMoveReport(result) }] };
       } catch (e) {
         if (e instanceof vault.NoteExistsError) {
-          return { content: [{ type: "text", text: `Error: file already exists at ${destination}. Choose a different destination or trash the existing file first.` }], isError: true };
+          return { content: [{ type: "text", text: `Error: a file or folder already exists at ${destination}. Choose a different destination or trash the existing entry first.` }], isError: true };
         }
         if (e instanceof vault.VaultPolicyError) {
           return { content: [{ type: "text", text: e.message }], isError: true };

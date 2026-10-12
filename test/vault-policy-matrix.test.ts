@@ -130,7 +130,8 @@ const WRITE_OPS: Record<string, (p: string) => unknown> = {
   trashNote: p => vault.trashNote(p),
   'moveFile (source)': p => vault.moveFile(p, 'Moved.md'),
   'moveFile (destination)': p => vault.moveFile('Movable.md', p),
-  applyReferenceRewrite: p => vault.applyReferenceRewrite(emptyPlan(p)),
+  'moveWithReferences (source)': p => vault.moveWithReferences(p, 'Moved.md'),
+  'moveWithReferences (destination)': p => vault.moveWithReferences('Movable.md', p),
 };
 
 // Operations that read one named path. Each must refuse every hostile existing path.
@@ -148,12 +149,18 @@ const READ_OPS: Record<string, (p: string) => unknown> = {
   listVaultFolder: p => vault.listVaultFolder(p),
   'planReferenceRewrite (source)': p => vault.planReferenceRewrite(p, 'Moved.md'),
   'planReferenceRewrite (destination)': p => vault.planReferenceRewrite('Movable.md', p),
+  'planFileMove (source)': p => vault.planFileMove(p, 'Moved.md'),
+  'planFileMove (destination)': p => vault.planFileMove('Movable.md', p),
 };
 
 // Batch operations report per-item failures instead of throwing.
 const BATCH_OPS: Record<string, (p: string) => Promise<boolean>> = {
   readNotesBatch: async p => (await vault.readNotesBatch([p], true)).found.length === 0,
   updateFrontmatterBatch: async p => !(await vault.updateFrontmatterBatch([{ path: p, fields: { k: 'v' } }]))[0]!.updated,
+  applyReferenceRewrite: async p => {
+    const result = await vault.applyReferenceRewrite(emptyPlan(p));
+    return result.modified.length === 0 && result.failures.length === 1;
+  },
 };
 
 // Operations that walk the vault. Their results must never name or quote a protected note.
@@ -176,6 +183,8 @@ const SCAN_OPS: Record<string, () => unknown> = {
 const FOLDER_OPS: Record<string, () => unknown> = {
   trashNote: () => vault.trashNote('Projects/Alpha'),
   moveFile: () => vault.moveFile('Projects/Alpha', 'Public/Alpha'),
+  moveWithReferences: () => vault.moveWithReferences('Projects/Alpha', 'Public/Alpha'),
+  planFileMove: () => vault.planFileMove('Projects/Alpha', 'Public/Alpha'),
   planReferenceRewrite: () => vault.planReferenceRewrite('Projects/Alpha', 'Public/Alpha'),
 };
 
