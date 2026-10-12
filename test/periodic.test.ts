@@ -8,7 +8,7 @@ import { resolvePeriodicNotePath, PeriodicConfigError } from '../src/periodic.js
 
 const ENV_KEYS = [
   'VAULT_PATH', 'OBSIDIAN_CONFIG_DIR', 'DAILY_NOTE_PATH_TEMPLATE', 'WEEKLY_NOTE_PATH_TEMPLATE',
-  'MONTHLY_NOTE_PATH_TEMPLATE', 'QUARTERLY_NOTE_PATH_TEMPLATE', 'YEARLY_NOTE_PATH_TEMPLATE',
+  'MONTHLY_NOTE_PATH_TEMPLATE', 'QUARTERLY_NOTE_PATH_TEMPLATE', 'YEARLY_NOTE_PATH_TEMPLATE', 'PERIODIC_WEEK_START',
 ];
 let saved: Record<string, string | undefined>;
 let vaultPath: string;
@@ -83,10 +83,18 @@ describe('daily notes from the core Daily notes config', () => {
     expect(resolvePeriodicNotePath('daily', MON).path).toBe('2026-{MM}.md');
   });
 
-  test('an unsupported token fails with an error naming it', async () => {
+  test('ordinal days are English', async () => {
     await config('daily-notes.json', { format: 'dddd, MMMM Do YYYY' });
+    expect(resolvePeriodicNotePath('daily', MON).path).toBe('Monday, October 12th 2026.md');
+    expect(resolvePeriodicNotePath('daily', new Date(2026, 9, 1)).path).toBe('Thursday, October 1st 2026.md');
+    expect(resolvePeriodicNotePath('daily', new Date(2026, 9, 22)).path).toBe('Thursday, October 22nd 2026.md');
+    expect(resolvePeriodicNotePath('daily', new Date(2026, 9, 13)).path).toBe('Tuesday, October 13th 2026.md');
+  });
+
+  test('an unsupported token fails with an error naming it', async () => {
+    await config('daily-notes.json', { format: 'YYYY-DDDD' });
     const error = errorOf(() => resolvePeriodicNotePath('daily', MON));
-    expect(error.message).toContain('"Do"');
+    expect(error.message).toContain('"DDDD"');
     expect(error.message).not.toContain(vaultPath);
   });
 
@@ -180,9 +188,12 @@ describe('cadences from the Periodic Notes plugin config', () => {
     expect(resolvePeriodicNotePath('daily', MON).path).toBe('Daily/2026-10-12.md');
   });
 
-  test('locale week tokens are refused rather than guessed', async () => {
-    await periodicNotes({ weekly: { enabled: true, folder: '', format: '' } });
-    expect(errorOf(() => resolvePeriodicNotePath('weekly', MON)).message).toContain('"gggg"');
+  test("the plugin's default weekly format uses Sunday-start locale weeks", async () => {
+    await periodicNotes({ weekly: { enabled: true, folder: 'Weeks', format: '' } });
+    expect(resolvePeriodicNotePath('weekly', MON).path).toBe('Weeks/2026-W42.md');
+    // Sunday 2026-10-11 opens locale week 42; in ISO weeks it closes week 41.
+    expect(resolvePeriodicNotePath('weekly', new Date(2026, 9, 11)).path).toBe('Weeks/2026-W42.md');
+    expect(resolvePeriodicNotePath('weekly', new Date(2026, 9, 10)).path).toBe('Weeks/2026-W41.md');
   });
 
   test('an unconfigured cadence names its env var and every source checked', async () => {
@@ -193,10 +204,60 @@ describe('cadences from the Periodic Notes plugin config', () => {
   });
 });
 
+describe('locale weeks', () => {
+  beforeEach(() => {
+    process.env.WEEKLY_NOTE_PATH_TEMPLATE = '{gggg}-W{ww}.md';
+  });
+
+  test('week 1 is the week holding January 1, owned by the new year', () => {
+    expect(resolvePeriodicNotePath('weekly', new Date(2025, 11, 28)).path).toBe('2026-W01.md');
+    expect(resolvePeriodicNotePath('weekly', new Date(2026, 0, 3)).path).toBe('2026-W01.md');
+    expect(resolvePeriodicNotePath('weekly', new Date(2025, 11, 27)).path).toBe('2025-W52.md');
+    expect(resolvePeriodicNotePath('weekly', new Date(2026, 0, 4)).path).toBe('2026-W02.md');
+  });
+
+  test('bucket a date to the first day of its locale week', () => {
+    process.env.WEEKLY_NOTE_PATH_TEMPLATE = '{gggg}-W{w}-{DD}.md';
+    expect(resolvePeriodicNotePath('weekly', new Date(2026, 9, 17)).path).toBe('2026-W42-11.md');
+  });
+
+  test('PERIODIC_WEEK_START moves the first day of the week', () => {
+    process.env.PERIODIC_WEEK_START = 'Monday';
+    expect(resolvePeriodicNotePath('weekly', new Date(2026, 9, 11)).path).toBe('2026-W41.md');
+    expect(resolvePeriodicNotePath('weekly', MON).path).toBe('2026-W42.md');
+  });
+
+  test('a weekStart set in the Calendar plugin is followed, and the env var wins over it', async () => {
+    await config('community-plugins.json', ['calendar']);
+    await config('plugins/calendar/data.json', { weekStart: 'monday' });
+    expect(resolvePeriodicNotePath('weekly', new Date(2026, 9, 11)).path).toBe('2026-W41.md');
+    process.env.PERIODIC_WEEK_START = 'sunday';
+    expect(resolvePeriodicNotePath('weekly', new Date(2026, 9, 11)).path).toBe('2026-W42.md');
+  });
+
+  test('"locale" or a disabled Calendar plugin keeps the Sunday default', async () => {
+    await config('community-plugins.json', ['calendar']);
+    await config('plugins/calendar/data.json', { weekStart: 'locale' });
+    expect(resolvePeriodicNotePath('weekly', new Date(2026, 9, 11)).path).toBe('2026-W42.md');
+    await config('community-plugins.json', []);
+    await config('plugins/calendar/data.json', { weekStart: 'monday' });
+    expect(resolvePeriodicNotePath('weekly', new Date(2026, 9, 11)).path).toBe('2026-W42.md');
+  });
+
+  test('an invalid PERIODIC_WEEK_START fails only paths that use locale weeks', () => {
+    process.env.PERIODIC_WEEK_START = 'funday';
+    expect(errorOf(() => resolvePeriodicNotePath('weekly', MON)).message).toContain('PERIODIC_WEEK_START');
+    process.env.WEEKLY_NOTE_PATH_TEMPLATE = '{GGGG}-W{WW}.md';
+    expect(resolvePeriodicNotePath('weekly', MON).path).toBe('2026-W42.md');
+  });
+});
+
 describe('env templates', () => {
   test('expand every supported token', () => {
-    process.env.DAILY_NOTE_PATH_TEMPLATE = '{YYYY}{YY}{GGGG}{GG}{WW}{Q}{MM}{M}{DD}{D}{MMM}{MMMM}{dd}{ddd}{dddd}{unknown}.md';
-    expect(resolvePeriodicNotePath('daily', MON).path).toBe('20262620262642410101212OctOctoberMoMonMonday{unknown}.md');
+    process.env.DAILY_NOTE_PATH_TEMPLATE = '{YYYY}{YY}{GGGG}{GG}{WW}{W}{gggg}{gg}{ww}{w}{Q}{MM}{M}{DD}{Do}{D}{MMM}{MMMM}{dd}{ddd}{dddd}{unknown}.md';
+    expect(resolvePeriodicNotePath('daily', MON).path).toBe(
+      '20262620262642422026264242410101212th12OctOctoberMoMonMonday{unknown}.md',
+    );
   });
 
   test('bucket a date into its containing period', () => {

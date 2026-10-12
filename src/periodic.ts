@@ -4,7 +4,17 @@
 import { readFileSync } from 'fs';
 import path from 'path';
 import { getVaultRoot } from './vault.js';
-import { isoWeek, isoWeekYear, startOfIsoWeek, startOfMonth, startOfQuarter, startOfYear } from './date.js';
+import {
+  isoWeek,
+  isoWeekYear,
+  localeWeek,
+  startOfIsoWeek,
+  startOfLocaleWeek,
+  startOfMonth,
+  startOfQuarter,
+  startOfYear,
+  type WeekConvention,
+} from './date.js';
 
 export type PeriodicCadence = 'daily' | 'weekly' | 'monthly' | 'quarterly' | 'yearly';
 
@@ -29,8 +39,8 @@ const DEFAULT_DAILY_FORMAT = 'YYYY-MM-DD';
 
 // Per-cadence facts: the env var holding its template, its key inside a Periodic Notes 1.x calendar
 // set, the plugin's own default format, and how a date is bucketed into its period so any date in
-// the period formats to the same note. The weekly default uses locale week tokens, which the
-// translation refuses, so a vault relying on it is asked to set an ISO format.
+// the period formats to the same note. A weekly path that uses locale week tokens is bucketed by
+// the locale week instead (see bucketFor).
 const CADENCES: Record<PeriodicCadence, { envVar: string; calendarSetKey: string; defaultFormat: string; bucket: (d: Date) => Date }> = {
   daily: { envVar: 'DAILY_NOTE_PATH_TEMPLATE', calendarSetKey: 'day', defaultFormat: DEFAULT_DAILY_FORMAT, bucket: d => d },
   weekly: { envVar: 'WEEKLY_NOTE_PATH_TEMPLATE', calendarSetKey: 'week', defaultFormat: 'gggg-[W]ww', bucket: startOfIsoWeek },
@@ -43,18 +53,31 @@ const CADENCES: Record<PeriodicCadence, { envVar: string; calendarSetKey: string
 
 // The date tokens a path can use. Env templates spell them in braces ({YYYY}); moment formats
 // spell them bare. Every other moment token is refused rather than approximated, so a format this
-// server can't reproduce exactly fails instead of naming the wrong note. Month and weekday names
-// are English, matching Obsidian in English; a vault whose app language changes moment's names
-// should set the env templates.
-const TOKENS = ['YYYY', 'YY', 'GGGG', 'GG', 'WW', 'Q', 'MMMM', 'MMM', 'MM', 'M', 'DD', 'D', 'dddd', 'ddd', 'dd'] as const;
+// server can't reproduce exactly fails instead of naming the wrong note. Month, weekday and
+// ordinal names are English, matching Obsidian in English; a vault whose app language changes
+// moment's names should set the env templates. GGGG/GG/WW/W are ISO weeks; gggg/gg/ww/w are
+// locale weeks under the vault's week convention (see weekConvention).
+const TOKENS = [
+  'YYYY', 'YY', 'GGGG', 'GG', 'WW', 'W', 'gggg', 'gg', 'ww', 'w', 'Q',
+  'MMMM', 'MMM', 'MM', 'M', 'DD', 'Do', 'D', 'dddd', 'ddd', 'dd',
+] as const;
 type Token = (typeof TOKENS)[number];
 type Segment = { literal: string } | { token: Token };
+
+const LOCALE_WEEK_TOKENS: ReadonlySet<Token> = new Set(['gggg', 'gg', 'ww', 'w']);
+const usesLocaleWeeks = (segments: Segment[]) => segments.some(s => 'token' in s && LOCALE_WEEK_TOKENS.has(s.token));
 
 const SHORT_WEEKDAYS = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
 const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 
-function formatToken(date: Date, token: Token): string {
+function ordinal(n: number): string {
+  const tens = n % 100;
+  const suffix = tens >= 11 && tens <= 13 ? 'th' : (['th', 'st', 'nd', 'rd'][n % 10] ?? 'th');
+  return `${n}${suffix}`;
+}
+
+function formatToken(date: Date, token: Token, weeks: WeekConvention): string {
   const pad = (n: number) => String(n).padStart(2, '0');
   switch (token) {
     case 'YYYY': return String(date.getFullYear());
@@ -62,12 +85,18 @@ function formatToken(date: Date, token: Token): string {
     case 'GGGG': return String(isoWeekYear(date));
     case 'GG': return String(isoWeekYear(date)).slice(-2);
     case 'WW': return pad(isoWeek(date));
+    case 'W': return String(isoWeek(date));
+    case 'gggg': return String(localeWeek(date, weeks).year);
+    case 'gg': return String(localeWeek(date, weeks).year).slice(-2);
+    case 'ww': return pad(localeWeek(date, weeks).week);
+    case 'w': return String(localeWeek(date, weeks).week);
     case 'Q': return String(Math.floor(date.getMonth() / 3) + 1);
     case 'MMMM': return MONTH_NAMES[date.getMonth()]!;
     case 'MMM': return MONTH_NAMES[date.getMonth()]!.slice(0, 3);
     case 'MM': return pad(date.getMonth() + 1);
     case 'M': return String(date.getMonth() + 1);
     case 'DD': return pad(date.getDate());
+    case 'Do': return ordinal(date.getDate());
     case 'D': return String(date.getDate());
     case 'dddd': return DAY_NAMES[date.getDay()]!;
     case 'ddd': return DAY_NAMES[date.getDay()]!.slice(0, 3);
@@ -75,8 +104,8 @@ function formatToken(date: Date, token: Token): string {
   }
 }
 
-function formatSegments(date: Date, segments: Segment[]): string {
-  return segments.map(s => ('literal' in s ? s.literal : formatToken(date, s.token))).join('');
+function formatSegments(date: Date, segments: Segment[], weeks: WeekConvention): string {
+  return segments.map(s => ('literal' in s ? s.literal : formatToken(date, s.token, weeks))).join('');
 }
 
 const BRACED_TOKEN = new RegExp(`\\{(${TOKENS.join('|')})\\}`, 'g');
@@ -162,6 +191,36 @@ const configFile = (name: string) => `${configDir()}/${name}`;
 const periodicNotesFile = () => configFile('plugins/periodic-notes/data.json');
 const dailyNotesFile = () => configFile('daily-notes.json');
 
+// --- Week convention -------------------------------------------------------------
+
+const DAY_NAMES_LOWER = DAY_NAMES.map(d => d.toLowerCase());
+
+// Moment's English locale: Sunday-start weeks, week 1 holds January 1. Choosing another start
+// day keeps doy, as the Calendar plugin does when it changes moment's week start.
+const DEFAULT_WEEKS: WeekConvention = { dow: 0, doy: 6 };
+
+function weekStartFromPlugin(id: string): number | undefined {
+  const enabled = readConfigJson(configFile('community-plugins.json'));
+  if (!Array.isArray(enabled) || !enabled.includes(id)) return undefined;
+  const data = readConfigJson(configFile(`plugins/${id}/data.json`));
+  if (!isRecord(data)) return undefined;
+  const day = DAY_NAMES_LOWER.indexOf(trimmedString(data.weekStart).toLowerCase());
+  return day === -1 ? undefined : day;
+}
+
+// The week convention for locale week tokens: PERIODIC_WEEK_START, then a weekStart day set in
+// the Calendar or Periodic Notes plugin ("locale" means the default), then Sunday.
+function weekConvention(): WeekConvention {
+  const env = process.env.PERIODIC_WEEK_START?.trim();
+  if (env) {
+    const dow = DAY_NAMES_LOWER.indexOf(env.toLowerCase());
+    if (dow === -1) throw new PeriodicConfigError(`PERIODIC_WEEK_START must be a day name such as "sunday" or "monday", not "${env}".`);
+    return { ...DEFAULT_WEEKS, dow };
+  }
+  const dow = weekStartFromPlugin('calendar') ?? weekStartFromPlugin('periodic-notes');
+  return dow === undefined ? DEFAULT_WEEKS : { ...DEFAULT_WEEKS, dow };
+}
+
 // Periodic Notes keeps cadences keyed by name (0.x) or inside the active calendar set (1.x).
 function lookupPeriodicNotes(cadence: PeriodicCadence): Lookup {
   const enabled = readConfigJson(configFile('community-plugins.json'));
@@ -189,10 +248,10 @@ function lookupCoreDailyNotes(): Lookup {
   return { found: { folder: trimmedString(data.folder), format: trimmedString(data.format) || DEFAULT_DAILY_FORMAT } };
 }
 
-function configuredPath(date: Date, { folder, format }: ConfiguredFormat, source: string): string {
-  const name = formatSegments(date, parseMomentFormat(format, source));
+// A configured folder and format as one segment list: folder/format.md.
+function configuredSegments({ folder, format }: ConfiguredFormat, source: string): Segment[] {
   const dir = folder.replace(/^\/+|\/+$/g, '');
-  return `${dir ? `${dir}/` : ''}${name}.md`;
+  return [...(dir ? [{ literal: `${dir}/` }] : []), ...parseMomentFormat(format, source), { literal: '.md' }];
 }
 
 // --- Resolution ----------------------------------------------------------------
@@ -202,24 +261,26 @@ function configuredPath(date: Date, { folder, format }: ConfiguredFormat, source
 // later source would name a note the vault owner doesn't use. Throws PeriodicConfigError when no
 // source configures the cadence, listing every source checked.
 export function resolvePeriodicNotePath(cadence: PeriodicCadence, date: Date = new Date()): PeriodicNotePath {
-  const { envVar, bucket } = CADENCES[cadence];
-  const bucketed = bucket(date);
+  const { envVar } = CADENCES[cadence];
+  const format = (segments: Segment[], source: PeriodicSource): PeriodicNotePath => {
+    const locale = usesLocaleWeeks(segments);
+    const weeks = locale ? weekConvention() : DEFAULT_WEEKS;
+    const bucketed = cadence === 'weekly' && locale ? startOfLocaleWeek(date, weeks.dow) : CADENCES[cadence].bucket(date);
+    return { path: formatSegments(bucketed, segments, weeks), source };
+  };
+
   const template = process.env[envVar]?.trim();
-  if (template) return { path: formatSegments(bucketed, parseTemplate(template)), source: 'env' };
+  if (template) return format(parseTemplate(template), 'env');
 
   const checked = [`${envVar} (not set)`];
   const plugin = lookupPeriodicNotes(cadence);
-  if ('found' in plugin) {
-    return { path: configuredPath(bucketed, plugin.found, periodicNotesFile()), source: 'Periodic Notes plugin' };
-  }
+  if ('found' in plugin) return format(configuredSegments(plugin.found, periodicNotesFile()), 'Periodic Notes plugin');
   checked.push(`${periodicNotesFile()} (${plugin.skipped})`);
 
   if (cadence === 'daily') {
     const core = lookupCoreDailyNotes();
-    if ('found' in core) {
-      return { path: configuredPath(bucketed, core.found, dailyNotesFile()), source: 'core Daily notes' };
-    }
-    return { path: formatSegments(bucketed, parseTemplate(DEFAULT_DAILY_NOTE_TEMPLATE)), source: 'built-in default' };
+    if ('found' in core) return format(configuredSegments(core.found, dailyNotesFile()), 'core Daily notes');
+    return format(parseTemplate(DEFAULT_DAILY_NOTE_TEMPLATE), 'built-in default');
   }
 
   throw new PeriodicConfigError(

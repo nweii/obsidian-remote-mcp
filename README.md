@@ -330,6 +330,7 @@ MONTHLY_NOTE_PATH_TEMPLATE=Monthly/{YYYY}-{MM}.md      # optional; overrides the
 QUARTERLY_NOTE_PATH_TEMPLATE=Quarterly/{YYYY}-Q{Q}.md  # optional; overrides the vault's Obsidian config
 YEARLY_NOTE_PATH_TEMPLATE=Yearly/{YYYY}.md             # optional; overrides the vault's Obsidian config
 OBSIDIAN_CONFIG_DIR=.obsidian          # optional; where periodic-note settings are read from
+PERIODIC_WEEK_START=sunday             # optional; first day of locale weeks ({gggg}, {ww})
 # CORS_ALLOWED_ORIGINS=https://vault.example,https://my-vault-chat.example # optional; replaces the site-origin default
 TOKEN_STORE_PATH=./tokens.json         # optional
 MCP_STATIC_BEARER_TOKEN=               # optional; API key for /mcp (see Authentication)
@@ -439,7 +440,7 @@ Each cadence takes its path from the first of these that configures it:
 
 So a vault that already sets these up in Obsidian needs no env vars: with the Daily notes folder `01-Days` and format `YYYY-MM-DD-ddd`, today's note is `01-Days/2026-10-12-Mon.md`. The server reads the plugin settings from the vault's `.obsidian` folder on each call (set `OBSIDIAN_CONFIG_DIR` if Obsidian uses a different config folder); tools still can't read `.obsidian`. A deployment that mounts only the notes falls back to the env vars and the built-in default.
 
-Obsidian date formats are translated into the tokens below, with `[bracketed]` text kept literal. Month and weekday names are English; if Obsidian runs in another language, set the env templates instead. A format using any other token (for example `Do` for "12th", or the locale-week `gggg-[W]ww` that Periodic Notes uses for weekly notes by default) returns an error naming the token rather than a guessed path. Switch weekly notes to ISO weeks (`GGGG-[W]WW`) or set the env var. A cadence nothing configures returns an error naming its env var and the config files checked.
+Obsidian date formats are translated into the tokens below, with `[bracketed]` text kept literal. Month, weekday and ordinal names are English; if Obsidian runs in another language, set the env templates instead. A format using any other token returns an error naming the token rather than a guessed path. A cadence nothing configures returns an error naming its env var and the config files checked.
 
 Supported tokens:
 
@@ -448,18 +449,26 @@ Supported tokens:
 - `{GGGG}`: 4-digit ISO week-year (use with `{WW}`, not `{YYYY}`)
 - `{GG}`: 2-digit ISO week-year
 - `{WW}`: 2-digit ISO week number (weeks start Monday; week 1 contains the first Thursday)
+- `{W}`: ISO week number without zero padding
+- `{gggg}`: 4-digit locale week-year (use with `{ww}`)
+- `{gg}`: 2-digit locale week-year
+- `{ww}`: 2-digit locale week number (weeks start Sunday unless set otherwise; week 1 contains January 1)
+- `{w}`: locale week number without zero padding
 - `{Q}`: quarter number (`1`–`4`)
 - `{MM}`: 2-digit month
 - `{M}`: month without zero padding
 - `{DD}`: 2-digit day
 - `{D}`: day without zero padding
+- `{Do}`: day as an ordinal like `12th`
 - `{MMM}`: short month name like `Mar`
 - `{MMMM}`: full month name like `March`
 - `{dd}`: short weekday name like `Th`
 - `{ddd}`: short weekday name like `Mon`
 - `{dddd}`: full weekday name like `Monday`
 
-The ISO week-year (`{GGGG}`) differs from the calendar year (`{YYYY}`) around New Year — for example `2025-12-29` falls in ISO week 1 of 2026. Pair `{WW}` with `{GGGG}` so the year matches the week; pairing it with `{YYYY}` produces wrong paths at that boundary.
+There are two week systems, and a weekly path has to use the one its notes were named with. ISO weeks (`{GGGG}`, `{WW}`) start Monday. Locale weeks (`{gggg}`, `{ww}`) are what Obsidian in English uses, and what Periodic Notes uses by default (`gggg-[W]ww`): they start Sunday, so a Sunday note is a week ahead of its ISO number. Locale weeks start on the first of these that is set: `PERIODIC_WEEK_START` (a day name), the week start chosen in the Calendar or Periodic Notes plugin settings, or Sunday.
+
+Each week-year can differ from the calendar year (`{YYYY}`) around New Year. For example `2025-12-29` falls in week 1 of 2026 in both systems. Pair each week number with its own week-year (`{WW}` with `{GGGG}`, `{ww}` with `{gggg}`); pairing it with `{YYYY}` produces wrong paths at that boundary.
 
 Examples:
 
