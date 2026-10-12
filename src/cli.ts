@@ -47,7 +47,11 @@ const DESTRUCTIVE_PALETTE_ID = /delete|remove|purge|trash|erase|wipe|destroy|dis
 const PATH_PARAMS = ["path", "to", "folder"];
 
 const COMMAND_NAME = /^[a-z][a-z-]*(?::[a-z][a-z-]*)?$/;
-const KEY_OR_FLAG = /^[a-z][a-z-]*$/;
+// Lowercase words with hyphens, or camelCase as some commands document (paneType).
+const KEY_OR_FLAG = /^[a-z][a-zA-Z-]*$/;
+// Keys the guards read. A differently cased spelling would skip them if the CLI matched keys
+// without regard to case, so only the lowercase spelling is accepted.
+const GUARDED_KEYS = new Set(["vault", "file", "id", "name", ...PATH_PARAMS]);
 
 export interface CliRequest {
   command: string;
@@ -98,7 +102,8 @@ function paletteRefusal(id: string | undefined): string | null {
 
 function argumentRefusal(params: Record<string, string>, flags: string[]): string | null {
   for (const key of [...Object.keys(params), ...flags]) {
-    if (!KEY_OR_FLAG.test(key)) return `"${key}" is not a valid parameter or flag name (lowercase letters and hyphens).`;
+    if (!KEY_OR_FLAG.test(key)) return `"${key}" is not a valid parameter or flag name (letters and hyphens, starting lowercase).`;
+    if (key !== key.toLowerCase() && GUARDED_KEYS.has(key.toLowerCase())) return `Write "${key}" in lowercase: "${key.toLowerCase()}".`;
     if (key === "vault") return `The vault is fixed by the server; "vault" can't be passed.`;
   }
   for (const value of Object.values(params)) {

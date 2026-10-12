@@ -53,6 +53,11 @@ function errorOf(run: () => unknown): PeriodicConfigError {
 }
 
 describe('daily notes from the core Daily notes config', () => {
+  test('adds .md only when the format does not already render it', async () => {
+    await config('daily-notes.json', { folder: 'Daily', format: 'YYYY-MM-DD[.md]' });
+    expect(resolvePeriodicNotePath('daily', MON).path).toBe('Daily/2026-10-12.md');
+  });
+
   test('follows the configured folder and moment format', async () => {
     await config('daily-notes.json', { folder: '01-Days', format: 'YYYY-MM-DD-ddd' });
     expect(resolvePeriodicNotePath('daily', MON)).toEqual({ path: '01-Days/2026-10-12-Mon.md', source: 'core Daily notes' });
@@ -232,6 +237,14 @@ describe('locale weeks', () => {
     await config('plugins/calendar/data.json', { weekStart: 'monday' });
     expect(resolvePeriodicNotePath('weekly', new Date(2026, 9, 11)).path).toBe('2026-W41.md');
     process.env.PERIODIC_WEEK_START = 'sunday';
+    expect(resolvePeriodicNotePath('weekly', new Date(2026, 9, 11)).path).toBe('2026-W42.md');
+  });
+
+  test('Periodic Notes 1.x takes its week start from the vault settings', async () => {
+    await config('community-plugins.json', ['periodic-notes']);
+    await config('app.json', { weekStart: 'monday' });
+    expect(resolvePeriodicNotePath('weekly', new Date(2026, 9, 11)).path).toBe('2026-W41.md');
+    await config('app.json', { weekStart: 'locale' });
     expect(resolvePeriodicNotePath('weekly', new Date(2026, 9, 11)).path).toBe('2026-W42.md');
   });
 

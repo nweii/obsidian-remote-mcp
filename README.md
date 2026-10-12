@@ -532,7 +532,7 @@ Turning the CLI tools on gives agents most of what you can do in Obsidian: creat
 The guards:
 
 - The vault is always the server's. `vault` is not a parameter, and a `vault` key or flag is refused.
-- Parameter keys and flags must be lowercase words (`a-z` and `-`). Each becomes one argument; there is no shell.
+- Parameter keys and flags are letters and hyphens starting lowercase (`paneType` is fine). Keys the guards check (`vault`, `path`, `to`, `folder`, `file`, `name`, `id`) must be lowercase. Each becomes one argument; there is no shell.
 - `eval`, `devtools`, `restart`, `reload`, `plugins:restrict`, `theme:install`, and every `dev:`, `plugin:` and `snippet:` command are always blocked. No setting unblocks them.
 - Command-palette execution (`command id=…`) is off unless `OBSIDIAN_CLI_COMMANDS` lists the allowed IDs. `*` allows every ID except those that look destructive (delete, remove, purge, trash and similar); those run only when listed by name. `*` also covers community-plugin commands, and some of those run scripts (Templater, Shell commands), so prefer listing IDs.
 - With `VAULT_READ_ONLY=true`, and for a connection approved without "Edit notes", only commands on a known-read list run, so a command added by a future CLI release is refused until it is reviewed.

@@ -208,8 +208,20 @@ function weekStartFromPlugin(id: string): number | undefined {
   return day === -1 ? undefined : day;
 }
 
+// Periodic Notes 1.x keeps its week start in the vault's own settings (app.json), where 0.x and
+// the Calendar plugin keep it in their plugin data.
+function weekStartFromVaultSettings(): number | undefined {
+  const enabled = readConfigJson(configFile('community-plugins.json'));
+  if (!Array.isArray(enabled) || !enabled.includes('periodic-notes')) return undefined;
+  const app = readConfigJson(configFile('app.json'));
+  if (!isRecord(app)) return undefined;
+  const day = DAY_NAMES_LOWER.indexOf(trimmedString(app.weekStart).toLowerCase());
+  return day === -1 ? undefined : day;
+}
+
 // The week convention for locale week tokens: PERIODIC_WEEK_START, then a weekStart day set in
-// the Calendar or Periodic Notes plugin ("locale" means the default), then Sunday.
+// the Calendar plugin, the vault settings Periodic Notes 1.x reads, or Periodic Notes 0.x
+// ("locale" means the default), then Sunday.
 function weekConvention(): WeekConvention {
   const env = process.env.PERIODIC_WEEK_START?.trim();
   if (env) {
@@ -217,7 +229,7 @@ function weekConvention(): WeekConvention {
     if (dow === -1) throw new PeriodicConfigError(`PERIODIC_WEEK_START must be a day name such as "sunday" or "monday", not "${env}".`);
     return { ...DEFAULT_WEEKS, dow };
   }
-  const dow = weekStartFromPlugin('calendar') ?? weekStartFromPlugin('periodic-notes');
+  const dow = weekStartFromPlugin('calendar') ?? weekStartFromVaultSettings() ?? weekStartFromPlugin('periodic-notes');
   return dow === undefined ? DEFAULT_WEEKS : { ...DEFAULT_WEEKS, dow };
 }
 
@@ -248,10 +260,10 @@ function lookupCoreDailyNotes(): Lookup {
   return { found: { folder: trimmedString(data.folder), format: trimmedString(data.format) || DEFAULT_DAILY_FORMAT } };
 }
 
-// A configured folder and format as one segment list: folder/format.md.
+// A configured folder and format as one segment list: folder/format. The caller adds .md.
 function configuredSegments({ folder, format }: ConfiguredFormat, source: string): Segment[] {
   const dir = folder.replace(/^\/+|\/+$/g, '');
-  return [...(dir ? [{ literal: `${dir}/` }] : []), ...parseMomentFormat(format, source), { literal: '.md' }];
+  return [...(dir ? [{ literal: `${dir}/` }] : []), ...parseMomentFormat(format, source)];
 }
 
 // --- Resolution ----------------------------------------------------------------
@@ -268,18 +280,23 @@ export function resolvePeriodicNotePath(cadence: PeriodicCadence, date: Date = n
     const bucketed = cadence === 'weekly' && locale ? startOfLocaleWeek(date, weeks.dow) : CADENCES[cadence].bucket(date);
     return { path: formatSegments(bucketed, segments, weeks), source };
   };
+  // Obsidian adds .md to a configured format unless the format already renders it.
+  const formatConfigured = (segments: Segment[], source: PeriodicSource): PeriodicNotePath => {
+    const out = format(segments, source);
+    return out.path.endsWith('.md') ? out : { ...out, path: `${out.path}.md` };
+  };
 
   const template = process.env[envVar]?.trim();
   if (template) return format(parseTemplate(template), 'env');
 
   const checked = [`${envVar} (not set)`];
   const plugin = lookupPeriodicNotes(cadence);
-  if ('found' in plugin) return format(configuredSegments(plugin.found, periodicNotesFile()), 'Periodic Notes plugin');
+  if ('found' in plugin) return formatConfigured(configuredSegments(plugin.found, periodicNotesFile()), 'Periodic Notes plugin');
   checked.push(`${periodicNotesFile()} (${plugin.skipped})`);
 
   if (cadence === 'daily') {
     const core = lookupCoreDailyNotes();
-    if ('found' in core) return format(configuredSegments(core.found, dailyNotesFile()), 'core Daily notes');
+    if ('found' in core) return formatConfigured(configuredSegments(core.found, dailyNotesFile()), 'core Daily notes');
     return format(parseTemplate(DEFAULT_DAILY_NOTE_TEMPLATE), 'built-in default');
   }
 

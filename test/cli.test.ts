@@ -153,10 +153,19 @@ describe('guards', () => {
     await refused({ command: 'search --help' });
     await refused({ command: 'Search' });
     await refused({ command: 'search', params: { 'Query': 'x' } });
+    await refused({ command: 'search', params: { 'pane_type': 'x' } });
     await refused({ command: 'search', params: { 'query x': 'x' } });
     await refused({ command: 'search', flags: ['--copy'] });
     await refused({ command: 'search', flags: ['vault=Other'] });
     await refused({ command: 'search', flags: ['counts extra'] });
+  });
+
+  test('accepts camelCase keys, except a differently cased key the guards read', async () => {
+    for (const key of ['pATH', 'fOLDER', 'vAULT', 'fILE']) {
+      expect(await refused({ command: 'read', params: { [key]: '../x' } })).toContain('lowercase');
+    }
+    const outcome = await cli.runCli({ command: 'daily', params: { paneType: 'tab' } });
+    expect(outcome).toEqual({ ok: true, output: JSON.stringify({ vault: 'vault=Vault', command: 'daily', rest: ['paneType=tab'] }) });
   });
 
   test('rejects a vault key or flag', async () => {
