@@ -26,6 +26,9 @@ src/
   ignore.ts       — Compiles .mcpignore literal/glob rules with case and Unicode normalization
   lock.ts         — Per-path async mutex for read-modify-write
   clip.ts         — Registers vault_clip_url when the optional web-clipper-headless is installed
+  skim.ts         — Registers vault_skim when a decision-model key is set: note selection, exclusions, plan ids, rendering
+  chunk.ts        — Line-aware chunker with overlap used by vault_skim
+  decision.ts     — Decision-model client (TypeSafe, OpenRouter, OpenAI): provider resolution, request shapes, batching, retries
   log.ts          — Configures the kit's audit logger and its redaction
   date.ts         — Local-timezone date helpers for periodic notes (parsing, ISO weeks, period buckets)
 scripts/          — setup-clipper.ts builds the optional clipper from the root lockfile

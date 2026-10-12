@@ -147,6 +147,8 @@ const READ_OPS: Record<string, (p: string) => unknown> = {
   getBacklinks: p => vault.getBacklinks(p),
   resolveNoteReference: p => vault.resolveNoteReference(p),
   listVaultFolder: p => vault.listVaultFolder(p),
+  listNotePaths: p => vault.listNotePaths(p),
+  canonicalNotePath: p => vault.canonicalNotePath(p),
   'planReferenceRewrite (source)': p => vault.planReferenceRewrite(p, 'Moved.md'),
   'planReferenceRewrite (destination)': p => vault.planReferenceRewrite('Movable.md', p),
   'planFileMove (source)': p => vault.planFileMove(p, 'Moved.md'),
@@ -171,6 +173,8 @@ const SCAN_OPS: Record<string, () => unknown> = {
   getFolderTree: () => vault.getFolderTree(8),
   'listVaultFolder (root)': () => vault.listVaultFolder(''),
   'listVaultFolder (mixed folder)': () => vault.listVaultFolder('Projects/Alpha'),
+  'listNotePaths (root)': () => vault.listNotePaths(),
+  'listNotePaths (mixed folder)': () => vault.listNotePaths('Projects/Alpha'),
   findByTitle: () => vault.findByTitle(NAME),
   getAllTags: () => vault.getAllTags(),
   getNotesByTag: () => vault.getNotesByTag(`${BODY.toLowerCase()}tag`),
@@ -192,7 +196,7 @@ const FOLDER_OPS: Record<string, () => unknown> = {
 const NO_PATH_EXPORTS = [
   'getVaultRoot', 'getVaultDisplayName', 'getContextNotePath', 'isReadOnly', 'versionOf',
   'invalidateResolverCache', 'getPeriodicNoteTemplate', 'getPeriodicNoteTemplateEnvVar',
-  'getPeriodicNotePath',
+  'getPeriodicNotePath', 'getNoteTags', 'compileSearchPattern',
 ];
 
 function leaks(value: unknown, tokens: string[]): boolean {
