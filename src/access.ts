@@ -15,9 +15,11 @@ export const CLI_LABEL = 'Control the Obsidian app';
 
 export const SCOPES_PROMPT = 'Every connection can read your notes. Also allow this one to:';
 
-// The approval page's checkboxes. Each is offered only while the server allows it, so nobody is asked
-// about a capability that is switched off; `cliOffered` reports whether the CLI tools are on.
-export function accessScopes(cliOffered: () => Promise<boolean>): ScopeDefinition[] {
+// The approval page's checkboxes. Each is offered only while the server settings allow it, so nobody
+// is asked about a capability that is switched off. A connection holds only the boxes ticked when it
+// was approved, so a box that wasn't shown stays withheld until the connection is approved again.
+// `cliEnabled` reports whether the CLI tools are turned on.
+export function accessScopes(cliEnabled: () => boolean): ScopeDefinition[] {
   return [
     {
       id: WRITE_SCOPE,
@@ -29,7 +31,7 @@ export function accessScopes(cliOffered: () => Promise<boolean>): ScopeDefinitio
       id: CLI_SCOPE,
       label: CLI_LABEL,
       hint: 'Run plugin and command-palette commands, and change Publish and Sync.',
-      offered: cliOffered,
+      offered: cliEnabled,
     },
   ];
 }

@@ -11,7 +11,7 @@ import type { Express } from 'express';
 let createApp: () => { app: Express };
 let vaultPath: string;
 
-const ENV_KEYS = ['VAULT_READ_ONLY', 'MCP_STATIC_BEARER_TOKEN', 'MCP_STATIC_BEARER_SCOPES', 'OBSIDIAN_CLI_ENABLED'];
+const ENV_KEYS = ['VAULT_READ_ONLY', 'MCP_STATIC_BEARER_TOKEN', 'MCP_STATIC_BEARER_SCOPES', 'OBSIDIAN_CLI_ENABLED', 'OBSIDIAN_CLI_PATH'];
 const BEARER = 'access-test-bearer';
 const AUTHORIZE = {
   response_type: 'code',
@@ -103,9 +103,14 @@ describe('the approval page', () => {
     });
   });
 
-  test('offers app control only while the Obsidian CLI tools are on', async () => {
+  test('offers app control while the Obsidian CLI tools are turned on, even if Obsidian is unreachable', async () => {
     await withServer(async base => {
       expect(await approvalPage(base)).not.toContain('Control the Obsidian app');
+    });
+    process.env.OBSIDIAN_CLI_ENABLED = 'true';
+    process.env.OBSIDIAN_CLI_PATH = path.join(vaultPath, 'no-such-obsidian');
+    await withServer(async base => {
+      expect(await approvalPage(base)).toMatch(/value="vault:cli" checked><span>Control the Obsidian app/);
     });
   });
 
@@ -123,6 +128,16 @@ describe('a connection approved without "Edit notes"', () => {
       const names = await toolNames(base, await connect(base, []));
       for (const name of WRITE_ONLY_TOOLS) expect(names).not.toContain(name);
       expect(names).toEqual(expect.arrayContaining(['vault_read', 'vault_periodic_note', 'vault_move']));
+    });
+  });
+
+  test('stays read-only when it was approved while the whole vault was', async () => {
+    process.env.VAULT_READ_ONLY = 'true';
+    await withServer(async base => {
+      const token = await connect(base, ['vault:write']);
+      delete process.env.VAULT_READ_ONLY;
+      const names = await toolNames(base, token);
+      for (const name of WRITE_ONLY_TOOLS) expect(names).not.toContain(name);
     });
   });
 

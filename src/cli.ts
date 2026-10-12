@@ -272,7 +272,9 @@ async function cliReachable(config: CliConfig): Promise<Availability> {
 
 const envIsTrue = (name: string) => process.env[name]?.trim().toLowerCase() === "true";
 
-function optedIn(): boolean {
+// OBSIDIAN_CLI_ENABLED=true. Also decides whether the approval page offers the CLI scope, which
+// doesn't wait on Obsidian being reachable at that moment.
+export function cliEnabled(): boolean {
   return envIsTrue("OBSIDIAN_CLI_ENABLED");
 }
 
@@ -286,7 +288,7 @@ function mcpignoreRefusal(): string | null {
 
 // Whether vault_cli and vault_cli_help should be offered and may run.
 export async function cliToolsAvailability(): Promise<Availability> {
-  if (!optedIn()) return { ok: false, reason: "OBSIDIAN_CLI_ENABLED is not true" };
+  if (!cliEnabled()) return { ok: false, reason: "OBSIDIAN_CLI_ENABLED is not true" };
   const ignored = mcpignoreRefusal();
   if (ignored) return { ok: false, reason: ignored };
   return cliReachable(cliConfig());
@@ -401,7 +403,7 @@ export interface BacklinksResult {
 // policy, so it needs no .mcpignore acknowledgment.
 export async function resolveBacklinks(relPath: string, limit: number): Promise<BacklinksResult> {
   vault.resolveSafePath(relPath);
-  if (optedIn()) {
+  if (cliEnabled()) {
     const config = cliConfig();
     if ((await cliReachable(config)).ok) {
       const result = await exec(config, ["backlinks", `path=${relPath}`, "format=json"], BACKLINKS_TIMEOUT_MS);
@@ -471,7 +473,7 @@ function logAvailability(available: Availability): void {
 }
 
 export async function registerCliTools(server: McpServer): Promise<void> {
-  if (!optedIn()) return;
+  if (!cliEnabled()) return;
   const available = await cliToolsAvailability();
   logAvailability(available);
   if (!available.ok || connectionRefusal()) return;

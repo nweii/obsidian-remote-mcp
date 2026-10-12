@@ -9,7 +9,7 @@ import type { Auth } from 'mcp-server-kit';
 import { getVaultRoot, getVaultDisplayName } from './vault.js';
 import { registerTools } from './tools.js';
 import { accessScopes, SCOPES_PROMPT, staticBearerScopes } from './access.js';
-import { cliToolsAvailability } from './cli.js';
+import { cliEnabled } from './cli.js';
 import pkg from '../package.json' with { type: 'json' };
 
 function parseOrigin(value: string, setting: string, allowTrailingSlash = false): string {
@@ -83,7 +83,7 @@ export function createApp(): { app: Express; auth: Auth } {
     approvalPrompt: `Allow access to your ${getVaultDisplayName()} vault?`,
     // Whoever approves a connection chooses whether it may edit notes and use the Obsidian CLI
     // tools. Server settings stay the limit; see access.ts.
-    scopes: accessScopes(async () => (await cliToolsAvailability()).ok),
+    scopes: accessScopes(cliEnabled),
     scopesPrompt: SCOPES_PROMPT,
     staticBearerScopes: staticBearerScopes(),
     testMode,

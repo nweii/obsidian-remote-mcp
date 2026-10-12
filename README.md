@@ -293,7 +293,7 @@ Every connection can read your notes. When you approve a new one, the approval p
 - **Edit notes**: create, edit, move and trash notes. Leave it unticked for a connection that should only read.
 - **Control the Obsidian app**: use `vault_cli` to run plugin and command-palette commands and change Publish and Sync. This box appears only while the [Obsidian CLI tools](#obsidian-cli-tools) are on. Without editing, such a connection runs only commands that read.
 
-Both are ticked by default, so approving without changes gives full access. Your server settings stay the limit: with `VAULT_READ_ONLY=true` no connection can edit, and the CLI box appears only when the CLI tools are on. A box that wasn't shown when a connection was approved counts as allowed, so turning the CLI tools on later reaches existing connections. Connections approved before these choices existed keep full access.
+Both are ticked by default, so approving without changes gives full access. Your server settings stay the limit: with `VAULT_READ_ONLY=true` no connection can edit, and the CLI box appears only when `OBSIDIAN_CLI_ENABLED=true`. A connection gets only what was ticked when it was approved, so after turning on editing or the CLI tools, connect again to give a connection that access. Connections approved before these choices existed keep full access.
 
 To change a connection's access, connect it again and choose differently. A connection approved without "Edit notes" sees no editing tools, and tools that can write tell the agent the connection is read-only.
 
