@@ -959,6 +959,32 @@ describe('Title resolution via tool round-trips', () => {
     }
   });
 
+  test('vault errors from any tool come back as isError results that name only vault paths', async () => {
+    await mkdir(path.join(vaultPath, 'ErrorMappingDir'), { recursive: true });
+    const { app, auth } = createApp();
+    const { base, close } = await listen(app);
+    try {
+      const token = auth.seedTestToken();
+      const cases: [string, Record<string, unknown>, RegExp][] = [
+        ['vault_trash', { path: 'NoSuchTrashTarget.md' }, /No file found at "NoSuchTrashTarget\.md"/],
+        ['vault_read', { path: 'ErrorMappingDir' }, /is a directory, not a note\. Call vault_read with mode "list"/],
+        ['vault_read_attachment', { path: 'NoSuchAttachment.png' }, /^Attachment not found: NoSuchAttachment\.png$/],
+        ['vault_read', { path: 'NoSuchFolder', mode: 'list' }, /^Folder not found: NoSuchFolder$/],
+        ['vault_search_content', { query: 'x', folder: 'NoSuchFolder' }, /^Folder not found: NoSuchFolder$/],
+      ];
+      for (const [tool, args, expected] of cases) {
+        const result = await callTool(base, token, tool, args);
+        expect(result.isError).toBe(true);
+        const text = result.content?.map(c => c.text).join('\n') ?? '';
+        expect(text).toMatch(expected);
+        expect(text).not.toContain(vaultPath);
+      }
+    } finally {
+      await close();
+      await rm(path.join(vaultPath, 'ErrorMappingDir'), { recursive: true, force: true });
+    }
+  });
+
   test('vault_edit_section appends to a section and writes the file', async () => {
     const file = path.join(vaultPath, 'SectionEditIntegration.md');
     await writeFile(file, '# A\nbody\n\n# B\nb body\n', 'utf-8');
@@ -1094,6 +1120,21 @@ describe('Title resolution via tool round-trips', () => {
     } finally {
       await close();
       await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('vault_update writes a new note at the literal path when the reference resolves to nothing', async () => {
+    const file = path.join(vaultPath, 'UpdateCreatesNew.md');
+    const { app, auth } = createApp();
+    const { base, close } = await listen(app);
+    try {
+      const token = auth.seedTestToken();
+      const result = await callTool(base, token, 'vault_update', { path: 'UpdateCreatesNew.md', content: 'fresh\n' });
+      expect(result.isError).toBeFalsy();
+      expect(await readFile(file, 'utf-8')).toBe('fresh\n');
+    } finally {
+      await close();
+      await rm(file, { force: true });
     }
   });
 

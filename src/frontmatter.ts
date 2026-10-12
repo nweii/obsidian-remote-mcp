@@ -98,6 +98,7 @@ function safeYamlReason(reason: string): string {
 // its own frontmatter into logs/tool-calls.jsonl. This carries the reason and line number,
 // which is what an agent needs to fix the note, and none of the text.
 export class FrontmatterParseError extends Error {
+  readonly _tag = 'FrontmatterParseError';
   readonly reason: string;
 
   constructor(

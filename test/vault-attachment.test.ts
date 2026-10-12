@@ -124,12 +124,7 @@ describe('readAttachment — sandboxing and .mcpignore', () => {
     await expect(vault.readAttachment('Private/secret.png')).rejects.toThrow(/blocked by \.mcpignore/);
   });
 
-  test('a directory path is rejected with EISDIR', async () => {
-    try {
-      await vault.readAttachment('Attachments');
-      throw new Error('expected EISDIR');
-    } catch (e) {
-      expect((e as NodeJS.ErrnoException).code).toBe('EISDIR');
-    }
+  test('a directory path is rejected with IsDirectoryError', async () => {
+    await expect(vault.readAttachment('Attachments')).rejects.toThrow(vault.IsDirectoryError);
   });
 });
