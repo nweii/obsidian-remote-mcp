@@ -295,7 +295,7 @@ Every connection can read your notes. When you approve a new one, the approval p
 
 Both are ticked by default, so approving without changes gives full access. Your server settings stay the limit: with `VAULT_READ_ONLY=true` no connection can edit, and the CLI box appears only when the CLI tools are on. A box that wasn't shown when a connection was approved counts as allowed, so turning the CLI tools on later reaches existing connections. Connections approved before these choices existed keep full access.
 
-To change a connection's access, connect it again and approve with different choices. A connection approved without "Edit notes" sees no editing tools, and tools that can write tell the agent the connection is read-only.
+To change a connection's access, connect it again and choose differently. A connection approved without "Edit notes" sees no editing tools, and tools that can write tell the agent the connection is read-only.
 
 ### Health endpoint
 

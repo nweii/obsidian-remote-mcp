@@ -28,7 +28,7 @@ export function accessScopes(cliOffered: () => Promise<boolean>): ScopeDefinitio
     {
       id: CLI_SCOPE,
       label: CLI_LABEL,
-      hint: 'Run plugin and command-palette commands, and change Publish and Sync. If editing is off, it can only run commands that read.',
+      hint: 'Run plugin and command-palette commands, and change Publish and Sync.',
       offered: cliOffered,
     },
   ];

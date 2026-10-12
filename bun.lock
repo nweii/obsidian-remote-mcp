@@ -9,7 +9,7 @@
         "express": "4.22.2",
         "hono": "4.13.7",
         "js-yaml": "4.3.2",
-        "mcp-server-kit": "git+https://github.com/nweii/mcp-server-kit.git#19bccd845ce4e290e95361961bed47549a51648f",
+        "mcp-server-kit": "git+https://github.com/nweii/mcp-server-kit.git#00322dfedfa015725b1c9b3a40751a9bb243d615",
         "zod": "4.2.0",
       },
       "devDependencies": {
@@ -216,7 +216,7 @@
 
     "mathml-to-latex": ["mathml-to-latex@1.8.0", "", { "dependencies": { "@xmldom/xmldom": "^0.9.10" } }, "sha512-gQ0uK3zqB8HwlfaXJkEL5rgaZNbKUiBMmBP/B/W+b+t6KcseLSuYb1b0BjLgS9ZiQa24ePkqTX8/6FaQuDL7wQ=="],
 
-    "mcp-server-kit": ["mcp-server-kit@github:nweii/mcp-server-kit#19bccd8", { "dependencies": { "@modelcontextprotocol/node": "^2.0.0", "@modelcontextprotocol/server": "^2.0.0", "@modelcontextprotocol/server-legacy": "^2.0.0", "express": "^4.21.2" } }, "nweii-mcp-server-kit-19bccd8", "sha512-uTZAHL7ObzPVNmo3WLBOGW7Apz3jiJCVgQBbQw3G3SzZbt9GqEfc3MtbrZ6iIK0tCQib5Lr2vRZy9QLv11HPCQ=="],
+    "mcp-server-kit": ["mcp-server-kit@github:nweii/mcp-server-kit#00322df", { "dependencies": { "@modelcontextprotocol/node": "^2.0.0", "@modelcontextprotocol/server": "^2.0.0", "@modelcontextprotocol/server-legacy": "^2.0.0", "express": "^4.21.2" } }, "nweii-mcp-server-kit-00322df", "sha512-bXehbeOVPV4Z4oRvVoriuROhiU0r5oDw55aLsBKUxOBlGeejgKGUuYOanSJeHSdUW3PBLXqAOTPfS84bnVz0/Q=="],
 
     "media-typer": ["media-typer@0.3.0", "", {}, "sha512-dq+qelQ9akHpcOl/gUVRTxVIOkAJ1wR3QAvb4RsVjS8oVoFjDGTc679wJYmUmknUF5HwMLOgb5O+a3KxfWapPQ=="],
 
