@@ -28,7 +28,7 @@ src/
   clip.ts         — Registers vault_clip_url when the optional web-clipper-headless is installed
   log.ts          — Configures the kit's audit logger and its redaction
   date.ts         — Local-timezone date helpers for periodic notes (parsing, ISO weeks, period buckets)
-  *.d.ts          — Type stand-ins: js-yaml, and the optional web-clipper-headless (mapped in tsconfig paths)
+  js-yaml.d.ts    — Module declaration for js-yaml
 scripts/          — setup-clipper.ts builds the optional clipper from the root lockfile
 test/             — One file per area; vault-policy-matrix.test.ts covers every vault export against hostile paths
 docs/             — Design notes, reached through the pointers below

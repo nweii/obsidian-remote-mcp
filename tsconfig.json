@@ -7,10 +7,7 @@
     "skipLibCheck": true,
     "noEmit": true,
     "allowImportingTsExtensions": true,
-    "types": ["bun"],
-    "paths": {
-      "web-clipper-headless": ["./src/web-clipper-headless.d.ts"]
-    }
+    "types": ["bun"]
   },
   "include": ["src", "test", "scripts"]
 }

@@ -50,6 +50,37 @@ async function makeBuildRoot(): Promise<string> {
   return root;
 }
 
+const hasBuiltClipper = hasClipper && existsSync(join(installedModules, 'obsidian-clipper', 'dist', 'api.mjs'));
+
+// Runs from the project root so the project's own tsconfig and resolution apply, the way the
+// server starts in production.
+(hasBuiltClipper ? test : test.skip)('the server registers vault_clip_url when the clipper is built', async () => {
+  const vaultPath = await mkdtemp(join(tmpdir(), 'orm-clipper-register-'));
+  try {
+    const child = Bun.spawn({
+      cmd: [process.execPath, '-e', `
+        const names = [];
+        const { registerTools } = await import('./src/tools.ts');
+        await registerTools({ registerTool(name) { names.push(name); } });
+        console.log(JSON.stringify(names));
+      `],
+      cwd: projectRoot,
+      env: { ...process.env, VAULT_PATH: vaultPath },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+    expect(exitCode, stderr).toBe(0);
+    expect(JSON.parse(stdout.trim().split('\n').pop()!)).toContain('vault_clip_url');
+  } finally {
+    await rm(vaultPath, { recursive: true, force: true });
+  }
+});
+
 (hasClipper ? describe : describe.skip)('clipper setup with locked optional dependencies', () => {
   test('fresh and stale bundles build, patch, and render local HTML with root dependencies', async () => {
     const root = await makeBuildRoot();

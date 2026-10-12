@@ -51,9 +51,13 @@ interface ClipperLib {
   }): Promise<ClipperResult & { template: ClipperRenderedResult["template"] }>;
 }
 
+// A non-literal specifier keeps tsc from resolving the package and type-checking its raw .ts
+// sources; the local interfaces above describe the shape this file uses. Bun resolves it normally.
+const CLIPPER_MODULE: string = "web-clipper-headless";
+
 async function tryLoadClipper(): Promise<ClipperLib | null> {
   try {
-    const mod = (await import("web-clipper-headless")) as unknown as ClipperLib;
+    const mod = (await import(CLIPPER_MODULE)) as ClipperLib;
     if (typeof mod.installPolyfills !== "function") return null;
     mod.installPolyfills();
     return mod;
