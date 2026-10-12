@@ -1,10 +1,11 @@
 // ABOUTME: Filesystem operations for the configured Obsidian vault - safe path resolution, read/write/search, list folder.
 import fs from 'fs/promises';
-import { readFileSync } from 'fs';
+import { accessSync, constants, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, statSync, type Stats } from 'fs';
 import { createHash } from 'crypto';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { withPathLock } from './lock.js';
+import { withPathLock, withPathsLock } from './lock.js';
+import { compileIgnoreRules } from './ignore.js';
 import {
   splitFrontmatter,
   parseFrontmatter,
@@ -145,25 +146,88 @@ export function getContextNotePath(): string | null {
 
 // --- .mcpignore --------------------------------------------------------------
 
-// Patterns from <vault>/.mcpignore — relative paths from vault root, one per line.
-// Lines starting with # are comments. Trailing slashes are stripped before matching.
-function loadIgnorePatterns(): string[] {
-  try {
-    return readFileSync(path.join(getVaultRoot(), '.mcpignore'), 'utf-8')
-      .split('\n')
-      .map(l => l.trim().replace(/\/$/, ''))
-      .filter(l => l && !l.startsWith('#'));
-  } catch {
-    return [];
+// Thrown when the vault root itself can't be read. Distinct from VaultPolicyError: that means
+// "this path is not allowed", this means "the vault is not there, so no answer can be trusted".
+export class VaultUnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'VaultUnavailableError';
   }
 }
 
-const IGNORE_PATTERNS = loadIgnorePatterns();
+// A missing ignore file is allowed only when the vault itself is available.
+function assertVaultRootReadable(root: string): void {
+  try {
+    if (!statSync(root).isDirectory()) throw new Error('Not a directory');
+    accessSync(root, constants.R_OK | constants.X_OK);
+  } catch {
+    throw new VaultUnavailableError(`Vault root is not a readable directory: ${root}. Refusing to serve without a usable vault.`);
+  }
+}
 
+type IgnoreMatcher = ReturnType<typeof compileIgnoreRules>;
+let ignoreCache: { root: string; text: string | null; matches: IgnoreMatcher } | null = null;
+
+// Keyed on the policy text itself, re-read on every check. File metadata cannot prove the
+// policy unchanged: an in-place, same-length rewrite within one timestamp tick (coarse on
+// SMB/FAT volumes) keeps dev, inode, times and size identical. The file is small, so the read
+// costs about a microsecond more than a stat. Failure to read an existing policy must never
+// mean "allow everything".
+function getIgnoreRules(): IgnoreMatcher {
+  const root = getVaultRoot();
+  const file = path.join(root, '.mcpignore');
+  let text: string | null;
+  try {
+    text = readFileSync(file, 'utf-8');
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code !== 'ENOENT' && code !== 'ENOTDIR') throw e;
+    // A dangling policy link is a broken configuration, not an intentionally absent policy.
+    try {
+      if (lstatSync(file).isSymbolicLink()) {
+        throw new VaultUnavailableError('The .mcpignore policy target is unavailable. Restore it before accessing the vault.');
+      }
+    } catch (linkError) {
+      const linkCode = (linkError as NodeJS.ErrnoException).code;
+      if (linkCode !== 'ENOENT' && linkCode !== 'ENOTDIR') throw linkError;
+    }
+    assertVaultRootReadable(root);
+    text = null;
+  }
+  if (ignoreCache?.root === root && ignoreCache.text === text) return ignoreCache.matches;
+
+  const matches = compileIgnoreRules(text ?? '');
+  ignoreCache = { root, text, matches };
+  invalidateResolverCache();
+  return matches;
+}
+
+// Walks may start through an in-vault directory symlink. Check both names just as direct
+// access does; testing only the alias path would miss an ignored canonical descendant.
 function isIgnored(absPath: string): boolean {
-  if (IGNORE_PATTERNS.length === 0) return false;
-  const rel = path.relative(getVaultRoot(), absPath);
-  return IGNORE_PATTERNS.some(p => rel === p || rel.startsWith(p + path.sep));
+  try {
+    resolveSafePath(path.relative(getVaultRoot(), absPath));
+    return false;
+  } catch (e) {
+    if (e instanceof VaultPolicyError) return true;
+    throw e;
+  }
+}
+
+function isIgnoredRelative(rel: string): boolean {
+  return getIgnoreRules()(rel.split(path.sep).join('/'));
+}
+
+// App state rather than user context: Obsidian settings and plugin data (where plugins keep
+// API keys), and version history. Excluded at any depth before .mcpignore is consulted, so no
+// policy file is needed to protect them. Other hidden folders, .trash included, stay reachable
+// by explicit path; vault owners keep context and workflow files in them, and an agent can
+// restore what it trashed. A .mcpignore rule hides any of those.
+const INTERNAL_FOLDERS = ['.obsidian', '.git'];
+const matchesInternalFolder = compileIgnoreRules(INTERNAL_FOLDERS.map(name => `**/${name}`).join('\n'));
+
+function isInternalRelative(rel: string): boolean {
+  return matchesInternalFolder(rel.split(path.sep).join('/'));
 }
 
 // --- Read-only mode ----------------------------------------------------------
@@ -186,22 +250,131 @@ function assertWritable() {
 // Thrown by resolveSafePath when a path is rejected for security/policy reasons.
 // Carries a typed `kind` so callers can match without parsing error text.
 export class VaultPolicyError extends Error {
-  constructor(public readonly kind: 'escape' | 'mcpignore', message: string) {
+  constructor(public readonly kind: 'escape' | 'mcpignore' | 'internal', message: string) {
     super(message);
     this.name = 'VaultPolicyError';
   }
 }
 
-// Ensure path stays within vault root and is not blocked by .mcpignore. Returns absolute path.
-export function resolveSafePath(relativePath: string): string {
+// True when `candidate` is the root itself or sits underneath it. Both arguments must already
+// be absolute and normalized; neither is canonicalized here.
+function isWithin(root: string, candidate: string): boolean {
+  const rootWithSep = root.endsWith(path.sep) ? root : root + path.sep;
+  return candidate === root || candidate.startsWith(rootWithSep);
+}
+
+// Re-resolve the root so a late mount or a retargeted root symlink cannot leave stale
+// containment state. Missing ancestors are normalized the same way as candidate paths.
+function getVaultRealRoot(): string {
+  return realpathOrNearestExisting(getVaultRoot());
+}
+
+// Canonicalize as much of `absPath` as exists, then re-append the segments that don't.
+//
+// realpathSync throws ENOENT for a path that isn't there yet, which is the normal case for a
+// create. Walking up to the deepest existing ancestor and canonicalizing *that* still resolves
+// every symlink standing between the vault root and the new file — which is the part that
+// matters, since a symlinked parent directory is how a write escapes the vault.
+function realpathOrNearestExisting(absPath: string): string {
+  const pending: string[] = [];
+  let current = absPath;
+
+  while (true) {
+    try {
+      const real = realpathSync(current);
+      return pending.length === 0 ? real : path.join(real, ...pending.slice().reverse());
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code !== 'ENOENT' && code !== 'ENOTDIR') throw e;
+      // A dangling link exists even though realpath reports ENOENT. Do not treat it as an
+      // ordinary new filename: append/mkdir would follow it and create its missing target.
+      try {
+        if (lstatSync(current).isSymbolicLink()) {
+          throw new VaultPolicyError('escape', 'Path contains a dangling symlink; repair or remove the shortcut before accessing it.');
+        }
+      } catch (statError) {
+        const statCode = (statError as NodeJS.ErrnoException).code;
+        if (statCode !== 'ENOENT' && statCode !== 'ENOTDIR') throw statError;
+      }
+      const parent = path.dirname(current);
+      // Reached the filesystem root without finding anything that exists. Nothing to
+      // canonicalize, so the lexical path is the best answer available.
+      if (parent === current) return absPath;
+      pending.push(path.basename(current));
+      current = parent;
+    }
+  }
+}
+
+// Check both the requested path and its canonical target. An allowed target cannot make an
+// ignored alias writable, and an allowed alias cannot expose an ignored target. The internal
+// trash destination skips .mcpignore only; containment, the internal-folder exclusion, and
+// policy-file protection still apply.
+function resolveVaultPath(relativePath: string, enforceIgnore: boolean): string {
   const vaultRoot = getVaultRoot();
   const resolved = path.resolve(vaultRoot, relativePath);
-  const root = vaultRoot.endsWith(path.sep) ? vaultRoot : vaultRoot + path.sep;
-  if (!resolved.startsWith(root) && resolved !== vaultRoot) {
+
+  if (!isWithin(vaultRoot, resolved)) {
     throw new VaultPolicyError('escape', `Path escapes vault root: ${relativePath}`);
   }
-  if (isIgnored(resolved)) {
+
+  const realRoot = getVaultRealRoot();
+  const realResolved = realpathOrNearestExisting(resolved);
+
+  if (!isWithin(realRoot, realResolved)) {
+    throw new VaultPolicyError(
+      'escape',
+      `Path escapes vault root: ${relativePath} (resolves outside the vault through a symlink)`,
+    );
+  }
+
+  const lexicalRel = path.relative(vaultRoot, resolved);
+  const canonicalRel = path.relative(realRoot, realResolved);
+
+  if (isInternalRelative(lexicalRel) || isInternalRelative(canonicalRel)) {
+    throw new VaultPolicyError(
+      'internal',
+      `Path is inside an Obsidian internal folder (${INTERNAL_FOLDERS.join(', ')}), which MCP cannot access: ${relativePath}`,
+    );
+  }
+
+  if (enforceIgnore && (isIgnoredRelative(lexicalRel) || isIgnoredRelative(canonicalRel))) {
     throw new VaultPolicyError('mcpignore', `Path is blocked by .mcpignore: ${relativePath}`);
+  }
+
+  return resolved;
+}
+
+export function resolveSafePath(relativePath: string): string {
+  return resolveVaultPath(relativePath, true);
+}
+
+// The policy is owner-managed. Reading it is allowed unless it is itself ignored, but no
+// mutation may change it, including through directory/file aliases or a symlinked policy.
+// This check is separate from read-only mode so move dry runs can still validate destinations.
+function resolveWritePath(relativePath: string, allowIgnored = false): string {
+  const resolved = resolveVaultPath(relativePath, !allowIgnored);
+  const root = getVaultRoot();
+  const policy = path.join(root, '.mcpignore');
+  const realResolved = realpathOrNearestExisting(resolved);
+  const policyTarget = realpathOrNearestExisting(policy);
+  const key = (value: string) => value.normalize('NFC').toLowerCase();
+  // Moving a containing directory would remove a symlinked policy just as surely as moving
+  // the file, and a path beneath an absent policy would create it as a directory, which the
+  // policy loader then cannot read. Hardlinks need an inode check because realpath cannot
+  // identify those aliases.
+  let sameFile = false;
+  try {
+    const targetStat = statSync(resolved);
+    const policyStat = statSync(policy);
+    sameFile = targetStat.dev === policyStat.dev && targetStat.ino === policyStat.ino;
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code !== 'ENOENT' && code !== 'ENOTDIR') throw e;
+  }
+  const overlaps = (a: string, b: string) => isWithin(key(a), key(b)) || isWithin(key(b), key(a));
+  if (overlaps(resolved, policy) || overlaps(realResolved, policyTarget) || sameFile) {
+    throw new VaultPolicyError('mcpignore', 'The .mcpignore access policy cannot be modified through MCP. Edit it directly as the vault owner.');
   }
   return resolved;
 }
@@ -371,9 +544,12 @@ async function atomicWriteFile(absPath: string, content: string): Promise<void> 
 
 export async function writeNote(relativePath: string, content: string): Promise<void> {
   assertWritable();
-  const absPath = resolveSafePath(relativePath);
-  await fs.mkdir(path.dirname(absPath), { recursive: true });
-  await atomicWriteFile(absPath, content);
+  const absPath = resolveWritePath(relativePath);
+  await withPathLock(absPath, async () => {
+    resolveWritePath(relativePath);
+    await fs.mkdir(path.dirname(absPath), { recursive: true });
+    await atomicWriteFile(absPath, content);
+  });
   invalidateResolverCache();
 }
 
@@ -389,6 +565,8 @@ export class NoteExistsError extends Error {
 // Write a new note, refusing to overwrite one that already exists. Single source of truth for
 // the "create, don't clobber" guard shared by vault_create and the clip save-path.
 export async function createNote(relativePath: string, content: string): Promise<void> {
+  assertWritable();
+  resolveWritePath(relativePath);
   try {
     await readNote(relativePath);
   } catch {
@@ -435,7 +613,7 @@ export async function updateNote(
   baseVersion?: string,
 ): Promise<UpdateResult> {
   assertWritable();
-  const absPath = resolveSafePath(relativePath);
+  const absPath = resolveWritePath(relativePath);
 
   return withPathLock(absPath, async () => {
     let current: string | null;
@@ -500,13 +678,14 @@ export async function setFrontmatterProperties(
 ): Promise<void> {
   assertWritable();
   if (Object.keys(fields).length === 0) return;
-  const absPath = resolveSafePath(relativePath);
+  const absPath = resolveWritePath(relativePath);
   await withPathLock(absPath, async () => {
     let content = await readNote(relativePath);
     for (const [name, value] of Object.entries(fields)) {
       content = setFrontmatterKey(content, name, coerceFrontmatterValue(value));
     }
-    await writeNote(relativePath, content);
+    await atomicWriteFile(resolveWritePath(relativePath), content);
+    invalidateResolverCache();
   });
 }
 
@@ -600,7 +779,7 @@ export async function updateFrontmatterBatch(
 // serializes appends with updateNote/editNoteSection/etc. so no write is lost.
 export async function appendNote(relativePath: string, content: string): Promise<void> {
   assertWritable();
-  const absPath = resolveSafePath(relativePath);
+  const absPath = resolveWritePath(relativePath);
   await withPathLock(absPath, async () => {
     await fs.appendFile(absPath, content, 'utf-8');
   });
@@ -609,7 +788,7 @@ export async function appendNote(relativePath: string, content: string): Promise
 // Insert content at the very start of a note. Locked so the read and write are atomic.
 export async function prependToNote(relativePath: string, content: string): Promise<void> {
   assertWritable();
-  const absPath = resolveSafePath(relativePath);
+  const absPath = resolveWritePath(relativePath);
   await withPathLock(absPath, async () => {
     const existing = await fs.readFile(absPath, 'utf-8');
     await atomicWriteFile(absPath, content + existing);
@@ -622,7 +801,7 @@ export async function prependToNote(relativePath: string, content: string): Prom
 // the note are preserved. If `find` is absent the note is rewritten unchanged.
 export async function replaceInNote(relativePath: string, find: string, content: string): Promise<void> {
   assertWritable();
-  const absPath = resolveSafePath(relativePath);
+  const absPath = resolveWritePath(relativePath);
   await withPathLock(absPath, async () => {
     const existing = await fs.readFile(absPath, 'utf-8');
     // Function replacer keeps `content` literal — a plain string replacement would interpret
@@ -633,23 +812,171 @@ export async function replaceInNote(relativePath: string, find: string, content:
 }
 
 export async function deleteNote(relativePath: string): Promise<void> {
-  await fs.unlink(resolveSafePath(relativePath));
+  // Every other mutating helper asserts this; deleteNote was the one that didn't. No tool
+  // currently reaches it, so VAULT_READ_ONLY was honoured in practice — but wiring up a
+  // delete tool later would have silently inherited a read-only bypass.
+  assertWritable();
+  const absPath = resolveWritePath(relativePath);
+  await withPathLock(absPath, async () => {
+    await fs.unlink(resolveWritePath(relativePath));
+  });
 }
 
-export async function trashNote(relativePath: string): Promise<void> {
-  assertWritable();
-  const absPath = resolveSafePath(relativePath);
-  const trashDir = path.join(getVaultRoot(), '.trash');
-  await fs.mkdir(trashDir, { recursive: true });
-  // Avoid collisions in .trash by prefixing with a timestamp
-  const trashPath = path.join(trashDir, `${Date.now()}-${path.basename(relativePath)}`);
-  await fs.rename(absPath, trashPath);
-  invalidateResolverCache();
+// Every descendant carried by a folder rename must be a regular file or directory. A
+// standalone file link is handled separately; following directory links hides descendants.
+function assertMovableFile(absPath: string, relativePath: string, allowFileSymlink = false): Stats {
+  let st: Stats;
+  try {
+    st = lstatSync(absPath);
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT' || code === 'ENOTDIR') throw new Error(`No file found at "${relativePath}".`);
+    throw e;
+  }
+  if (st.isSymbolicLink() && allowFileSymlink && statSync(absPath).isFile()) return st;
+  if (st.isSymbolicLink() || (!st.isFile() && !st.isDirectory())) {
+    throw new VaultPolicyError('escape', `Cannot move or trash symlinks or special files: ${relativePath}`);
+  }
+  return st;
 }
 
 export interface MoveResult {
   from: string; // vault-relative source path
   to: string;   // vault-relative destination path
+}
+
+export interface FileMovePlan extends MoveResult {
+  isDirectory: boolean;
+  files: MoveResult[]; // Every regular descendant, including hidden files and attachments.
+}
+
+interface CheckedMovePlan extends FileMovePlan {
+  fromAbs: string;
+  toAbs: string;
+}
+
+function pathEntryExists(absPath: string): boolean {
+  try {
+    lstatSync(absPath);
+    return true;
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT' || code === 'ENOTDIR') return false;
+    throw e;
+  }
+}
+
+// Snapshot the live policy once, then check the entire tree without per-entry realpath or
+// policy reads. Canonical descendants are simple joins once all symlink entries are refused.
+function checkFileMove(source: string, destination: string, allowIgnoredDestination = false): CheckedMovePlan {
+  const fromAbs = resolveWritePath(source);
+  const toAbs = resolveWritePath(destination, allowIgnoredDestination);
+  const sourceStat = assertMovableFile(fromAbs, source, true);
+  const vaultRoot = getVaultRoot();
+  const realRoot = getVaultRealRoot();
+  const fromReal = realpathSync(fromAbs);
+  const toReal = realpathOrNearestExisting(toAbs);
+  const key = (value: string) => value.normalize('NFC').toLowerCase();
+  if (sourceStat.isDirectory() &&
+      key(path.relative(vaultRoot, fromAbs)) !== key(path.relative(realRoot, fromReal))) {
+    throw new VaultPolicyError('escape', 'Move the folder through its canonical vault path instead of a parent symlink, so references can be rewritten safely.');
+  }
+  if (fromAbs === toAbs) throw new Error(`Source and destination are the same path ("${source}").`);
+  // Reject either ancestry direction before acquiring hierarchical endpoint locks.
+  if (isWithin(key(fromReal), key(toReal)) || isWithin(key(toReal), key(fromReal))) {
+    throw new VaultPolicyError('escape', 'Source and destination overlap; choose a destination outside the source folder.');
+  }
+  if (pathEntryExists(toAbs)) throw new NoteExistsError(`File or folder already exists at ${destination}`);
+  const fileSymlink = sourceStat.isSymbolicLink();
+  if (fileSymlink) {
+    // A standalone file shortcut can be renamed safely if its relative/absolute link text
+    // still reaches exactly the same file. Links carried inside a folder remain forbidden.
+    const target = path.resolve(path.dirname(toAbs), readlinkSync(fromAbs));
+    if (realpathOrNearestExisting(target) !== fromReal) {
+      throw new VaultPolicyError('escape', 'Moving this symlink would change its target; move the target file or keep the shortcut in the same folder.');
+    }
+  }
+
+  const rules = getIgnoreRules();
+  const policy = path.join(vaultRoot, '.mcpignore');
+  const policyReal = realpathOrNearestExisting(policy);
+  let policyStat: Stats | null = null;
+  try {
+    policyStat = statSync(policy);
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code !== 'ENOENT' && code !== 'ENOTDIR') throw e;
+  }
+  const overlaps = (a: string, b: string) => isWithin(key(a), key(b)) || isWithin(key(b), key(a));
+  const rel = (root: string, candidate: string) => path.relative(root, candidate).split(path.sep).join('/');
+  const checkEntry = (lexical: string, canonical: string, st: Stats, ignore: boolean): void => {
+    const lexicalRel = rel(vaultRoot, lexical);
+    const canonicalRel = rel(realRoot, canonical);
+    if (isInternalRelative(lexicalRel) || isInternalRelative(canonicalRel)) {
+      throw new VaultPolicyError('internal', `Folder operation would include an internal path: ${lexicalRel}`);
+    }
+    if (ignore && (rules(lexicalRel) || rules(canonicalRel))) {
+      throw new VaultPolicyError('mcpignore', `Folder operation would include a path blocked by .mcpignore: ${lexicalRel}`);
+    }
+    if (overlaps(lexical, policy) || overlaps(canonical, policyReal) ||
+        (policyStat && st.dev === policyStat.dev && st.ino === policyStat.ino)) {
+      throw new VaultPolicyError('mcpignore', 'Folder operation would modify the .mcpignore access policy or one of its aliases.');
+    }
+  };
+  const files: MoveResult[] = [];
+  const visit = (suffix: string, st: Stats): void => {
+    const oldAbs = path.join(fromAbs, suffix);
+    const newAbs = path.join(toAbs, suffix);
+    checkEntry(oldAbs, path.join(fromReal, suffix), st, true);
+    checkEntry(newAbs, fileSymlink ? fromReal : path.join(toReal, suffix), st, !allowIgnoredDestination);
+    if (st.isDirectory()) {
+      // Include hidden entries: a rename carries them even though ordinary vault walks do not.
+      for (const entry of readdirSync(oldAbs, { withFileTypes: true })) {
+        const childSuffix = path.join(suffix, entry.name);
+        const childAbs = path.join(fromAbs, childSuffix);
+        const childStat = assertMovableFile(childAbs, rel(vaultRoot, childAbs));
+        visit(childSuffix, childStat);
+      }
+    } else {
+      files.push({ from: rel(vaultRoot, oldAbs), to: rel(vaultRoot, newAbs) });
+    }
+  };
+  visit('', sourceStat);
+  return { from: rel(vaultRoot, fromAbs), to: rel(vaultRoot, toAbs),
+    isDirectory: sourceStat.isDirectory(), files, fromAbs, toAbs };
+}
+
+// Pure preflight shared by dry-run link plans and real moves. An empty folder has no file
+// mappings; every directory is nevertheless checked against source and destination policy.
+export function planFileMove(source: string, destination: string): FileMovePlan {
+  const { fromAbs, toAbs, ...plan } = checkFileMove(source, destination);
+  return plan;
+}
+
+export async function trashNote(relativePath: string): Promise<void> {
+  assertWritable();
+  const destination = path.join('.trash', `${Date.now()}-${path.basename(path.resolve(relativePath))}`);
+  const fromAbs = resolveWritePath(relativePath);
+  const toAbs = resolveWritePath(destination, true);
+  await withPathsLock([fromAbs, toAbs], async () => {
+    assertWritable();
+    const checked = checkFileMove(relativePath, destination, true);
+    // No await between the last policy/tree check and rename: another JS operation cannot
+    // change the subtree during this section. External filesystem changes remain possible.
+    mkdirSync(path.dirname(checked.toAbs), { recursive: true });
+    renameSync(checked.fromAbs, checked.toAbs);
+    invalidateResolverCache();
+  });
+}
+
+// Caller holds both endpoint locks. Recheck live policy immediately before committing.
+function commitFileMove(source: string, destination: string): MoveResult {
+  assertWritable();
+  const checked = checkFileMove(source, destination);
+  mkdirSync(path.dirname(checked.toAbs), { recursive: true });
+  renameSync(checked.fromAbs, checked.toAbs);
+  invalidateResolverCache();
+  return { from: checked.from, to: checked.to };
 }
 
 // Move or rename a file within the vault. source and destination are explicit vault-relative
@@ -661,35 +988,26 @@ export interface MoveResult {
 // Returns the from/to paths so a later link-rewriting pass can act on them.
 export async function moveFile(source: string, destination: string): Promise<MoveResult> {
   assertWritable();
-  const fromAbs = resolveSafePath(source);
-  const toAbs = resolveSafePath(destination);
+  const fromAbs = resolveWritePath(source);
+  const toAbs = resolveWritePath(destination);
+  return withPathsLock([fromAbs, toAbs], async () => commitFileMove(source, destination));
+}
 
-  // A missing source would surface as a raw ENOENT from fs.rename, whose message embeds
-  // absolute filesystem paths. Check up front and fail with the vault-relative path instead.
-  if (!pathExists(fromAbs)) {
-    throw new Error(`No file found at "${source}".`);
-  }
-
-  // Source and destination resolving to the same file is a no-op move; reject it up front
-  // rather than deadlocking on the same lock key below or silently doing nothing.
-  if (fromAbs === toAbs) {
-    throw new Error(`Source and destination are the same path ("${source}").`);
-  }
-
-  // Lock both paths so a concurrent write to either can't interleave with the rename. Take them
-  // in sorted order so two moves touching the same pair can't deadlock by acquiring in opposite order.
-  const [firstLock, secondLock] = [fromAbs, toAbs].sort();
-  return withPathLock(firstLock, () =>
-    withPathLock(secondLock, async () => {
-      if (pathExists(toAbs)) {
-        throw new NoteExistsError(`File already exists at ${destination}`);
-      }
-      await fs.mkdir(path.dirname(toAbs), { recursive: true });
-      await fs.rename(fromAbs, toAbs);
-      invalidateResolverCache();
-      return { from: source, to: destination };
-    }),
-  );
+// Production move workflow: queued descendant writes finish BEFORE planning starts, then
+// the endpoint locks prevent further descendant writes until rename completes. Calling the
+// separately exported plan/move helpers in sequence cannot provide this snapshot guarantee.
+// Link writes remain per-file and nontransactional, as with existing single-file moves.
+export async function moveWithReferences(source: string, destination: string): Promise<RewriteResult> {
+  assertWritable();
+  const fromAbs = resolveWritePath(source);
+  const toAbs = resolveWritePath(destination);
+  const plan = await withPathsLock([fromAbs, toAbs], async () => {
+    assertWritable();
+    const freshPlan = await planReferenceRewrite(source, destination);
+    commitFileMove(source, destination);
+    return freshPlan;
+  });
+  return applyReferenceRewrite(plan);
 }
 
 export interface SearchResult {
@@ -724,16 +1042,62 @@ interface WalkEntry {
 
 const isMarkdownFile = (name: string): boolean => name.toLowerCase().endsWith('.md');
 
+// Thrown when a caller's search pattern can't be compiled or is implausibly long. Typed so the
+// tool layer can turn it into a friendly isError result instead of letting a raw SyntaxError
+// escape the handler.
+export class InvalidSearchPatternError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'InvalidSearchPatternError';
+  }
+}
+
+// Generous enough for any real search, short enough that the pathological constructions people
+// paste from regex-golf threads don't get through.
+const MAX_SEARCH_PATTERN_LENGTH = 1000;
+
+// Compile a caller-supplied search pattern.
+//
+// This bounds two of the three failure modes. An invalid pattern used to throw a raw SyntaxError
+// out of the tool handler; it now returns a typed error the agent can act on. An absurdly long
+// pattern is refused outright.
+//
+// It does NOT solve catastrophic backtracking: JavaScript's regex engine has no execution
+// timeout, so a short pattern like /(a+)+$/ against the right note still blocks the event loop,
+// and this server is single-process. Bounding that properly needs either a linear-time engine
+// (RE2) or running the match off-thread with a kill switch — a larger change than this fix, and
+// one worth agreeing on upstream first. The exposure is limited to an authenticated caller, so
+// the effect is a stall rather than a leak.
+function compileSearchPattern(pattern: string, flags: string): RegExp {
+  if (pattern.length > MAX_SEARCH_PATTERN_LENGTH) {
+    throw new InvalidSearchPatternError(
+      `Search pattern is ${pattern.length} characters, over the ${MAX_SEARCH_PATTERN_LENGTH}-character limit. Use a shorter pattern.`,
+    );
+  }
+  try {
+    return new RegExp(pattern, flags);
+  } catch (e) {
+    throw new InvalidSearchPatternError(
+      `Invalid regular expression: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+}
+
 async function* walkVaultFiles(options: WalkVaultOptions = {}): AsyncGenerator<WalkEntry> {
   const { folder, includeFile = isMarkdownFile, sort = false } = options;
   const vaultRoot = getVaultRoot();
-  const root = folder ? resolveSafePath(folder) : vaultRoot;
+  const root = resolveSafePath(folder || '');
 
   async function* walk(dir: string): AsyncGenerator<WalkEntry> {
     const entries = await fs.readdir(dir, { withFileTypes: true });
     if (sort) entries.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
     for (const entry of entries) {
       if (entry.name.startsWith('.')) continue;
+      // Never traverse or yield a symlink. A symlinked `.md` would otherwise be read by every
+      // content search, and its bytes could live anywhere on the host — the walk has no cheap
+      // way to know. Direct access still follows in-vault links via resolveSafePath, which
+      // canonicalizes and re-checks containment; a bulk scan doesn't need that latitude.
+      if (entry.isSymbolicLink()) continue;
       const fullPath = path.join(dir, entry.name);
       if (isIgnored(fullPath)) continue;
       if (entry.isDirectory()) {
@@ -751,7 +1115,7 @@ async function* walkVaultFiles(options: WalkVaultOptions = {}): AsyncGenerator<W
 export async function searchContent(query: string, options: SearchOptions = {}): Promise<SearchResult[]> {
   const { caseSensitive = false, folder, limit = 20 } = options;
   const results: SearchResult[] = [];
-  const regex = new RegExp(query, caseSensitive ? '' : 'i');
+  const regex = compileSearchPattern(query, caseSensitive ? '' : 'i');
   const maxResults = limit > 0 ? limit : Number.POSITIVE_INFINITY;
 
   for await (const { fullPath, relPath } of walkVaultFiles({ folder })) {
@@ -778,7 +1142,7 @@ export async function listNotePaths(folder?: string): Promise<string[]> {
 
 export async function searchFilename(pattern: string): Promise<string[]> {
   const results: string[] = [];
-  const regex = new RegExp(pattern, 'i');
+  const regex = compileSearchPattern(pattern, 'i');
   // includeFile: () => true so every file is tested against the pattern, not just .md.
   for await (const { relPath, name } of walkVaultFiles({ includeFile: () => true })) {
     if (regex.test(name)) results.push(relPath);
@@ -874,7 +1238,7 @@ export async function getFolderTree(maxDepth: number): Promise<string[]> {
     return out;
   }
 
-  return buildSubtree(getVaultRoot(), 1);
+  return buildSubtree(resolveSafePath(''), 1);
 }
 
 // Immediate children of a vault folder (non-recursive). Skips dotfiles and .mcpignore-blocked paths.
@@ -983,18 +1347,30 @@ export class AmbiguousHeadingError extends Error {
     heading: string;
     matches: AmbiguousHeadingMatch[];
   }) {
-    const candidates = opts.matches
-      .map((m, i) => `  ${i + 1}. line ${m.startIdx + 1} — ${m.preview}`)
-      .join('\n');
+    // The message carries line numbers only — never the previews. The audit logger records
+    // error text verbatim (both the isError result's first content block and the message of
+    // any exception thrown out of a handler), so anything placed here lands in
+    // logs/tool-calls.jsonl on disk. Previews are note body text; they go to the agent
+    // through candidatesText() as a separate content block instead.
+    const lines = opts.matches.map(m => m.startIdx + 1).join(', ');
     super(
-      `Heading "${opts.heading}" matches ${opts.matches.length} sections in ${opts.relativePath}:\n${candidates}\n` +
-        `vault_edit_section can't safely guess which one to edit. Use vault_edit with a find-anchored ` +
-        `replace on text unique to the target section, or vault_update for the whole note.`,
+      `Heading "${opts.heading}" matches ${opts.matches.length} sections in ${opts.relativePath} ` +
+        `(lines ${lines}). vault_edit_section can't safely guess which one to edit. Use vault_edit ` +
+        `with a find-anchored replace on text unique to the target section, or vault_update for ` +
+        `the whole note.`,
     );
     this.name = 'AmbiguousHeadingError';
     this.heading = opts.heading;
     this.relativePath = opts.relativePath;
     this.matches = opts.matches;
+  }
+
+  // The candidate list with a one-line body preview per match, for disambiguating by eye.
+  // Kept off `message` on purpose — see the constructor.
+  candidatesText(): string {
+    return this.matches
+      .map((m, i) => `  ${i + 1}. line ${m.startIdx + 1} — ${m.preview}`)
+      .join('\n');
   }
 }
 
@@ -1048,7 +1424,7 @@ export async function editNoteSection(
   content: string,
 ): Promise<void> {
   assertWritable();
-  const absPath = resolveSafePath(relativePath);
+  const absPath = resolveWritePath(relativePath);
   // Lock the read-modify-write so a concurrent edit to the same note can't interleave
   // between reading the section and writing it back (Race A).
   await withPathLock(absPath, async () => {
@@ -1133,7 +1509,7 @@ export interface ResolvedReference {
 
 const DEFAULT_RESOLVE_INDEX_TTL_MS = 30000;
 
-let titleIndexCache: { map: Map<string, string[]>; builtAt: number } | null = null;
+let titleIndexCache: { map: Map<string, string[]>; builtAt: number; root: string } | null = null;
 
 function getResolveIndexTtlMs(): number {
   const raw = Number(process.env.RESOLVE_INDEX_TTL_MS);
@@ -1161,12 +1537,18 @@ async function buildResolverTitleIndex(): Promise<Map<string, string[]>> {
 
 async function getResolverTitleIndex(): Promise<Map<string, string[]>> {
   const ttl = getResolveIndexTtlMs();
-  if (titleIndexCache && Date.now() - titleIndexCache.builtAt < ttl) {
-    return titleIndexCache.map;
+  while (true) {
+    const root = getVaultRoot();
+    const rules = getIgnoreRules(); // Refresh policy before trusting a cached index.
+    if (titleIndexCache?.root === root && Date.now() - titleIndexCache.builtAt < ttl) {
+      return titleIndexCache.map;
+    }
+    const map = await buildResolverTitleIndex();
+    // An edit during the asynchronous walk must not publish a partly stale index.
+    if (getVaultRoot() !== root || getIgnoreRules() !== rules) continue;
+    titleIndexCache = { map, builtAt: Date.now(), root };
+    return map;
   }
-  const map = await buildResolverTitleIndex();
-  titleIndexCache = { map, builtAt: Date.now() };
-  return map;
 }
 
 // resolveSafePath throws a typed VaultPolicyError for path-escape or .mcpignore
@@ -1275,6 +1657,9 @@ export async function getNoteLinks(relativePath: string): Promise<LinkResult[]> 
 // Uses a content search for [[title pattern, so it may include false positives
 // from notes that mention the title in non-link contexts.
 export async function getBacklinks(relativePath: string, limit = 20): Promise<string[]> {
+  // The search below only reads allowed notes, but a protected note's backlinks are still
+  // refused, the same as every other operation that names a vault path.
+  resolveSafePath(relativePath);
   const title = path.basename(relativePath, '.md');
   const escaped = title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const results = await searchContent(`\\[\\[${escaped}`, { limit });
@@ -1465,6 +1850,8 @@ export interface SkippedLink {
 export interface RewritePlan {
   from: string; // vault-relative source path
   to: string;   // vault-relative destination path
+  isDirectory?: boolean; // absent in older single-file plans
+  movedFiles?: MoveResult[]; // every descendant mapping, including hidden files and attachments
   isRename: boolean; // true when the basename changed (vs. a pure move to a new folder)
   basenameCollision: boolean; // another file shares the old basename, so bare links are ambiguous
   files: FileRewrite[];     // .md and .canvas files with rewrites to make
@@ -1694,57 +2081,145 @@ function baseMentionsOldFile(content: string, oldName: string, oldPath: string):
   return lower.includes(oldName.toLowerCase()) || lower.includes(oldPath.toLowerCase());
 }
 
-// Walk the vault collecting every scannable .md, .canvas, and .base file (skipping dotfiles and
-// .mcpignore-blocked paths), excluding the moved file itself.
-async function collectRewriteTargets(excludeRel: string): Promise<string[]> {
-  const out: string[] = [];
+// One ordinary vault scan, supplemented with the preflight's moved descendants: hidden notes
+// inside a moved folder need their links updated even though bulk discovery skips dotfiles.
+async function collectRewriteTargets(excludeRel: string | null, movedFiles: MoveResult[] = []): Promise<string[]> {
+  const out = new Set<string>();
   for await (const { relPath } of walkVaultFiles({ includeFile: name => /\.(md|canvas|base)$/i.test(name) })) {
-    if (relPath !== excludeRel) out.push(relPath);
+    if (relPath !== excludeRel) out.add(relPath);
   }
-  return out;
+  for (const file of movedFiles) {
+    if (file.from !== excludeRel && /\.(md|canvas|base)$/i.test(file.from)) out.add(file.from);
+  }
+  return [...out];
 }
 
-// Is the old basename shared by another vault file (any .md, .canvas, or .base)? When true,
-// bare-name links are ambiguous and must be skipped rather than guessed.
-async function hasBasenameCollision(oldRel: string): Promise<boolean> {
-  const oldName = linkNameForFile(oldRel).toLowerCase();
-  const targets = await collectRewriteTargets(oldRel);
-  return targets.some(rel => linkNameForFile(rel).toLowerCase() === oldName);
+interface FolderRewriteTargets {
+  wikilinks: Map<string, string>;
+  canvas: Map<string, string>;
+}
+
+// Look up each original target once rather than applying descendant substitutions in sequence.
+// This both makes a folder move linear in links and prevents a newly rewritten prefix from
+// matching another old descendant. Folder moves preserve basenames, so bare links stay valid.
+function folderRewriteTargets(movedFiles: MoveResult[]): FolderRewriteTargets {
+  const wikilinks = new Map<string, string>();
+  const canvas = new Map<string, string>();
+  const owners = new Map<string, string>();
+  const add = (map: Map<string, string>, kind: string, target: string, replacement: string, source: string): void => {
+    const key = target.toLowerCase();
+    const ownerKey = `${kind}:${key}`;
+    const existing = owners.get(ownerKey);
+    if (existing !== undefined && existing !== source) {
+      throw new Error(`Cannot safely rewrite folder references: "${existing}" and "${source}" share the link target "${target}". Disambiguate these filenames or move the folder directly in Obsidian and review links manually.`);
+    }
+    owners.set(ownerKey, source);
+    map.set(key, replacement);
+  };
+  for (const file of movedFiles) {
+    add(canvas, 'canvas', file.from, file.to, file.from);
+    add(wikilinks, 'wikilink', file.from, file.to, file.from);
+    add(wikilinks, 'wikilink', linkPathForFile(file.from), linkPathForFile(file.to), file.from);
+  }
+  return { wikilinks, canvas };
+}
+
+function planFolderRewrites(
+  rel: string,
+  content: string,
+  targets: FolderRewriteTargets,
+): { content: string | null; rewrites: LinkRewrite[] } {
+  const rewrites: LinkRewrite[] = [];
+  if (/\.canvas$/i.test(rel)) {
+    let data: unknown;
+    try {
+      data = JSON.parse(content);
+    } catch {
+      return { content: null, rewrites };
+    }
+    const visit = (node: unknown): void => {
+      if (Array.isArray(node)) {
+        node.forEach(visit);
+      } else if (node && typeof node === 'object') {
+        const obj = node as Record<string, unknown>;
+        if (typeof obj.file === 'string') {
+          const replacement = targets.canvas.get(obj.file.toLowerCase());
+          if (replacement !== undefined && replacement !== obj.file) {
+            rewrites.push({ before: obj.file, after: replacement });
+            obj.file = replacement;
+          }
+        }
+        Object.values(obj).forEach(visit);
+      }
+    };
+    visit(data);
+    if (rewrites.length === 0) return { content: null, rewrites };
+    const indent = /\n\t/.test(content) ? '\t' : detectJsonIndent(content) ?? 0;
+    return {
+      content: JSON.stringify(data, null, indent) + (content.endsWith('\n') ? '\n' : ''),
+      rewrites,
+    };
+  }
+
+  const rewrite = (text: string, skipCode: boolean): string => {
+    const ranges = skipCode ? codeRanges(text) : [];
+    return text.replace(/(!?)\[\[([^\[\]\n]+?)\]\]/g, (whole, bang: string, inner: string, offset: number) => {
+      if (skipCode && isInsideCode(offset, ranges)) return whole;
+      const { target, rest } = parseWikilinkParts(inner);
+      const original = target.trim();
+      // Match the existing planner's conservative vault-relative paths. Relative ./ and ../
+      // links have note-local semantics and are not treated as vault-root paths.
+      if (!original.includes('/')) return whole;
+      const replacement = targets.wikilinks.get(original.toLowerCase());
+      if (replacement === undefined) return whole;
+      const next = `${bang}[[${replacement}${rest}]]`;
+      if (next !== whole) rewrites.push({ before: whole, after: next });
+      return next;
+    });
+  };
+  const { frontmatter, body } = splitFrontmatter(content);
+  const nextFrontmatter = frontmatter !== null ? rewrite(frontmatter, false) : null;
+  const nextBody = rewrite(body, true);
+  return {
+    content: rewrites.length === 0 ? null :
+      nextFrontmatter !== null ? `---\n${nextFrontmatter}\n---\n${nextBody}` : nextBody,
+    rewrites,
+  };
 }
 
 // Build the full rewrite plan for moving `from` to `to`. Pure read: scans the vault and reports
 // what it would change, writing nothing. Both dry-run and the write pass start here.
 export async function planReferenceRewrite(from: string, to: string): Promise<RewritePlan> {
-  // Honor .mcpignore / escape policy on both endpoints, matching moveFile's preflight.
-  const fromAbs = resolveSafePath(from);
-  resolveSafePath(to);
-
-  // A typo'd source would otherwise produce a plausible-looking empty plan. Fail the way
-  // moveFile does, with the vault-relative path.
-  if (!pathExists(fromAbs)) {
-    throw new Error(`No file found at "${from}".`);
-  }
+  // Share recursive folder/file policy preflight with the actual move. Its file mappings
+  // also supply hidden rewrite targets, without another recursive scan for each descendant.
+  const move = planFileMove(from, to);
+  from = move.from;
+  to = move.to;
 
   const oldName = linkNameForFile(from);
   const newName = linkNameForFile(to);
   const oldPathTarget = linkPathForFile(from);
   const newPathTarget = linkPathForFile(to);
-  const isRename = oldName.toLowerCase() !== newName.toLowerCase();
-  const basenameCollision = await hasBasenameCollision(from);
-
-  const targets = await collectRewriteTargets(from);
+  const isRename = !move.isDirectory && oldName.toLowerCase() !== newName.toLowerCase();
+  const targets = await collectRewriteTargets(move.isDirectory ? null : from, move.isDirectory ? move.files : []);
+  const basenameCollision = !move.isDirectory && targets.some(rel => linkNameForFile(rel).toLowerCase() === oldName.toLowerCase());
+  const folderTargets = move.isDirectory ? folderRewriteTargets(move.files) : null;
   const files: FileRewrite[] = [];
   const baseFilesToReview: string[] = [];
   const skippedLinks: SkippedLink[] = [];
 
   for (const rel of targets) {
+    const content = await fs.readFile(resolveSafePath(rel), 'utf-8');
     if (/\.base$/i.test(rel)) {
-      const content = await fs.readFile(resolveSafePath(rel), 'utf-8');
       if (baseMentionsOldFile(content, oldName, from)) baseFilesToReview.push(rel);
       continue;
     }
 
-    const content = await fs.readFile(resolveSafePath(rel), 'utf-8');
+    if (folderTargets) {
+      const { content: next, rewrites } = planFolderRewrites(rel, content, folderTargets);
+      if (next !== null) files.push({ path: rel, rewrites });
+      continue;
+    }
 
     if (/\.canvas$/i.test(rel)) {
       const { content: next, rewrites } = planCanvasRewrites(content, from, to);
@@ -1770,7 +2245,7 @@ export async function planReferenceRewrite(from: string, to: string): Promise<Re
     if (next !== null) files.push({ path: rel, rewrites });
   }
 
-  return { from, to, isRename, basenameCollision, files, baseFilesToReview, skippedLinks };
+  return { from, to, isDirectory: move.isDirectory, movedFiles: move.files, isRename, basenameCollision, files, baseFilesToReview, skippedLinks };
 }
 
 // Apply a previously-built plan's rewrites to disk. The caller moves the file first; this writes
@@ -1781,24 +2256,31 @@ export async function applyReferenceRewrite(plan: RewritePlan): Promise<RewriteR
   assertWritable();
   const modified: string[] = [];
   const failures: { path: string; error: string }[] = [];
+  const movedPaths = new Map((plan.movedFiles ?? []).map(file => [file.from, file.to]));
+  const folderTargets = plan.isDirectory ? folderRewriteTargets(plan.movedFiles ?? []) : null;
+  const currentPath = (rel: string): string => plan.isDirectory ? movedPaths.get(rel) ?? rel : rel;
 
   for (const file of plan.files) {
-    const absPath = resolveSafePath(file.path);
+    const rel = currentPath(file.path);
     try {
+      const absPath = resolveWritePath(rel);
       let written = false;
       await withPathLock(absPath, async () => {
-        const content = await fs.readFile(absPath, 'utf-8');
-        const next = recomputeFileContent(file.path, content, plan);
+        // A queued rewrite must re-check policy after it acquires the lock, since ignore rules
+        // and symlink targets can change while it waits.
+        const liveAbsPath = resolveWritePath(rel);
+        const content = await fs.readFile(liveAbsPath, 'utf-8');
+        const next = recomputeFileContent(rel, content, plan, folderTargets);
         if (next !== null) {
-          await atomicWriteFile(absPath, next);
+          await atomicWriteFile(liveAbsPath, next);
           written = true;
         }
       });
       // The recompute can find nothing to change (e.g. a concurrent edit already removed the
       // link); only files actually written belong in `modified`.
-      if (written) modified.push(file.path);
+      if (written) modified.push(rel);
     } catch (e) {
-      failures.push({ path: file.path, error: e instanceof Error ? e.message : String(e) });
+      failures.push({ path: rel, error: e instanceof Error ? e.message : String(e) });
     }
   }
 
@@ -1807,7 +2289,7 @@ export async function applyReferenceRewrite(plan: RewritePlan): Promise<RewriteR
     from: plan.from,
     to: plan.to,
     modified,
-    baseFilesToReview: plan.baseFilesToReview,
+    baseFilesToReview: plan.baseFilesToReview.map(currentPath),
     skippedLinks: plan.skippedLinks,
     failures,
   };
@@ -1816,7 +2298,15 @@ export async function applyReferenceRewrite(plan: RewritePlan): Promise<RewriteR
 // Recompute a single file's rewritten content from its current on-disk text. Re-derives the
 // rewrite at write time (under the lock) so a concurrent edit elsewhere in the file is preserved
 // rather than clobbered by stale planned text. Returns null when nothing matches now.
-function recomputeFileContent(rel: string, content: string, plan: RewritePlan): string | null {
+function recomputeFileContent(
+  rel: string,
+  content: string,
+  plan: RewritePlan,
+  folderTargets: FolderRewriteTargets | null = null,
+): string | null {
+  if (plan.isDirectory) {
+    return planFolderRewrites(rel, content, folderTargets ?? folderRewriteTargets(plan.movedFiles ?? [])).content;
+  }
   const oldName = linkNameForFile(plan.from);
   const newName = linkNameForFile(plan.to);
   const oldPathTarget = linkPathForFile(plan.from);

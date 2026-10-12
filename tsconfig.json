@@ -5,7 +5,9 @@
     "moduleResolution": "bundler",
     "strict": true,
     "skipLibCheck": true,
-    "outDir": "dist"
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "types": ["bun"]
   },
-  "include": ["src"]
+  "include": ["src", "test", "scripts"]
 }

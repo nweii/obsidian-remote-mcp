@@ -1,7 +1,7 @@
 // ABOUTME: Unit tests for the per-key async mutex in src/lock.ts — same-key serialization,
 // cross-key concurrency, and lock release after a throwing critical section.
 import { describe, expect, test } from 'bun:test';
-import { withPathLock } from '../src/lock.js';
+import { withPathLock, withPathsLock } from '../src/lock.js';
 
 function deferred<T = void>() {
   let resolve!: (value: T) => void;
@@ -74,4 +74,59 @@ describe('withPathLock', () => {
     const value = await withPathLock('note.md', async () => 42);
     expect(value).toBe(42);
   });
+});
+
+
+test('folder locks wait for descendant writes and then block new descendants', async () => {
+  const release = deferred();
+  const started = deferred();
+  const events: string[] = [];
+  const edit = withPathLock('/tmp/lock-fixture/Folder/Note.md', async () => {
+    events.push('edit'); started.resolve(); await release.promise;
+  });
+  await started.promise;
+  const move = withPathsLock(['/tmp/lock-fixture/Folder', '/tmp/lock-fixture/Archive'], async () => { events.push('move'); });
+  const later = withPathLock('/tmp/lock-fixture/Folder/Other.md', async () => { events.push('later'); });
+  await withPathLock('/tmp/lock-fixture/FolderSibling/Note.md', async () => { events.push('sibling'); });
+  expect(events).toEqual(['edit', 'sibling']);
+  release.resolve();
+  await Promise.all([edit, move, later]);
+  expect(events).toEqual(['edit', 'sibling', 'move', 'later']);
+});
+
+test('multi-path reservations and a queued ancestor cannot deadlock', async () => {
+  const release = deferred();
+  const started = deferred();
+  const events: string[] = [];
+  const first = withPathsLock(['/tmp/lock-multi/A', '/tmp/lock-multi/B'], async () => {
+    started.resolve(); await release.promise; events.push('first');
+  });
+  await started.promise;
+  const ancestor = withPathLock('/tmp/lock-multi', async () => { events.push('ancestor'); });
+  const reverse = withPathsLock(['/tmp/lock-multi/B', '/tmp/lock-multi/A'], async () => { events.push('reverse'); });
+  release.resolve();
+  await Promise.all([first, ancestor, reverse]);
+  expect(events).toEqual(['first', 'ancestor', 'reverse']);
+});
+
+test('a symlinked parent shares locks with its canonical descendants', async () => {
+  const { mkdtemp, mkdir, symlink, rm } = await import('fs/promises');
+  const root = await mkdtemp('/tmp/vault-lock-alias-');
+  try {
+    await mkdir(`${root}/Actual`);
+    await symlink(`${root}/Actual`, `${root}/Alias`);
+    const release = deferred();
+    const started = deferred();
+    let childRan = false;
+    const folder = withPathLock(`${root}/Alias`, async () => { started.resolve(); await release.promise; });
+    await started.promise;
+    const child = withPathLock(`${root}/Actual/New.md`, async () => { childRan = true; });
+    await Promise.resolve();
+    expect(childRan).toBe(false);
+    release.resolve();
+    await Promise.all([folder, child]);
+    expect(childRan).toBe(true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

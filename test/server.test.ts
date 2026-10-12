@@ -637,15 +637,16 @@ describe('Vault-derived defaults', () => {
 });
 
 describe('CORS', () => {
-  test('allows all origins by default', async () => {
+  test('allows the configured site origin by default', async () => {
     delete process.env.CORS_ALLOWED_ORIGINS;
     const { app, auth } = createApp();
     const { base, close } = await listen(app);
     try {
-      const res = await fetch(`${base}/.well-known/oauth-protected-resource`, {
-        headers: { Origin: 'https://claude.ai' },
+      const res = await fetch(`${base}/mcp`, {
+        headers: { Origin: 'https://example.test' },
       });
-      expect(res.headers.get('access-control-allow-origin')).toBe('*');
+      expect(res.status).toBe(401);
+      expect(res.headers.get('access-control-allow-origin')).toBe('https://example.test');
     } finally {
       await close();
     }
@@ -1138,6 +1139,63 @@ describe('Title resolution via tool round-trips', () => {
       });
       expect(result.content?.map(c => c.text).join('\n')).toContain('MoveWrite/ref.md');
       expect(await readFile(path.join(dir, 'ref.md'), 'utf-8')).toBe('see [[Renamed]] here\n');
+    } finally {
+      await close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('vault_move previews report occupied file and folder destinations without changing anything', async () => {
+    const dir = path.join(vaultPath, 'OccupiedMove');
+    await mkdir(path.join(dir, 'Source'), { recursive: true });
+    await mkdir(path.join(dir, 'Destination'), { recursive: true });
+    await writeFile(path.join(dir, 'Source.md'), 'source');
+    await writeFile(path.join(dir, 'Destination.md'), 'destination');
+    const { app, auth } = createApp();
+    const { base, close } = await listen(app);
+    try {
+      const token = auth.seedTestToken();
+      for (const suffix of ['.md', '/']) {
+        for (const dry_run of [true, false]) {
+          const result = await callTool(base, token, 'vault_move', {
+            source: `OccupiedMove/Source${suffix}`,
+            destination: `OccupiedMove/Destination${suffix}`,
+            ...(dry_run ? {} : { dry_run }),
+          });
+          expect(result.isError).toBe(true);
+          const message = result.content?.map(c => c.text).join('\n');
+          expect(message).toContain('already exists');
+          expect(message).toContain('Choose a different destination');
+        }
+      }
+      expect(await readFile(path.join(dir, 'Source.md'), 'utf8')).toBe('source');
+      expect(await readFile(path.join(dir, 'Destination.md'), 'utf8')).toBe('destination');
+    } finally {
+      await close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('vault_move plans and applies a folder move, then vault_trash accepts the folder', async () => {
+    const dir = path.join(vaultPath, 'FolderTool');
+    await mkdir(path.join(dir, 'Before'), { recursive: true });
+    await writeFile(path.join(dir, 'Before', 'Note.md'), 'inside\n');
+    await writeFile(path.join(dir, 'Ref.md'), '[[FolderTool/Before/Note]]\n');
+    const { app, auth } = createApp();
+    const { base, close } = await listen(app);
+    try {
+      const token = auth.seedTestToken();
+      const args = { source: 'FolderTool/Before/', destination: 'FolderTool/After/' };
+      const plan = await callTool(base, token, 'vault_move', args);
+      expect(plan.isError).toBeFalsy();
+      expect(plan.content?.map(c => c.text).join('\n')).toContain('Dry run');
+      expect(await readFile(path.join(dir, 'Before', 'Note.md'), 'utf8')).toBe('inside\n');
+      const applied = await callTool(base, token, 'vault_move', { ...args, dry_run: false });
+      expect(applied.isError).toBeFalsy();
+      expect(await readFile(path.join(dir, 'Ref.md'), 'utf8')).toBe('[[FolderTool/After/Note]]\n');
+      const trashed = await callTool(base, token, 'vault_trash', { path: 'FolderTool/After/' });
+      expect(trashed.isError).toBeFalsy();
+      await expect(readFile(path.join(dir, 'After', 'Note.md'))).rejects.toThrow();
     } finally {
       await close();
       await rm(dir, { recursive: true, force: true });
