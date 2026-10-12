@@ -1109,13 +1109,22 @@ export function compileSearchPattern(pattern: string, flags: string): RegExp {
 async function* walkVaultFiles(options: WalkVaultOptions = {}): AsyncGenerator<WalkEntry> {
   const { folder, includeFile = isMarkdownFile, sort = false } = options;
   const root = resolveSafePath(folder || '');
-  // One policy snapshot for the whole walk. Symlinks are never followed below, so each entry's
-  // canonical path is a plain join onto the walk root's canonical path.
+  // One policy snapshot for the whole walk. Each entry's canonical path is resolved when it is
+  // processed, not derived from its Dirent: a sync client can swap a directory for a symlink
+  // between readdir and recursion, and only the live target shows where it now leads.
   const policy = policySnapshot();
   const vaultRoot = policy.root;
-  const realWalkRoot = realpathSync(root);
-  const allowed = (fullPath: string): boolean =>
-    policy.check(fullPath, path.join(realWalkRoot, path.relative(root, fullPath)), { ignore: true, write: false }) === null;
+  const allowed = (fullPath: string): boolean => {
+    let canonical: string;
+    try {
+      canonical = realpathSync(fullPath);
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT' || code === 'ENOTDIR') return false; // Removed mid-walk, or now dangling.
+      throw e;
+    }
+    return policy.check(fullPath, canonical, { ignore: true, write: false }) === null;
+  };
 
   async function* walk(dir: string): AsyncGenerator<WalkEntry> {
     const entries = await fs.readdir(dir, { withFileTypes: true });
