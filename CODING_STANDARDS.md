@@ -4,6 +4,7 @@ Judgement rules for reviewing a diff. Mechanical rules live in the typecheck and
 
 ## Vault access
 
+- Access rules (containment, internal folders, `.mcpignore`, the policy file) are decided only by `policySnapshot().check` in `src/vault.ts`. Code that reads `.mcpignore` or tests those conditions anywhere else is a second copy of the policy and will drift from it.
 - An operation that acts on a folder checks every descendant against the policy, or refuses folders. Checking only the folder's own path lets a move or trash carry a note out from under a location-specific `.mcpignore` rule.
 - A policy check runs before any other validation, so an error never reveals whether a protected file exists or what it contains.
 - A security decision never rests on a cache keyed on stand-ins for content (timestamps, size, inode). Key it on the content itself, or on a version that changes whenever the content does.

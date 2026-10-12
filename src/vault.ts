@@ -168,7 +168,7 @@ function assertVaultRootReadable(root: string): void {
 type IgnoreMatcher = ReturnType<typeof compileIgnoreRules>;
 let ignoreCache: { root: string; text: string | null; matches: IgnoreMatcher } | null = null;
 
-// Keyed on the policy text itself, re-read on every check. File metadata cannot prove the
+// Keyed on the policy text itself, re-read for every policy snapshot. File metadata cannot prove the
 // policy unchanged: an in-place, same-length rewrite within one timestamp tick (coarse on
 // SMB/FAT volumes) keeps dev, inode, times and size identical. The file is small, so the read
 // costs about a microsecond more than a stat. Failure to read an existing policy must never
@@ -202,8 +202,8 @@ function getIgnoreRules(): IgnoreMatcher {
   return matches;
 }
 
-// Walks may start through an in-vault directory symlink. Check both names just as direct
-// access does; testing only the alias path would miss an ignored canonical descendant.
+// Single-level listings show symlinked entries, so each child is resolved in full, the same
+// as direct access; testing only the alias path would miss an ignored canonical target.
 function isIgnored(absPath: string): boolean {
   try {
     resolveSafePath(path.relative(getVaultRoot(), absPath));
@@ -214,10 +214,6 @@ function isIgnored(absPath: string): boolean {
   }
 }
 
-function isIgnoredRelative(rel: string): boolean {
-  return getIgnoreRules()(rel.split(path.sep).join('/'));
-}
-
 // App state rather than user context: Obsidian settings and plugin data (where plugins keep
 // API keys), and version history. Excluded at any depth before .mcpignore is consulted, so no
 // policy file is needed to protect them. Other hidden folders, .trash included, stay reachable
@@ -225,10 +221,6 @@ function isIgnoredRelative(rel: string): boolean {
 // restore what it trashed. A .mcpignore rule hides any of those.
 const INTERNAL_FOLDERS = ['.obsidian', '.git'];
 const matchesInternalFolder = compileIgnoreRules(INTERNAL_FOLDERS.map(name => `**/${name}`).join('\n'));
-
-function isInternalRelative(rel: string): boolean {
-  return matchesInternalFolder(rel.split(path.sep).join('/'));
-}
 
 // --- Read-only mode ----------------------------------------------------------
 
@@ -306,77 +298,121 @@ function realpathOrNearestExisting(absPath: string): string {
   }
 }
 
+// --- Policy snapshot ---------------------------------------------------------
+
+type PolicyVerdict = 'escape' | 'internal' | 'mcpignore' | 'policy-file' | null;
+
+// One reading of the access policy, and the single place its rules are decided. Every path
+// check (direct access, bulk walks, folder moves) asks a snapshot, so a rule added here applies
+// to all of them. A snapshot belongs to one operation: a walk or a folder move checks thousands
+// of entries against the policy as it stood when the operation began, instead of re-reading
+// .mcpignore for each one. Callers own their error wording; the snapshot only says which rule
+// refused.
+interface PolicySnapshot {
+  root: string;
+  realRoot: string;
+  // `lexical` is the absolute path as requested and `canonical` the same entry with symlinks
+  // resolved. Both must pass. `ignore: false` skips .mcpignore for the internal trash
+  // destination. `write` adds owner-managed policy-file protection; pass the entry's stat when
+  // it exists so a hardlink alias is caught.
+  check(lexical: string, canonical: string, opts: { ignore: boolean; write: boolean; stat?: Stats | null }): PolicyVerdict;
+}
+
+function policySnapshot(): PolicySnapshot {
+  const root = getVaultRoot();
+  const rules = getIgnoreRules();
+  const realRoot = getVaultRealRoot();
+  const policy = path.join(root, '.mcpignore');
+  // Only writes consult the policy file's own location and inode, so reads skip the cost.
+  let policyTarget: { real: string; stat: Stats | null } | null = null;
+  const getPolicyTarget = () => {
+    if (policyTarget) return policyTarget;
+    let stat: Stats | null = null;
+    try {
+      stat = statSync(policy);
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code !== 'ENOENT' && code !== 'ENOTDIR') throw e;
+    }
+    policyTarget = { real: realpathOrNearestExisting(policy), stat };
+    return policyTarget;
+  };
+  const key = (value: string) => value.normalize('NFC').toLowerCase();
+  const overlaps = (a: string, b: string) => isWithin(key(a), key(b)) || isWithin(key(b), key(a));
+  const rel = (from: string, to: string) => path.relative(from, to).split(path.sep).join('/');
+
+  return {
+    root,
+    realRoot,
+    check(lexical, canonical, { ignore, write, stat }) {
+      if (!isWithin(root, lexical) || !isWithin(realRoot, canonical)) return 'escape';
+      const lexicalRel = rel(root, lexical);
+      const canonicalRel = rel(realRoot, canonical);
+      if (matchesInternalFolder(lexicalRel) || matchesInternalFolder(canonicalRel)) return 'internal';
+      if (ignore && (rules(lexicalRel) || rules(canonicalRel))) return 'mcpignore';
+      if (write) {
+        // A containing directory counts: moving it would carry the policy away, and a path
+        // beneath an absent policy would create it as a directory the loader cannot read.
+        // Hardlinks need the inode check because realpath cannot identify those aliases.
+        const target = getPolicyTarget();
+        if (overlaps(lexical, policy) || overlaps(canonical, target.real) ||
+            (stat && target.stat && stat.dev === target.stat.dev && stat.ino === target.stat.ino)) {
+          return 'policy-file';
+        }
+      }
+      return null;
+    },
+  };
+}
+
 // Check both the requested path and its canonical target. An allowed target cannot make an
 // ignored alias writable, and an allowed alias cannot expose an ignored target. The internal
 // trash destination skips .mcpignore only; containment, the internal-folder exclusion, and
 // policy-file protection still apply.
-function resolveVaultPath(relativePath: string, enforceIgnore: boolean): string {
-  const vaultRoot = getVaultRoot();
-  const resolved = path.resolve(vaultRoot, relativePath);
-
-  if (!isWithin(vaultRoot, resolved)) {
+function resolveVaultPath(relativePath: string, opts: { ignore: boolean; write: boolean }): string {
+  const policy = policySnapshot();
+  const resolved = path.resolve(policy.root, relativePath);
+  if (!isWithin(policy.root, resolved)) {
     throw new VaultPolicyError('escape', `Path escapes vault root: ${relativePath}`);
   }
-
-  const realRoot = getVaultRealRoot();
   const realResolved = realpathOrNearestExisting(resolved);
-
-  if (!isWithin(realRoot, realResolved)) {
-    throw new VaultPolicyError(
-      'escape',
-      `Path escapes vault root: ${relativePath} (resolves outside the vault through a symlink)`,
-    );
+  let stat: Stats | null = null;
+  if (opts.write) {
+    try {
+      stat = statSync(resolved);
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code !== 'ENOENT' && code !== 'ENOTDIR') throw e;
+    }
   }
-
-  const lexicalRel = path.relative(vaultRoot, resolved);
-  const canonicalRel = path.relative(realRoot, realResolved);
-
-  if (isInternalRelative(lexicalRel) || isInternalRelative(canonicalRel)) {
-    throw new VaultPolicyError(
-      'internal',
-      `Path is inside an Obsidian internal folder (${INTERNAL_FOLDERS.join(', ')}), which MCP cannot access: ${relativePath}`,
-    );
+  switch (policy.check(resolved, realResolved, { ...opts, stat })) {
+    case 'escape':
+      throw new VaultPolicyError(
+        'escape',
+        `Path escapes vault root: ${relativePath} (resolves outside the vault through a symlink)`,
+      );
+    case 'internal':
+      throw new VaultPolicyError(
+        'internal',
+        `Path is inside an Obsidian internal folder (${INTERNAL_FOLDERS.join(', ')}), which MCP cannot access: ${relativePath}`,
+      );
+    case 'mcpignore':
+      throw new VaultPolicyError('mcpignore', `Path is blocked by .mcpignore: ${relativePath}`);
+    case 'policy-file':
+      throw new VaultPolicyError('mcpignore', 'The .mcpignore access policy cannot be modified through MCP. Edit it directly as the vault owner.');
   }
-
-  if (enforceIgnore && (isIgnoredRelative(lexicalRel) || isIgnoredRelative(canonicalRel))) {
-    throw new VaultPolicyError('mcpignore', `Path is blocked by .mcpignore: ${relativePath}`);
-  }
-
   return resolved;
 }
 
 export function resolveSafePath(relativePath: string): string {
-  return resolveVaultPath(relativePath, true);
+  return resolveVaultPath(relativePath, { ignore: true, write: false });
 }
 
 // The policy is owner-managed. Reading it is allowed unless it is itself ignored, but no
 // mutation may change it, including through directory/file aliases or a symlinked policy.
 // This check is separate from read-only mode so move dry runs can still validate destinations.
 function resolveWritePath(relativePath: string, allowIgnored = false): string {
-  const resolved = resolveVaultPath(relativePath, !allowIgnored);
-  const root = getVaultRoot();
-  const policy = path.join(root, '.mcpignore');
-  const realResolved = realpathOrNearestExisting(resolved);
-  const policyTarget = realpathOrNearestExisting(policy);
-  const key = (value: string) => value.normalize('NFC').toLowerCase();
-  // Moving a containing directory would remove a symlinked policy just as surely as moving
-  // the file, and a path beneath an absent policy would create it as a directory, which the
-  // policy loader then cannot read. Hardlinks need an inode check because realpath cannot
-  // identify those aliases.
-  let sameFile = false;
-  try {
-    const targetStat = statSync(resolved);
-    const policyStat = statSync(policy);
-    sameFile = targetStat.dev === policyStat.dev && targetStat.ino === policyStat.ino;
-  } catch (e) {
-    const code = (e as NodeJS.ErrnoException).code;
-    if (code !== 'ENOENT' && code !== 'ENOTDIR') throw e;
-  }
-  const overlaps = (a: string, b: string) => isWithin(key(a), key(b)) || isWithin(key(b), key(a));
-  if (overlaps(resolved, policy) || overlaps(realResolved, policyTarget) || sameFile) {
-    throw new VaultPolicyError('mcpignore', 'The .mcpignore access policy cannot be modified through MCP. Edit it directly as the vault owner.');
-  }
-  return resolved;
+  return resolveVaultPath(relativePath, { ignore: !allowIgnored, write: true });
 }
 
 export async function readNote(relativePath: string): Promise<string> {
@@ -856,14 +892,14 @@ function pathEntryExists(absPath: string): boolean {
   }
 }
 
-// Snapshot the live policy once, then check the entire tree without per-entry realpath or
-// policy reads. Canonical descendants are simple joins once all symlink entries are refused.
+// Check the entire tree against one policy snapshot, without per-entry realpath or policy
+// reads. Canonical descendants are simple joins once all symlink entries are refused.
 function checkFileMove(source: string, destination: string, allowIgnoredDestination = false): CheckedMovePlan {
   const fromAbs = resolveWritePath(source);
   const toAbs = resolveWritePath(destination, allowIgnoredDestination);
   const sourceStat = assertMovableFile(fromAbs, source, true);
-  const vaultRoot = getVaultRoot();
-  const realRoot = getVaultRealRoot();
+  const policy = policySnapshot();
+  const { root: vaultRoot, realRoot } = policy;
   const fromReal = realpathSync(fromAbs);
   const toReal = realpathOrNearestExisting(toAbs);
   const key = (value: string) => value.normalize('NFC').toLowerCase();
@@ -887,30 +923,18 @@ function checkFileMove(source: string, destination: string, allowIgnoredDestinat
     }
   }
 
-  const rules = getIgnoreRules();
-  const policy = path.join(vaultRoot, '.mcpignore');
-  const policyReal = realpathOrNearestExisting(policy);
-  let policyStat: Stats | null = null;
-  try {
-    policyStat = statSync(policy);
-  } catch (e) {
-    const code = (e as NodeJS.ErrnoException).code;
-    if (code !== 'ENOENT' && code !== 'ENOTDIR') throw e;
-  }
-  const overlaps = (a: string, b: string) => isWithin(key(a), key(b)) || isWithin(key(b), key(a));
   const rel = (root: string, candidate: string) => path.relative(root, candidate).split(path.sep).join('/');
   const checkEntry = (lexical: string, canonical: string, st: Stats, ignore: boolean): void => {
     const lexicalRel = rel(vaultRoot, lexical);
-    const canonicalRel = rel(realRoot, canonical);
-    if (isInternalRelative(lexicalRel) || isInternalRelative(canonicalRel)) {
-      throw new VaultPolicyError('internal', `Folder operation would include an internal path: ${lexicalRel}`);
-    }
-    if (ignore && (rules(lexicalRel) || rules(canonicalRel))) {
-      throw new VaultPolicyError('mcpignore', `Folder operation would include a path blocked by .mcpignore: ${lexicalRel}`);
-    }
-    if (overlaps(lexical, policy) || overlaps(canonical, policyReal) ||
-        (policyStat && st.dev === policyStat.dev && st.ino === policyStat.ino)) {
-      throw new VaultPolicyError('mcpignore', 'Folder operation would modify the .mcpignore access policy or one of its aliases.');
+    switch (policy.check(lexical, canonical, { ignore, write: true, stat: st })) {
+      case 'escape':
+        throw new VaultPolicyError('escape', `Folder operation would include a path outside the vault: ${lexicalRel}`);
+      case 'internal':
+        throw new VaultPolicyError('internal', `Folder operation would include an internal path: ${lexicalRel}`);
+      case 'mcpignore':
+        throw new VaultPolicyError('mcpignore', `Folder operation would include a path blocked by .mcpignore: ${lexicalRel}`);
+      case 'policy-file':
+        throw new VaultPolicyError('mcpignore', 'Folder operation would modify the .mcpignore access policy or one of its aliases.');
     }
   };
   const files: MoveResult[] = [];
@@ -1075,8 +1099,14 @@ function compileSearchPattern(pattern: string, flags: string): RegExp {
 
 async function* walkVaultFiles(options: WalkVaultOptions = {}): AsyncGenerator<WalkEntry> {
   const { folder, includeFile = isMarkdownFile, sort = false } = options;
-  const vaultRoot = getVaultRoot();
   const root = resolveSafePath(folder || '');
+  // One policy snapshot for the whole walk. Symlinks are never followed below, so each entry's
+  // canonical path is a plain join onto the walk root's canonical path.
+  const policy = policySnapshot();
+  const vaultRoot = policy.root;
+  const realWalkRoot = realpathSync(root);
+  const allowed = (fullPath: string): boolean =>
+    policy.check(fullPath, path.join(realWalkRoot, path.relative(root, fullPath)), { ignore: true, write: false }) === null;
 
   async function* walk(dir: string): AsyncGenerator<WalkEntry> {
     const entries = await fs.readdir(dir, { withFileTypes: true });
@@ -1089,7 +1119,7 @@ async function* walkVaultFiles(options: WalkVaultOptions = {}): AsyncGenerator<W
       // canonicalizes and re-checks containment; a bulk scan doesn't need that latitude.
       if (entry.isSymbolicLink()) continue;
       const fullPath = path.join(dir, entry.name);
-      if (isIgnored(fullPath)) continue;
+      if (!allowed(fullPath)) continue;
       if (entry.isDirectory()) {
         yield* walk(fullPath);
         continue;
