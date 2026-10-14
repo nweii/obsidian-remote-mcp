@@ -1,14 +1,76 @@
 # Vault access policy
 
-The access rules are decided in one place: `policySnapshot()` in `src/vault.ts`, whose `check` takes an entry's requested and canonical paths and returns which rule, if any, refuses it. Every vault path an agent supplies reaches it through `resolveSafePath` (reads) or `resolveWritePath` (writes), every bulk scan through `walkVaultFiles`, and every descendant of a moved or trashed folder through `checkFileMove`. A new operation that touches the filesystem routes through one of those; a new rule goes in `check`, so it applies to all of them.
+[Tools](tools.md#vault-access-and-tool-defaults) · [Note writes](writes.md)
 
-A snapshot reads `.mcpignore` once and serves one operation. A single path check takes a fresh snapshot; a walk or folder move takes one at its start and checks every entry against it, so an edit to the policy applies from the next call.
+## Shared path checks
 
-- Vault paths are validated lexically and canonically against the resolved vault root and `.mcpignore`. Dangling links are refused, and scoped walks apply the same policy to canonical descendants. Internal `.trash` destinations are checked for containment and policy-file protection even when `.trash` is ignored. `.obsidian` and `.git` (app settings, plugin data, and history, at any depth) are always excluded, before `.mcpignore` is consulted. Other hidden files, `.trash` included, remain readable/writable by explicit path unless excluded. `vault_move` and `vault_trash` validate complete folder subtrees, including hidden entries, before allowing folder operations. Protected descendants, symlinks, and special files reject the whole operation; mapped destinations are checked too. Folder tool paths use trailing slashes. Folder moves scan rewrite targets once and include intra-folder references; bare basenames stay unchanged. Path locks conflict with ancestors/descendants and acquire move endpoints together so folder renames wait for pending descendant writes. The tool uses `moveWithReferences`, which holds both endpoint locks across fresh planning and rename; composing `planReferenceRewrite` and `moveFile` separately does not provide that guarantee.
-- Place a `.mcpignore` file in the vault root to block paths from MCP access. `src/ignore.ts` compiles the rules using Bun's glob matcher. One vault-root-relative rule per line; blank lines and lines starting with `#` are ignored. Literal paths retain their behavior: `03-Records/Journaling` blocks that path and every descendant. `*` and `?` match within a segment; a whole `**` segment spans zero or more directories. `.*/` blocks root-level hidden entries; `**/.*` blocks hidden files/folders and their descendants at any depth. Trailing slashes are optional, not directory-only assertions. A leading `/` or `./` is accepted and ignored, since every rule is already rooted. Matching folds case and NFC-normalizes Unicode conservatively across filesystems; there is no negation, brace expansion or character-class syntax (those characters stay literal). Rules reload whenever the policy file's contents change (it is re-read for every operation, since file metadata can miss a same-length rewrite) and invalidate cached title/link results; no restart is needed. An unavailable vault, unreadable policy, or dangling policy link fails closed. The policy file is owner-managed: all mutation helpers reject its lexical/canonical paths, hardlink aliases, and containing directories. Reads remain allowed unless excluded by the rules. Direct access to hidden context notes outside the internal folders remains allowed unless a rule excludes them; ordinary walks/listings still skip hidden entries.
-- Writes are refused, whatever the path, when `VAULT_READ_ONLY=true` or when the connection making the request was approved without the `vault:write` scope. `src/access.ts` decides both through `readOnlyReason()`, and `assertWritable` in `vault.ts` calls it at the top of every write, so no tool can bypass it. The connection comes from the kit's request-scoped `currentCaller()`; outside a request (startup, direct calls in tests) only `VAULT_READ_ONLY` applies. The policy matrix runs every write as a read-only connection.
-- Every search, index and scan in `vault.ts` shares the one traversal, `walkVaultFiles`, which skips dotfiles and symlinks and checks each entry against the policy.
-- `src/periodic.ts` reads Obsidian's plugin settings from `.obsidian` (or `OBSIDIAN_CONFIG_DIR`) directly, outside the policy, to derive periodic note paths. No tool exposes those files; the derived path is then written through the normal policy.
-- `test/vault-policy-matrix.test.ts` runs every exported `vault.ts` function against every hostile path shape (ignored, case variant, traversal, internal folder, symlink alias, escape, dangling link, the policy file, a folder holding a hidden note). It fails when an export is neither covered nor listed as taking no vault path, so add each new operation to it.
-- `src/cli.ts` hands paths to the Obsidian CLI, which applies no policy of its own. Every path-like parameter goes through `resolveSafeWritePath` (the read policy plus policy-file protection, since a command may write), and `file=` is resolved by the server and rewritten to `path=`, so Obsidian's name resolution can't land on a protected note. A folder in `path` is refused for commands that may write, because the CLI would act on descendants this check never sees. Command output and implicit targets (`daily:append`, task references) can't be checked, so the CLI tools stay off while `.mcpignore` has rules (`hasIgnoreRules`) unless the operator sets `OBSIDIAN_CLI_MCPIGNORE_ACK=true`. Backlinks from the CLI are filtered per result and need no acknowledgment. The policy matrix covers the CLI with a fake binary and asserts every refusal happens before it runs.
-- `scanVaultForSettings` in `src/clip.ts` deliberately walks outside the policy: the Web Clipper settings file holds interpreter API keys, so owners may hide it from agents while clipping still uses it. The agent never reads that file.
+`policySnapshot().check` in `src/vault.ts` decides whether an entry's requested and resolved filesystem paths are allowed. Reads use `resolveSafePath`, writes use `resolveWritePath`, bulk scans use `walkVaultFiles`, and folder moves and trash check every descendant through `checkFileMove`.
+
+Route new filesystem operations through those functions. Add rules in `check` so they apply to every operation.
+
+Each operation reads `.mcpignore` once. A single-path check takes a fresh snapshot; walks and folder operations share one snapshot for all their entries. Policy edits apply to the next call.
+
+### Vault boundaries
+
+Both the requested and resolved paths must stay inside the vault and comply with `.mcpignore`. Dangling symlinks are refused. Walks through a shortcut folder check the resolved descendants too.
+
+Internal `.trash` destinations must remain inside the vault and cannot modify the policy file, even when `.trash` is ignored.
+
+`.obsidian` and `.git` are always blocked at any depth, before `.mcpignore` is checked. Other hidden files, including `.trash`, remain accessible by explicit path unless a rule excludes them. Ordinary searches and listings skip hidden entries.
+
+## Folder moves and trash
+
+`vault_move` and `vault_trash` validate the complete subtree, including hidden entries, and every mapped destination before moving anything. A protected descendant, symlink, or special file rejects the whole folder operation. Folder tool paths use trailing slashes.
+
+Folder moves scan rewrite targets once and include references inside the moved folder. Bare filenames in links stay unchanged when the move preserves the filename.
+
+`moveWithReferences` holds both endpoint locks while it plans and renames. Ancestor and descendant lock conflicts make folder renames wait for pending writes inside them. Calling `planReferenceRewrite` and `moveFile` separately does not provide that guarantee.
+
+## .mcpignore rules
+
+`src/ignore.ts` compiles one vault-relative rule per line using Bun's glob matcher. Blank lines and lines starting with `#` are ignored. See [rule examples](tools.md#exclude-paths-with-mcpignore).
+
+- A literal path blocks itself and every descendant.
+- `*` and `?` match within one path segment. A whole `**` segment spans zero or more directories.
+- `.*/` blocks hidden entries at the root. `**/.*` blocks hidden entries and their descendants at any depth.
+- Leading `/` or `./` and trailing slashes are optional. A trailing slash does not restrict a rule to directories.
+- Matching ignores case and NFC-normalizes Unicode across filesystems.
+- Negation, brace expansion, and character classes are unsupported. Their syntax is treated literally.
+
+The policy file is reread for each operation because metadata can miss a same-length rewrite. Changed contents invalidate cached title and link results. An unavailable vault, unreadable policy, or dangling policy symlink causes access to be refused.
+
+### Policy-file protection
+
+Only the owner can change `.mcpignore` directly. All mutation helpers reject its requested and resolved paths, hardlink aliases, and containing directories. Reads remain allowed unless the rules exclude them.
+
+Hidden guidance files outside `.obsidian` and `.git` remain accessible by explicit path unless excluded.
+
+## Read-only permissions
+
+Writes are refused when `VAULT_READ_ONLY=true` or the connection lacks `vault:write`. `readOnlyReason()` in `src/access.ts` checks both conditions. Every write calls `assertWritable` at entry.
+
+The kit's request-scoped `currentCaller()` identifies the connection. Outside a request, including startup and direct test calls, only `VAULT_READ_ONLY` applies.
+
+## File traversal
+
+Every search, index, and scan in `vault.ts` uses `walkVaultFiles`. It skips hidden entries and symlinks and checks each entry against the policy.
+
+## Internal configuration reads
+
+`src/periodic.ts` reads plugin settings from `.obsidian` or `OBSIDIAN_CONFIG_DIR` outside the path policy. The `.obsidian` folder remains blocked from MCP tools. The derived note path passes through normal access checks.
+
+`scanVaultForSettings` in `src/clip.ts` also walks outside the policy. This lets the clipper use an owner-hidden settings file that contains interpreter API keys. Agents cannot read the settings file through that scan.
+
+## Obsidian CLI
+
+The Obsidian CLI does not enforce this server's path policy. `src/cli.ts` checks path-like parameters with `resolveSafeWritePath`, including protection against changing `.mcpignore`.
+
+`file=` is resolved by the server and rewritten to an exact `path=` so Obsidian's name resolution cannot select a protected note. Commands that may write cannot target a folder through `path`, since that would leave descendants unchecked.
+
+Command output and implicit targets, such as `daily:append` and task references, cannot be filtered. CLI tools stay disabled while `.mcpignore` has rules unless `OBSIDIAN_CLI_MCPIGNORE_ACK=true` accepts this limitation. Backlinks are filtered per result and need no acknowledgment.
+
+## Policy coverage
+
+`test/vault-policy-matrix.test.ts` checks every exported `vault.ts` function against ignored paths, case variants, traversal, internal folders, symlink aliases, escapes, dangling links, the policy file, and folders containing hidden notes.
+
+Every export must be covered or listed as taking no vault path. Add new operations to the matrix. The tests also run every write as a read-only connection and use a fake CLI binary to verify refusals happen before a process starts.

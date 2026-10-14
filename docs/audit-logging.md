@@ -1,11 +1,39 @@
 # Audit logging
 
-What the tool-call and feedback logs record, and what they redact.
+[README](../README.md) · [Authentication and vault settings](configuration.md) · [Server reference](server.md)
 
-- When logging is enabled (default), every tool call is recorded to `LOG_DIR/tool-calls.jsonl` with `{ ts, client, client_name?, tool, args, ok, duration_ms, error? }`. `client` is the connection's client id: `MCP_CLIENT_ID` for the configured OAuth client, a generated id for a client that registered itself, or `static-bearer` for the API key. `client_name` is the name a self-registered client declared; it is self-asserted, so treat it as a label. Feedback entries carry the same two fields. The `error` field captures the suggestion text returned to the client on `isError` responses, so review can show both the failure and what the agent was told to try next.
-- YAML parser errors expose only fixed safe diagnostic categories and line numbers. `AmbiguousHeadingError.message` carries line numbers but no note previews; `candidatesText()` provides previews in the tool response’s second content block, which the logger does not record.
-- Args are summarized before logging: strings over 80 chars become `<str:Nchars>`, and the fields `content`, `value`, `template`, and `find` are always redacted to `<redacted:Nchars>` regardless of length so note bodies and frontmatter values never land on disk. Tool names, paths, titles, search queries, tags, frontmatter field names, and structural args remain visible and can reveal sensitive metadata. Use `LOG_ENABLED=false` when that metadata must not be stored.
-- `vault_cli` and `vault_cli_help` log a summary instead of their raw args: the command, the parameter names and the flags. Parameter values, which can hold note text or search terms, stay out of the logged args. Refusal messages (the `error` field) can name the refused path, command ID or parameter name, as other tools' errors name paths.
-- Agents can call `vault_feedback` to log a structured note when they get stuck or want a tool that doesn't exist; entries land in `LOG_DIR/feedback.jsonl`. The tool is only registered when logging is enabled. Feedback fields (`goal`, `attempted`, `stuck_on`, `suggested_tool`) are agent-authored and stored verbatim.
-- No automatic rotation — log files grow forever. Mount `LOG_DIR` as a persistent volume in production and rotate or truncate manually if size becomes a concern.
-- Set `LOG_ENABLED=false` to disable both — useful for forks that don't want disk writes recording agent activity, or for ephemeral deployments without a persistent volume.
+## Files and controls
+
+Logging is enabled by default. Tool calls go to `LOG_DIR/tool-calls.jsonl`; feedback goes to `LOG_DIR/feedback.jsonl`.
+
+Set `LOG_ENABLED=false` to disable both logs and omit the `vault_feedback` tool.
+
+Logs do not rotate automatically. Use a persistent volume for `LOG_DIR` when logs must survive container replacement. Rotate or truncate the files to limit disk usage.
+
+## Recorded fields
+
+Tool-call entries contain `{ ts, client, client_name?, tool, args, ok, duration_ms, error? }`.
+
+`client` identifies the connection that made the call.
+
+- The configured OAuth client uses `MCP_CLIENT_ID`.
+- A self-registered client uses its generated client ID.
+- API-key calls use `static-bearer`.
+
+`client_name` is the name a self-registered client supplied. Treat it as a label rather than verified identity. Feedback entries carry the same client fields.
+
+The `error` field records the message returned with an `isError` result, including any suggested next action.
+
+## Redaction and visible metadata
+
+Argument strings longer than 80 characters become `<str:Nchars>`. The `content`, `value`, `template`, and `find` fields always become `<redacted:Nchars>`, regardless of length.
+
+Tool names, paths, titles, search queries, tags, frontmatter field names, and structural arguments remain visible. These metadata can be sensitive even when note-body arguments and frontmatter values are redacted.
+
+`vault_cli` and `vault_cli_help` record the command, parameter names, and flags instead of raw arguments. Parameter values are omitted. Refusal messages may name a path, command ID, or parameter name.
+
+YAML parser errors record fixed diagnostic categories and line numbers. `AmbiguousHeadingError.message` includes line numbers without note previews. `candidatesText()` puts previews in the response's second content block, which the logger does not record.
+
+## Feedback
+
+`vault_feedback` lets agents report a failed task or a missing tool. Its `goal`, `attempted`, `stuck_on`, and `suggested_tool` fields are stored verbatim.

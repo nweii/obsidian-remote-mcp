@@ -1,18 +1,17 @@
 # obsidian-remote-mcp
 
-A self-hosted [MCP](https://modelcontextprotocol.io) server that gives remote MCP clients (Claude, ChatGPT, Notion etc.) secure access to your Obsidian vault over HTTPS without requiring the Obsidian desktop app to be running on the same machine.
+Read and edit your Obsidian notes from Claude, ChatGPT, and other [MCP clients](https://modelcontextprotocol.io), even when you're away from your computer.
 
-It runs as an HTTP service on the machine where your vault lives (an NAS, VPS, or always-on PC/Mac). You keep a copy of your vault on that machine; clients reach it through your deployment of this repo, secured behind OAuth 2.1 authentication. 
+Run this self-hosted server on a NAS, a cloud server, or an always-on computer with a local copy of your vault. AI apps connect over HTTPS with browser sign-in or an API key. The core tools work directly with your Markdown files, so Obsidian doesn't need to be running.
 
 ## Features
 
-- **Flexible** — configure it to your environment and your vault's conventions.
-- **[Layerable security](#security-and-scope)** — secure by default, and you can layer on more as needed for your setup, up to an external access gateway.
-- **[Careful, precise edits](#vault-edits)** — it changes your notes safely and surgically:
-    - Writes are atomic, so your sync services never see a partial file.
-    - Version checks and per-note locks keep two agents from clobbering each other.
-    - Read or edit one section or one property; read or update notes in batches.
-- **Obsidian-native** — wikilinks, frontmatter, tags, and periodic notes work as expected; moving or renaming a note rewrites the wikilinks pointing at it.
+- Ask AI to find notes, add to a journal, or update one section of a project note. Tools also support frontmatter and batches of notes.
+- Use your existing daily, weekly, and other periodic note settings. Moving or renaming notes updates the wikilinks pointing to them.
+- Give agents your vault's instructions and a folder map with [`vault_context`](docs/configuration.md#vault-context-note). It reads `AGENTS.md`, `CLAUDE.md`, or a guidance file you choose.
+- Optionally use the [Obsidian desktop app's CLI](docs/tools.md#obsidian-cli-tools) to query Bases, work with tasks, and access other app features.
+- Choose editing and Obsidian app permissions separately for each connection approved through browser sign-in. Use [`.mcpignore`](docs/tools.md#vault-access-and-tool-defaults) to exclude private folders from file tools.
+- [Atomic writes](docs/tools.md#vault-edits) keep Obsidian and sync services from reading partially written notes. Optional version checks reject updates based on an outdated copy.
 
 ## How it fits together
 
@@ -46,53 +45,15 @@ It runs as an HTTP service on the machine where your vault lives (an NAS, VPS, o
                       └──────────────────────┘
 ```
 
-The server and its tools are built in. The rest you choose to fit your setup:
-
-- **vault** — the markdown files the server reads and edits
-- **sync** — you keep the vault current on the machine using any service; the server reads whatever's on disk.
-- **server** — obsidian-remote-mcp, this repo running
-- **access** — makes the server reachable over HTTPS. See [Expose it over HTTPS](#2-expose-it-over-https).
-- **auth** — built in (OAuth or API key); you can also put an external gate like Cloudflare Zero Trust in front. See [Authentication](#authentication).
-- **client** — the app that talks to the server.
-
-## Vault edits
-
-The server edits the same files Obsidian and Obsidian Sync are using. Two things shape how it writes:
-
-- Each write goes to a temporary file that is renamed into place. Obsidian, Sync, or other tools never read a half-written or empty note, even if the process stops mid-write.
-- Writes to one note run one at a time. `vault_read` returns a version string; passing it to `vault_update` as `base_version` makes the update fail if the note changed since you read it, instead of overwriting the other edit.
-
-## Security and scope
-
-Access to the vault is controlled in layers.
-
-**Authentication** — a client presents a credential to reach `/mcp`. Two ways to connect:
-- **[OAuth 2.1 + PKCE](#oauth-browser-sign-in)** — browser sign-in, presenting your `MCP_CLIENT_ID`.
-- **[API key](#api-key-static-bearer-token)** (`MCP_STATIC_BEARER_TOKEN`) — a fixed bearer token, for clients that can't open a browser.
-
-**Approval** — with OAuth, a client is granted access at the approval page, so the server won't start until access is guarded. Set [`APPROVAL_PASSWORD`](#password-gate) to require a password there, or rely on a client secret (`MCP_CLIENT_SECRET`), which guards token exchange instead. If a gateway like Cloudflare Zero Trust already fronts `/authorize`, set `APPROVAL_OPEN=true`. When you approve a connection, you also choose what it may do beyond reading: [edit notes, and control the Obsidian app](#choosing-what-each-connection-can-do).
-
-**Scope** — `.mcpignore` blocks paths from access, `VAULT_READ_ONLY` disables writes for every connection, and `CORS_ALLOWED_ORIGINS` limits browser origins. Paths are always confined to the vault root.
-
-**Outbound note text** — `vault_skim` is the only tool that sends note text off the server, and only when a decision-model key is configured. It returns a plan first and sends nothing until called again with that plan's id. `SKIM_EXCLUDE_TAGS` and `SKIM_EXCLUDE_PATHS` withhold notes from it entirely. See [Skimming notes](#skimming-notes).
-
-The configurable parts are set as [environment variables](#environment-variables).
+Your sync service keeps the server's local vault current. The server reads and edits those files, and your AI apps connect through the HTTPS service.
 
 ## Quick start
 
-Prefer to hand it to a coding agent? [SETUP-PROMPT.md](SETUP-PROMPT.md) is a paste-in prompt that sets it up with you. Or do it by hand:
-
-Getting from a vault on disk to an AI client reading it takes three steps:
-
-1. **Run the server** — locally with Bun, or in Docker.
-2. **Expose it over HTTPS** — remote clients and OAuth both require it.
-3. **Connect a client** — with browser OAuth or an API key. Per-client steps are under [clients.md](clients.md).
+Run the server on a computer that has a local copy of your vault. For guided setup with a coding agent, use [SETUP-PROMPT.md](SETUP-PROMPT.md).
 
 ### 1. Run the server
 
-The server is TypeScript on [Bun](https://bun.sh) — no build step; Bun runs `src/server.ts` directly.
-
-**Directly:**
+With [Bun](https://bun.sh) installed, run these commands. Replace the vault path and password with your own values.
 
 ```bash
 git clone https://github.com/nweii/obsidian-remote-mcp.git
@@ -100,481 +61,70 @@ cd obsidian-remote-mcp
 bun install
 export VAULT_PATH=/absolute/path/to/your/vault
 export MCP_CLIENT_ID=my-vault-mcp
-export APPROVAL_PASSWORD=pick-a-password   # or APPROVAL_OPEN=true behind a gateway
+export APPROVAL_PASSWORD=pick-a-password
+export HOST=127.0.0.1
 bun run src/server.ts
 ```
 
-`MCP_CLIENT_ID` is a name you make up — there is no registration step. OAuth clients will present this same ID back to the server, so pick something you can paste into a client config later. It is required even if you only plan to use an API key.
+The server listens on port `3456`. `MCP_CLIENT_ID` is a name you choose and enter in clients that ask for one. If you already use containers, follow the [Docker Compose setup](docs/setup.md#run-with-docker).
 
-The process listens on port `3456` by default. The MCP endpoint is `POST /mcp`; OAuth metadata is served under `/.well-known/oauth-authorization-server`. `bun start` runs the same entrypoint.
+#### Optional vault features
 
-**Docker:**
-
-Save this as `docker-compose.yml` in the cloned repo directory:
-
-```yaml
-services:
-  obsidian-remote-mcp:
-    image: oven/bun:1              # pre-built Bun runtime — no local Bun install needed
-    working_dir: /app
-    restart: unless-stopped
-    environment:
-      MCP_CLIENT_ID: your-client-id
-      MCP_CLIENT_SECRET: your-client-secret     # optional
-      MCP_BASE_URL: https://mcp.example.com
-      VAULT_PATH: /vault                         # path inside the container (mapped by volumes below)
-      PORT: 3456
-      # TOKEN_STORE_PATH: /app/data/tokens.json  # uncomment to persist OAuth sign-ins across restarts
-      # MCP_STATIC_BEARER_TOKEN: ${MCP_STATIC_BEARER_TOKEN}  # uncomment for ChatGPT desktop / Codex
-    volumes:
-      - ./:/app                                  # mounts the repo into the container
-      - /path/to/your/vault:/vault               # left = path on your machine, right = path inside container
-      # - ./data:/app/data                       # uncomment to persist TOKEN_STORE_PATH on the host
-    command: ["bun", "run", "src/server.ts"]
-    ports:
-      - "127.0.0.1:3456:3456"                    # bind to loopback: reachable by a proxy on this host, not from the LAN
-```
-
-```bash
-docker compose up -d      # start in background
-docker compose logs -f    # watch output
-```
-
-#### Optional: sync a vault with Obsidian Headless
-
-On a server or NAS without the desktop app, [Obsidian Headless](https://obsidian.md/help/headless) can keep a local vault folder synced through Obsidian Sync. It is currently in open beta, requires Node.js 22 or later, and needs an active Obsidian Sync subscription. This MCP server reads and edits that folder; Headless handles syncing those changes to your other devices.
-
-Back up your vault before setting up sync. On the machine that will hold the vault:
-
-```bash
-npm install -g obsidian-headless
-ob login
-ob sync-list-remote
-mkdir -p ~/vaults/personal
-cd ~/vaults/personal
-ob sync-setup --vault "Your Vault Name"
-ob sync
-ob sync --continuous
-```
-
-Replace `Your Vault Name` with a vault from `ob sync-list-remote`. Login and vault encryption credentials are prompted interactively. After the initial sync, keep `ob sync --continuous` running in a separate terminal or background service, alongside the MCP server.
-
-Set `VAULT_PATH` to the absolute path of that same folder when starting the MCP server. With Docker, mount the host folder at `/vault` as shown above. Both processes need access to the same files; Obsidian Headless does not run the MCP server.
-
-Use only one Obsidian Sync client for this vault on the machine: do not run desktop Sync and Headless Sync against it together. See the [Headless Sync guide](https://obsidian.md/help/sync/headless) for configuration and sync options. Git, rsync, or another sync system can also maintain the local folder without Obsidian Headless.
+- [Enable Obsidian CLI tools](docs/setup.md#use-the-obsidian-desktop-apps-cli-tools) to use app features on a computer running Obsidian.
+- [Set up Obsidian Headless sync](docs/setup.md#sync-a-vault-with-obsidian-headless) to keep the server's vault current without the desktop app.
 
 ### 2. Expose it over HTTPS
 
-Remote MCP and OAuth require **HTTPS**. Use a reverse proxy (Caddy, nginx, Cloudflare Tunnel, etc.) to handle TLS in front of the app and expose a public URL like `https://mcp.example.com`. Set **`MCP_BASE_URL`** on the server to that origin **without** the `/mcp` path — it must match what users see in the browser bar.
+Use a reverse proxy or tunneling service to give the server an HTTPS URL. It receives encrypted connections from clients and forwards them to `http://127.0.0.1:3456` on this computer.
 
-If you use Cloudflare Zero Trust, a practical pattern is to put the identity gate **only** on `/authorize`, so users log in to approve access while `/.well-known/*`, `/token`, and `/mcp` stay reachable for the protocol.
+| Service | Setup |
+|---------|-------|
+| [Cloudflare Tunnel](docs/setup.md#cloudflare-tunnel) | Use Cloudflare's dashboard or `cf` CLI to configure it, with `cloudflared` running locally. Requires a Cloudflare account and domain. |
+| [Tailscale Funnel](docs/setup.md#tailscale) | Run a terminal command to get a public HTTPS URL. Requires a Tailscale account. |
+| [Caddy](docs/setup.md#caddy) | Add a Caddyfile on a server your domain points to. Requires incoming ports `80` and `443`. |
 
-> **Publish the port to loopback, not to every interface.** The server binds `0.0.0.0` so it is reachable inside its container; a plain `"3456:3456"` mapping then exposes it on every host interface (and, on Linux, through the host firewall via Docker's iptables rules). Anyone who can reach that port talks to the backend directly, bypassing the proxy — including the identity gateway, which matters most with `APPROVAL_OPEN=true`, where that gateway *is* the approval gate. Use `"127.0.0.1:3456:3456"`, or set `HOST=127.0.0.1` when running the process directly on the host.
+Tailscale Serve is also available for clients inside your private Tailscale network. Cloud-hosted connectors generally need Funnel's public URL.
+
+Keep port `3456` private so clients use the HTTPS URL. A direct connection skips your HTTPS service and its login checks. The command above sets `HOST=127.0.0.1` for this purpose; the Docker example restricts the published port instead.
+
+Once your HTTPS service is running, stop the MCP server with **Ctrl+C**. Set its public address in the same terminal and restart it.
+
+```bash
+export MCP_BASE_URL=https://mcp.example.com
+bun run src/server.ts
+```
+
+Replace the example address with your own. See [HTTPS setup](docs/setup.md#expose-it-over-https) for the full examples and optional Cloudflare Access login protection.
 
 ### 3. Connect a client
 
-Every client needs two things: your MCP URL (`https://mcp.example.com/mcp` — base URL plus `/mcp`) and one of the two credentials:
+Give your client the HTTPS address with `/mcp` added, such as `https://mcp.example.com/mcp`.
 
-| Auth | When | Server setup |
-|------|------|--------------|
-| **OAuth** (browser sign-in) | The client walks you through a sign-in flow (ChatGPT web, Claude.ai, Cursor, Poke via Kitchen) | `MCP_CLIENT_ID`, optionally `MCP_CLIENT_SECRET` |
-| **API key** (fixed bearer token) | The client's setup form has an "API key" field, or it cannot open a browser (ChatGPT desktop, Codex, Poke, scripts, `mcp-remote`) | `MCP_STATIC_BEARER_TOKEN` set to a long random string |
+Use [client setup](clients.md) for Claude, ChatGPT, Cursor, Codex, and scripts. Clients can use browser OAuth or an API key, depending on what they support.
 
-On ChatGPT web, go to [Plugins](https://chatgpt.com/plugins) → **+ → Add custom MCP server**, enter your MCP URL, and choose **OAuth**. The current custom-plugin flow does not require enabling developer mode; workspace permissions and security restrictions still apply. See [clients.md](clients.md#chatgpt-web) for registration, authentication, and installation steps.
+Once connected, ask the client to read a note you know by title. To use the Obsidian CLI tools, allow **Control the Obsidian app** when approving the connection.
 
-Details for each mechanism are under [Authentication](#authentication), and per-client setup (Claude.ai, Cursor, ChatGPT, Poke, scripts) is in [clients.md](clients.md).
+## Security and scope
 
-## Tools
+Clients authenticate with OAuth or an API key. Browser sign-in lets you choose whether each connection can edit notes or control the Obsidian app. You can also make the whole server read-only with `VAULT_READ_ONLY=true`.
 
-The server currently exposes these tools:
+Vault file access is confined to the vault folder. `.mcpignore` blocks notes from file reads, edits, and searches. Optional [CLI access has a separate .mcpignore limitation](docs/tools.md#safety-guards) to review before enabling it.
 
-| Tool | Description |
-|------|-------------|
-| `vault_context` | Read the vault guidance note configured by `VAULT_CONTEXT_PATH`, or fall back to `AGENTS.md` / `CLAUDE.md` |
-| `vault_read` | Full note text (`mode` full, default) with a version for safe updates, or list one folder level (`mode` `list`; `path` `""` = vault root) |
-| `vault_batch_read` | Read several notes in one call by path or title; `include_content: false` returns just frontmatter for cheap triage |
-| `vault_outline` | All `#` headings in a note (one per line); use before `vault_read_section` |
-| `vault_read_section` | Body under a single heading (`heading` = text without `#`, case-insensitive) |
-| `vault_read_attachment` | Read a binary attachment by path; images return a renderable image block, other types base64 plus mime/size; `stat_only` checks size first (read-only) |
-| `vault_frontmatter` | Read YAML frontmatter from a note; optional `property` for a single key |
-| `vault_links` | Read outgoing wikilinks and optional backlinks (answered by Obsidian when the CLI tools are on) |
-| `vault_create` | Create a new note |
-| `vault_update` | Replace a note's full contents; optional `base_version` rejects stale writes |
-| `vault_set_frontmatter_property` | Set one frontmatter property without rewriting the note body |
-| `vault_batch_frontmatter_update` | Set frontmatter properties on several notes in one call |
-| `vault_edit` | Append, prepend, or replace exact text within a note |
-| `vault_edit_section` | Append, prepend, or replace the body under one heading |
-| `vault_trash` | Move a file or folder to `.trash` |
-| `vault_move` | Move or rename a vault file or validated folder by explicit path and rewrite the wikilinks that point at it; defaults to a dry run that shows the plan and writes nothing |
-| `vault_search_title` | Find notes by filename (partial or exact); returns paths for `vault_read` |
-| `vault_search_content` | Regex search in note bodies; optional `folder` to scope large vaults |
-| `vault_search_frontmatter` | Find notes by a frontmatter property (match type `exact`, `contains`, or `exists`) |
-| `vault_tags` | List all tags with note counts, or note paths for one `tag`; counts frontmatter and inline `#tag` |
-| `vault_periodic_note` | Read or create a daily, weekly, monthly, quarterly, or yearly note at the path the vault's Obsidian config or an env template sets |
-| `vault_clip_url` | Save a web page to the vault as a markdown note |
-| `vault_skim` | Return only the parts of selected notes relevant to a goal, judged chunk by chunk by an external decision model; plans first and sends nothing until confirmed. Listed only when a decision-model key is set (see [Skimming notes](#skimming-notes)) |
-| `vault_cli_help` / `vault_cli` | List and run Obsidian CLI commands against this vault. Opt-in, and listed only when the CLI reaches this vault (see [Obsidian CLI tools](#obsidian-cli-tools)) |
-| `vault_feedback` | Log a structured note when an agent gets stuck or wants a tool that doesn't exist |
+Connected clients receive the notes they request. The optional [skim tool](docs/tools.md#skimming-notes) can also send selected note text to a model provider after you approve a plan. [Audit logs](docs/configuration.md#audit-log-privacy) can contain paths and search queries; use `LOG_ENABLED=false` to disable logging.
 
-## Server configuration
+## Guides and reference
 
-### Authentication
-
-Every `POST /mcp` request must send `Authorization: Bearer …`. You can offer **OAuth**, an **API key**, or **both**; each client then uses whichever path it supports.
-
-#### OAuth (browser sign-in)
-
-For clients where the user can open a browser. The server uses **OAuth 2.1**: approve on `/authorize`, exchange the short-lived code at `POST /token`, then send the issued access token in `Authorization` on `/mcp`.
-
-By default you configure one fixed client ID and clients present that same ID. Dynamic client registration (DCR) is **opt-in**: set `MCP_DCR_ENABLED=true` to open a `/register` endpoint so clients that can't be pre-configured (e.g. ChatGPT, or Poke's standard OAuth path) register themselves — the approval password stays the gate. With DCR off there is no `/register`, and such clients need their manual-credentials path (for example, Poke's Kitchen templates).
-
-The relevant variables:
-
-- **`MCP_CLIENT_ID`** (required) — the one client ID the server accepts.
-- **`MCP_CLIENT_SECRET`** (optional) — if set, every OAuth client must send the same value at `POST /token`. If unset, token exchange relies on PKCE alone — use HTTPS and limit who can reach `/authorize`.
-- **`MCP_BASE_URL`** — must match the public site origin (no `/mcp`).
-- **`MCP_CLIENT_ALLOWED_REDIRECT_URIS`** (optional) — comma-separated allowlist of OAuth callback URIs for the configured client. When unset, the server allows the callbacks for Claude.ai (`https://claude.ai/api/mcp/auth_callback`), ChatGPT connectors (`https://chatgpt.com/connector_platform_oauth_redirect`), Cursor (`cursor://anysphere.cursor-mcp/oauth/callback`), and Poke (`https://poke.com/api/v1/mcp/callback`) out of the box. Setting the env var **replaces** that default list, so include every callback you want to keep.
-- **`MCP_DCR_ENABLED`** (optional) — set `true` to let clients that can't be pre-configured (e.g. ChatGPT) register themselves at `/register` with no per-client setup. The approval password still gates every connection, so this requires `APPROVAL_PASSWORD`. Default off.
-- **`MCP_DCR_ALLOWED_REDIRECT_URIS`** (optional) — hardening for the above: comma-separated allowlist restricting which callbacks self-registering clients may use (exact, or host-scoped `https://host/*`). Setting it also enables DCR. Unset accepts each client's own declared redirect.
-- **`TOKEN_STORE_PATH`** (default `./tokens.json`) — stores OAuth-issued tokens after login so clients survive server restarts.
-
-#### API key (static bearer token)
-
-For scripts and clients that cannot open a browser, use a long random string as your API key for  `MCP_STATIC_BEARER_TOKEN`  on the server end. Then give the client the same value for `Authorization: Bearer [your key]`. 
-
-The client will then use this for every `/mcp` request. The server compares it directly, skipping `/authorize`, `POST /token`, and `TOKEN_STORE_PATH` for that client. This works alongside OAuth — setting it does not disable the browser flow for other clients.
-
-The trade-off versus OAuth is that the token is long-lived and held by the client service. You'll need to replace this token with a new one if you ever suspect exposure.
-
-The API key has full access by default. To narrow it, set `MCP_STATIC_BEARER_SCOPES` to the permissions it should keep: `vault:write` (edit notes), `vault:cli` (control the Obsidian app), both separated by a comma, or `none` for reading only.
-
-To generate a random, secure API key, run this in your terminal:
-
-```bash
-# generate one
-openssl rand -base64 48
-```
-
-#### Browser origins (CORS)
-
-With `CORS_ALLOWED_ORIGINS` unset or empty, `/mcp` accepts:
-
-- Requests without an `Origin` header (cloud, CLI, and native clients still need a valid token).
-- Your configured `MCP_BASE_URL` origin, or `http://localhost:PORT` when it is unset.
-
-Other supplied origins receive `403` before MCP tools run, even with a valid token. This applies to ongoing tool requests as well as initial MCP connection requests, and implements the [MCP transport's Origin check](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#security-warning). It is an additional browser-request boundary, not an identity check: allowing an origin never grants access without authentication.
-
-[Anthropic documents](https://support.claude.com/en/articles/11175166-get-started-with-custom-connectors-using-remote-mcp) that remote custom connectors call from its cloud, including when used from Claude Desktop. [OpenAI documents](https://developers.openai.com/plugins/build/auth) the OAuth code/PKCE exchange and authenticated subsequent MCP calls. These documents do not guarantee the exact Origin headers sent by every client version. OAuth callback URLs are separate from browser origins: authorizing a client does not add its website to this allowlist. No client-specific browser origins are built in.
-
-OAuth discovery, registration, and token exchange keep their SDK CORS behavior so a client can complete sign-in. The approval password, PKCE, and token checks still apply. The origin allowlist does not replace the approval gate or protect an unrestricted backend port; follow the deployment guidance above.
-
-For a client that calls directly from a browser page, add its exact origin. An explicit list **replaces all defaults**, so include each origin you want to retain:
-
-```env
-CORS_ALLOWED_ORIGINS=https://vault.example,https://my-vault-chat.example,http://localhost:3000
-```
-
-Use HTTP(S) origins without paths, trailing slashes, or credentials. Subdomains and ports must match exactly; partial wildcards and `null` entries are rejected at startup. Trust is never inferred from a request's Host or forwarded headers. An unlisted browser client needs its origin added even if OAuth sign-in succeeded.
-
-`CORS_ALLOWED_ORIGINS=*` remains an explicit compatibility override accepting every origin, including opaque origins (`Origin: null`). It disables this Origin restriction; authentication remains required. Use `*` alone. **Migration:** an existing explicit `*` keeps working, but unset/empty configurations now use the bounded defaults above instead of allowing every website.
-
-The integration tests exercise password approval, PKCE exchange, MCP initialization, tool listing, and note reads with no Origin under the default policy and with explicitly configured browser origins; they also verify that OAuth does not implicitly allow a client website and reject unlisted origins with otherwise valid tokens. These are protocol tests, not live sessions in the proprietary Claude or ChatGPT applications.
-
-#### Password gate
-
-The OAuth approval page must be guarded, and the server refuses to start otherwise. Set `APPROVAL_PASSWORD` to require a password on that page before a code is issued; it's checked on every authorization. A client secret (`MCP_CLIENT_SECRET`) satisfies the guard instead, by blocking token exchange.
-
-If a reverse proxy or zero-trust gateway already guards `/authorize` (the stronger control), set `APPROVAL_OPEN=true` for the click-to-approve page instead.
-
-#### Choosing what each connection can do
-
-Every connection can read your notes. When you approve a new one, the approval page also asks whether it may:
-
-- **Edit notes**: create, edit, move and trash notes. Leave it unticked for a connection that should only read.
-- **Control the Obsidian app**: use `vault_cli` to run plugin and command-palette commands and change Publish and Sync. This box appears only while the [Obsidian CLI tools](#obsidian-cli-tools) are on. Without editing, such a connection runs only commands that read.
-
-Both are ticked by default, so approving without changes gives full access. Your server settings stay the limit: with `VAULT_READ_ONLY=true` no connection can edit, and the CLI box appears only when `OBSIDIAN_CLI_ENABLED=true`. A connection gets only what was ticked when it was approved, so after turning on editing or the CLI tools, connect again to give a connection that access. Connections approved before these choices existed keep full access.
-
-To change a connection's access, connect it again and choose differently. A connection approved without "Edit notes" sees no editing tools, and tools that can write tell the agent the connection is read-only.
-
-### Health endpoint
-
-`GET /health` is a liveness probe for uptime monitors. It is **default-closed**: with `HEALTH_TOKEN` unset the route returns 404, so a fresh deploy exposes nothing. Set **`HEALTH_TOKEN`** to a long random string to turn it on, and the monitor must send that value as `Authorization: Bearer …`. A wrong or missing token returns 401.
-
-It is a separate secret from `MCP_CLIENT_SECRET` and `MCP_STATIC_BEARER_TOKEN`, so you can rotate it without touching any OAuth client config, and the credential pasted into a third-party monitor grants no vault access — leaking it reveals nothing but the response below.
-
-Each request stats the vault root once, which catches the case where the process is up but the volume mount is broken (a realistic NAS failure). The response is:
-
-```json
-{ "ok": true, "version": "1.0.0", "uptime_seconds": 1234.5 }
-```
-
-- `ok` — `true`, or `false` with HTTP **503** when the vault stat fails, so monitors can alert on the status code alone.
-- `version` — from `package.json`, to confirm a deploy landed.
-- `uptime_seconds` — process uptime; a green monitor with constantly resetting uptime means the container is crash-looping.
-
-Nothing else is returned — no vault name, paths, or counts.
-
-```bash
-# generate a token
-openssl rand -base64 48
-```
-
-Sample Uptime Kuma monitor: type **HTTP(s)**, URL `https://mcp.example.com/health`, accepted status codes `200`, and under HTTP Options add a header `Authorization: Bearer YOUR_HEALTH_TOKEN`.
-
-### Environment variables
-
-Configuration is through environment variables. There's no required `.env` file — set them wherever your deployment takes config: a Docker Compose `environment:` block, a dashboard field (Portainer and similar), an `.env` file you load, or a shell `export`.
-
-```env
-MCP_CLIENT_ID=your-client-id
-MCP_CLIENT_SECRET=your-client-secret   # optional
-APPROVAL_PASSWORD=                # password for the OAuth approval page; required unless MCP_CLIENT_SECRET or APPROVAL_OPEN is set
-APPROVAL_OPEN=                    # set true to allow click-to-approve when a gateway already guards /authorize
-MCP_BASE_URL=https://mcp.example.com
-MCP_CLIENT_ALLOWED_REDIRECT_URIS=https://claude.ai/api/mcp/auth_callback # optional; overrides the built-in defaults
-VAULT_PATH=/path/to/your/vault         # optional if obsidian.json is available
-OBSIDIAN_VAULT_ID=personal             # optional when obsidian.json contains multiple vaults
-VAULT_DISPLAY_NAME=Personal            # optional; defaults to the vault directory name
-VAULT_CONTEXT_PATH=AGENTS.md           # optional; defaults to AGENTS.md, then CLAUDE.md
-DAILY_NOTE_PATH_TEMPLATE=Daily/{YYYY}-{MM}-{DD}.md     # optional; overrides the vault's Obsidian config
-WEEKLY_NOTE_PATH_TEMPLATE=Weekly/{GGGG}-W{WW}.md       # optional; overrides the vault's Obsidian config
-MONTHLY_NOTE_PATH_TEMPLATE=Monthly/{YYYY}-{MM}.md      # optional; overrides the vault's Obsidian config
-QUARTERLY_NOTE_PATH_TEMPLATE=Quarterly/{YYYY}-Q{Q}.md  # optional; overrides the vault's Obsidian config
-YEARLY_NOTE_PATH_TEMPLATE=Yearly/{YYYY}.md             # optional; overrides the vault's Obsidian config
-OBSIDIAN_CONFIG_DIR=.obsidian          # optional; where periodic-note settings are read from
-PERIODIC_WEEK_START=sunday             # optional; first day of locale weeks ({gggg}, {ww})
-# CORS_ALLOWED_ORIGINS=https://vault.example,https://my-vault-chat.example # optional; replaces the site-origin default
-TOKEN_STORE_PATH=./tokens.json         # optional
-MCP_STATIC_BEARER_TOKEN=               # optional; API key for /mcp (see Authentication)
-MCP_STATIC_BEARER_SCOPES=              # optional; narrows the API key: vault:write, vault:cli, or none
-HEALTH_TOKEN=                          # optional; enables GET /health (see Health endpoint)
-VAULT_READ_ONLY=true                   # optional
-VAULT_ATTACHMENT_MAX_BYTES=10485760    # optional; vault_read_attachment size cap, defaults to 10 MB
-SKIM_PROVIDER=typesafe                 # optional; typesafe (default), openrouter, or openai — enables vault_skim with its key below
-TYPESAFE_API_KEY=                      # optional; key for SKIM_PROVIDER=typesafe
-OPENROUTER_API_KEY=                    # optional; key for SKIM_PROVIDER=openrouter
-OPENAI_API_KEY=                        # optional; key for SKIM_PROVIDER=openai
-SKIM_MODEL=                            # optional; overrides the provider's default decision model
-SKIM_EXCLUDE_TAGS=private,health/*     # optional; notes with these tags are never sent by vault_skim
-SKIM_EXCLUDE_PATHS=03-Records/Journaling # optional; notes at or under these paths (.mcpignore syntax) are never sent by vault_skim
-OBSIDIAN_CLI_ENABLED=true             # optional; offers vault_cli when the obsidian CLI reaches this vault
-OBSIDIAN_CLI_PATH=                     # optional; the obsidian binary, when it isn't on PATH
-OBSIDIAN_CLI_VAULT=                    # optional; the vault's name in Obsidian, when it differs from the folder name
-OBSIDIAN_CLI_COMMANDS=                 # optional; command-palette IDs vault_cli may run (comma-separated, or *)
-OBSIDIAN_CLI_MCPIGNORE_ACK=            # optional; true allows the CLI tools while .mcpignore has rules
-PORT=3456
-# HOST=127.0.0.1                    # optional for a host-local proxy; in Docker restrict the published port instead
-```
-
-Every variable, with its default and constraints, is listed in [docs/server.md](docs/server.md#environment-variables).
-
-### Dependency installation and optional clipping
-
-Install from the committed lockfile with `bun install --frozen-lockfile`. If you do not use URL clipping, a fresh installation can omit its dependency tree:
-
-```bash
-bun install --frozen-lockfile --omit=optional
-```
-
-Core vault tools work without the optional clipper. To enable clipping, install optional dependencies normally and build the integration:
-
-```bash
-bun install --frozen-lockfile
-bun run setup:clipper
-```
-
-Run setup again after dependency updates: it rebuilds the clipper bundle using this repo's locked, patched dependencies. Do not run separate installs inside `node_modules/web-clipper-headless` or `node_modules/obsidian-clipper`; those installs would bypass this repo's overrides and lockfile. `scripts/bootstrap-clipper.sh` calls the same setup command.
-
-`bunfig.toml` retains the three-day minimum release age and frozen-lockfile defaults. The release-age check applies to registry packages, not Git dependencies. Changes to the locked `mcp-server-kit`, `web-clipper-headless`, or transitive `obsidian-clipper` commits require source review. Run `bun audit` after dependency changes; the root overrides pin patched versions where upstream dependencies still request vulnerable releases.
-
-### Audit-log privacy
-
-With logging enabled, paths, titles, search queries, tags, and frontmatter field names can appear in logs in clear text. Each entry also names the connection that made the call (`client`, plus `client_name` for clients that registered themselves). Note-body arguments and frontmatter values are redacted, and known parser/section errors are sanitized, but these metadata can still be sensitive. Feedback text is stored as written. Set `LOG_ENABLED=false` to disable tool-call and feedback logging. Logs do not rotate automatically.
-
-### Vault path
-
-The server resolves the vault root in this order:
-
-1. `VAULT_PATH`, if set
-2. `.config/obsidian/obsidian.json`, found by walking up from the current working directory or from the package directory
-
-If `obsidian.json` contains multiple vaults, set `OBSIDIAN_VAULT_ID` to the vault entry you want to use.
-
-The display name used in the OAuth approval page defaults to the resolved vault directory name. You can override that with `VAULT_DISPLAY_NAME`.
-
-#### Headless / no Obsidian installed
-
-Most users should just set `VAULT_PATH` and skip this. If you prefer the automatic discovery path on a machine without Obsidian, create the config file yourself:
-
-```bash
-mkdir -p ~/.config/obsidian
-```
-
-`~/.config/obsidian/obsidian.json`:
-
-```json
-{
-  "vaults": {
-    "personal": {
-      "path": "/home/user/vaults/personal"
-    }
-  }
-}
-```
-
-With multiple vaults, add more entries and set `OBSIDIAN_VAULT_ID` to the one you want. Use absolute paths — `~` is not expanded inside `obsidian.json`.
-
-### Vault context note
-
-`vault_context` is meant to help agents learn your vault structure before they start writing. By default it looks for `AGENTS.md` or `CLAUDE.md`.
-
-If your vault uses a different bootstrap file, set `VAULT_CONTEXT_PATH` to the relative path you want the tool to read.
-
-If you do not want to maintain one, the server still works without it.
-
-### Periodic note paths
-
-`vault_periodic_note` reads or creates a note for one of five cadences — `daily`, `weekly`, `monthly`, `quarterly`, `yearly`. It replaces the earlier `vault_daily_note` tool; clients pick up the new tool on their next tool-list refresh. The tool takes an optional `date` (`YYYY-MM-DD`), which is bucketed into the week, month, quarter, or year that contains it, so any day in a period maps to the same note.
-
-Each cadence takes its path from the first of these that configures it:
-
-1. Its env var (table below).
-2. The [Periodic Notes](https://github.com/liamcain/obsidian-periodic-notes) community plugin, when it is enabled and that cadence is turned on in it.
-3. For `daily` only, the core Daily notes plugin's folder and date format.
-4. For `daily` only, the built-in default `Daily/{YYYY}-{MM}-{DD}.md`.
-
-| Cadence | Env var |
-|---------|---------|
-| `daily` | `DAILY_NOTE_PATH_TEMPLATE` |
-| `weekly` | `WEEKLY_NOTE_PATH_TEMPLATE` |
-| `monthly` | `MONTHLY_NOTE_PATH_TEMPLATE` |
-| `quarterly` | `QUARTERLY_NOTE_PATH_TEMPLATE` |
-| `yearly` | `YEARLY_NOTE_PATH_TEMPLATE` |
-
-So a vault that already sets these up in Obsidian needs no env vars: with the Daily notes folder `01-Days` and format `YYYY-MM-DD-ddd`, today's note is `01-Days/2026-10-12-Mon.md`. The server reads the plugin settings from the vault's `.obsidian` folder on each call (set `OBSIDIAN_CONFIG_DIR` if Obsidian uses a different config folder); tools still can't read `.obsidian`. A deployment that mounts only the notes falls back to the env vars and the built-in default.
-
-Obsidian date formats are translated into the tokens below, with `[bracketed]` text kept literal. Month, weekday and ordinal names are English; if Obsidian runs in another language, set the env templates instead. A format using any other token returns an error naming the token rather than a guessed path. A cadence nothing configures returns an error naming its env var and the config files checked.
-
-Supported tokens:
-
-- `{YYYY}`: 4-digit calendar year
-- `{YY}`: 2-digit calendar year
-- `{GGGG}`: 4-digit ISO week-year (use with `{WW}`, not `{YYYY}`)
-- `{GG}`: 2-digit ISO week-year
-- `{WW}`: 2-digit ISO week number (weeks start Monday; week 1 contains the first Thursday)
-- `{W}`: ISO week number without zero padding
-- `{gggg}`: 4-digit locale week-year (use with `{ww}`)
-- `{gg}`: 2-digit locale week-year
-- `{ww}`: 2-digit locale week number (weeks start Sunday unless set otherwise; week 1 contains January 1)
-- `{w}`: locale week number without zero padding
-- `{Q}`: quarter number (`1`–`4`)
-- `{MM}`: 2-digit month
-- `{M}`: month without zero padding
-- `{DD}`: 2-digit day
-- `{D}`: day without zero padding
-- `{Do}`: day as an ordinal like `12th`
-- `{MMM}`: short month name like `Mar`
-- `{MMMM}`: full month name like `March`
-- `{dd}`: short weekday name like `Th`
-- `{ddd}`: short weekday name like `Mon`
-- `{dddd}`: full weekday name like `Monday`
-
-There are two week systems, and a weekly path has to use the one its notes were named with. ISO weeks (`{GGGG}`, `{WW}`) start Monday. Locale weeks (`{gggg}`, `{ww}`) are what Obsidian in English uses, and what Periodic Notes uses by default (`gggg-[W]ww`): they start Sunday, so a Sunday note is a week ahead of its ISO number. Locale weeks start on the first of these that is set: `PERIODIC_WEEK_START` (a day name), the week start chosen in the Calendar or Periodic Notes plugin settings, or Sunday. A week start left on Obsidian's locale default is read as Sunday, so with a Monday-start language set `PERIODIC_WEEK_START=monday`.
-
-Each week-year can differ from the calendar year (`{YYYY}`) around New Year. For example `2025-12-29` falls in week 1 of 2026 in both systems. Pair each week number with its own week-year (`{WW}` with `{GGGG}`, `{ww}` with `{gggg}`); pairing it with `{YYYY}` produces wrong paths at that boundary.
-
-Examples:
-
-```env
-DAILY_NOTE_PATH_TEMPLATE=Daily/{YYYY}/{YYYY}-{MM}-{DD}.md
-DAILY_NOTE_PATH_TEMPLATE=Journal/{YYYY}/{MMM}/{D}-{ddd}.md
-WEEKLY_NOTE_PATH_TEMPLATE=Weekly/{GGGG}-W{WW}.md
-MONTHLY_NOTE_PATH_TEMPLATE=Monthly/{YYYY}-{MM}.md
-QUARTERLY_NOTE_PATH_TEMPLATE=Quarterly/{YYYY}-Q{Q}.md
-YEARLY_NOTE_PATH_TEMPLATE=Yearly/{YYYY}.md
-```
-
-### Skimming notes
-
-`vault_skim` answers "which parts of these notes matter for this goal?" without the agent reading every note whole. It splits each selected note into ~2,000-character chunks (with a little overlap so a passage on a boundary is seen whole), asks a decision model one yes/no question per chunk, and returns only the chunks that pass, cited as `path:start-end` so the agent can open the note there with `vault_read`. Notes are chosen by `paths` (paths or titles), by a regex `query` optionally scoped to a `folder`, or by `folder` alone, up to `max_notes` (default 20).
-
-Decision models return a probability rather than generated text, which keeps each judgement fast and cheap. Three providers are supported, chosen with `SKIM_PROVIDER`:
-
-| Provider | Key | Default model |
-| --- | --- | --- |
-| `typesafe` (default) | `TYPESAFE_API_KEY` | `jev-latest` |
-| `openrouter` | `OPENROUTER_API_KEY` | `typesafe/jev-1.13` |
-| `openai` | `OPENAI_API_KEY` | `gpt-6-luna` |
-
-`SKIM_MODEL` overrides the model. Without the chosen provider's key, `vault_skim` is not listed.
-
-Because note text leaves the server, the tool works in two steps. A call without `confirm` sends nothing and returns a plan: the goal, how notes were selected, the notes and chunk counts that would be sent, the notes withheld and why, and the provider and model. The agent shows that plan to the user, and after approval calls again with the same arguments plus `confirm` set to the plan id. The id covers the goal, the provider and model, and the exact version of each planned note, so a confirm is refused (with a fresh plan) if any of them changed. A single call can send at most 500 chunks.
-
-Notes are withheld in layers, and each layer can only withhold more:
-
-1. `.mcpignore`, which blocks the paths from every tool.
-2. `SKIM_EXCLUDE_TAGS` and `SKIM_EXCLUDE_PATHS` (comma-separated), which apply to every `vault_skim` call. `private` matches only `#private`; `work/*` matches `#work` and every tag nested under it. Tags are read from frontmatter and inline `#tag`. A path rule covers that path and everything under it, and uses the same syntax as `.mcpignore`, so `*`, `?` and `**` wildcards work (`**/Private` withholds every `Private` folder).
-3. `exclude_tags` and `exclude_paths` on a call, which add to the server's rules for that call only.
-
-Path exclusions are checked against normalized requested paths and resolved file locations before note text is read, including during query selection. Equivalent spellings and symlinks cannot bypass an excluded folder. Plans list allowed aliases once, using the resolved vault-relative path. A path-excluded note in a query's scope is reported as withheld without reading it to test the query.
-
-A chunk the model couldn't judge (a failed request, a malformed answer) is kept and marked `unjudged`, so a provider failure can return more text than expected but never silently drops any.
-
-### Obsidian CLI tools
-
-When the server runs on a machine with the Obsidian app (1.12 or later, with its command-line interface turned on), it can hand work to Obsidian itself: Bases queries, tasks, file history, Sync, bookmarks, unresolved links, and anything a future CLI release adds. Two tools do this. `vault_cli_help` lists the commands parsed from `obsidian help`, and `vault_cli` runs one with `params` (key → value) and bare `flags`. New CLI commands work without a server update.
-
-They are off until `OBSIDIAN_CLI_ENABLED=true`. Then they are listed only if the `obsidian` binary is found (on `PATH`, or at `OBSIDIAN_CLI_PATH`) and `obsidian vault info=path` reports the same folder as the server's vault. The server passes the vault folder's name as `vault=`; set `OBSIDIAN_CLI_VAULT` if Obsidian knows the vault by another name. If the app later stops answering, the next failing call checks again and returns a clear error.
-
-Turning the CLI tools on gives agents most of what you can do in Obsidian: creating, editing, moving and deleting notes, and adding or removing notes on your Obsidian Publish site. To keep a connection from using them, untick "Control the Obsidian app" when you [approve it](#choosing-what-each-connection-can-do); untick "Edit notes" to limit it to commands that read. `VAULT_READ_ONLY` limits every connection to reading. The server log says so whenever the tools come on or go off, and why.
-
-The guards:
-
-- The vault is always the server's. `vault` is not a parameter, and a `vault` key or flag is refused.
-- Parameter keys and flags are letters and hyphens starting lowercase (`paneType` is fine). Keys the guards check (`vault`, `path`, `to`, `folder`, `file`, `name`, `id`) must be lowercase. Each becomes one argument; there is no shell.
-- `eval`, `devtools`, `restart`, `reload`, `plugins:restrict`, `theme:install`, `vault` and `vaults` (which report host paths), and every `dev:`, `plugin:` and `snippet:` command are always blocked. No setting unblocks them.
-- Command-palette execution (`command id=…`) is off unless `OBSIDIAN_CLI_COMMANDS` lists the allowed IDs. `*` allows every ID except those that look destructive (delete, remove, purge, trash and similar); those run only when listed by name. `*` also covers community-plugin commands, and some of those run scripts (Templater, Shell commands), so prefer listing IDs.
-- With `VAULT_READ_ONLY=true`, and for a connection approved without "Edit notes", only commands on a known-read list run, so a command added by a future CLI release is refused until it is reviewed.
-- `path`, `to` and `folder` go through the same path checks as every other tool, and `file` (a note name) is resolved by the server and passed as an exact `path`. A protected location gets the same "Not found" answer a missing note does. `name` can't contain a slash.
-- A command that may write can't target a folder through `path`; use `vault_move` or `vault_trash` for folders.
-- Calls are audit-logged with the command, parameter names and flags. Parameter values stay out of the logged arguments, though an error message can name the path or command ID it refused.
-
-The trade-off: commands answer from Obsidian's whole vault, so their output (a search, a task list, a Base) can't be filtered by `.mcpignore`, and commands with an implicit target (`daily:append`, a task reference, a template) aren't checked against it either. While `.mcpignore` has rules, the CLI tools stay off unless `OBSIDIAN_CLI_MCPIGNORE_ACK=true` says you accept that. `.obsidian` and `.git` stay protected either way, since Obsidian doesn't index them.
-
-With the CLI available, `vault_links` also asks Obsidian for backlinks, which follows Obsidian's own link resolution (aliases, relative and path links) instead of the server's text search. Those results are filtered through the path policy, so this works with `.mcpignore` rules and needs no acknowledgment. If the call fails, the server's search answers instead. The result's `backlinks_source` says which one answered.
-
-## Notes
-
-### MCP and HTTP
-
-- `GET /mcp` returns `405`, not `404`, so streamable HTTP clients know the server only accepts MCP over `POST`.
-
-### Vault access and tool defaults
-
-- Vault paths are checked both as requested and after resolving filesystem shortcuts (symlinks). Both paths must stay inside the vault and comply with `.mcpignore`; dangling shortcuts are refused. Searches apply the same checks when started through a shortcut folder. Internal trash destinations must also remain inside the vault.
-- `.mcpignore` in the vault root blocks matching paths and their contents from MCP reads, writes, searches, and listings. Rules are relative to the vault root, one per line; blank lines and lines starting with `#` are ignored. Edits take effect on subsequent calls without restarting, including cached title and link results. An unavailable vault or unreadable policy causes access to be refused.
-  - Existing literal rules still work: `Private` or `Private/` blocks that path and everything beneath it.
-  - `*` matches within one path segment; `?` matches one character; `**` as a whole path segment matches zero or more directory levels. For example, `Notes/draft?.md` blocks `Notes/draft1.md`, and `**/*.bak` blocks `.bak` files at any depth.
-  - `.*/` blocks hidden entries at the vault root; `**/.*` blocks hidden files and folders at every depth, including their contents. A trailing slash is optional and does not restrict a rule to directories. A leading `/` or `./` is also optional, since every rule already starts at the vault root.
-  - This is an exclusion list, not full `.gitignore` syntax: matching ignores case and normalizes Unicode, all rules are rooted at the vault, and `!` does not re-include paths. Brackets and braces are literal characters.
-- `.mcpignore` is owner-managed: agents may read it when allowed by the rules, but cannot create, edit, delete, or move it through MCP, including through aliases. Edit the file directly to change access.
-- `.obsidian` and `.git` (at any depth) are never accessible through MCP, with or without a `.mcpignore`. They hold app settings, plugin data (often API keys), and version history.
-- `.trash` stays readable by explicit path, so an agent can read or restore what `vault_trash` moved there. Add `.trash` to `.mcpignore` to hide deleted notes; trashing still works.
-- `vault_move` and `vault_trash` also support folders. The entire subtree (including hidden entries) must pass access checks before anything moves; a protected descendant rejects the whole operation. Folder trees containing symlinks or special files are refused; use the real source folder path rather than a symlinked parent shortcut. Every mapped destination is checked too. For `vault_move`, write folder paths with trailing slashes, such as `Projects/` → `Archive/Projects/`; dry runs validate and preview without creating directories. Folder moves update path-qualified wikilinks and canvas paths, including references inside the moved folder; bare note names stay unchanged. As with file moves, relative `./`/`../` links and standard Markdown links are not rewritten and need manual review. Trash does not rewrite links.
-- Other hidden entries are omitted from ordinary searches and listings, but explicit paths (including `VAULT_CONTEXT_PATH=.claude/CLAUDE.md`) remain accessible unless blocked by `.mcpignore`.
-- `VAULT_READ_ONLY=true` blocks all write operations for every connection; a connection approved without "Edit notes" gets the same treatment on its own. Write-only tools are left out of the tool list entirely, so agents never see a tool that can only fail; `vault_periodic_note`, `vault_clip_url`, and `vault_move` (whose default dry run only plans) stay listed and refuse the write.
-- `vault_search_title` defaults to `limit=50`; `vault_search_content` defaults to `limit=20`. Limits are adjustable; `0` means no limit.
-- `vault_tags` defaults to `limit=100` when listing all tags; passing a `tag` returns the matching note paths without a limit. Counts are case-insensitive (displayed in first-seen casing) and nested tags match exactly — `parent` does not include `parent/child`.
-- `vault_frontmatter` and `vault_set_frontmatter_property` let agents work with frontmatter properties without reading or rewriting the whole note body.
-- `vault_read` returns a version block. Pass it to `vault_update` as `base_version` if you want stale full-note updates to fail instead of overwriting another edit.
-- `vault_move` takes explicit vault-relative paths (with extension) for both source and destination — bare titles are rejected, since a move is a mutation and title resolution adds ambiguity exactly where it isn't wanted. Use `vault_search_title` first to find the path. It also rewrites the wikilinks that point at the moved file, across note bodies and frontmatter (string and array values) and `.canvas` node paths.
-- `vault_move` rewrites conservatively. `dry_run` defaults to `true`: the call returns the full plan — every file and the rewrites it would make, plus `.base` files to review and any ambiguous links it would skip — and writes nothing, not even the move. Pass `dry_run: false` to move the file (first) and apply the rewrites (after). All wikilink forms are handled — `[[Note]]`, `[[folder/Note]]`, `[[Note#Heading]]`, `[[Note#^block]]`, `[[Note|alias]]`, embeds `![[Note]]`, links carrying an explicit extension, and combinations — with the alias, heading, and block parts preserved.
-- A pure move (same filename, new folder) leaves bare `[[Name]]` links alone, since Obsidian still resolves them by filename; only path-form links are repointed. A rename rewrites every form. If another file shares the old basename, bare-name links are ambiguous and skipped with a warning rather than guessed. Wikilinks inside fenced code blocks and inline code are left untouched. `.base` files are never edited — any that mention the old name or path are reported for manual attention, because rewriting strings inside Base formulas is too risky. `.mcpignore`d notes are neither scanned nor modified.
+| Topic | Guide |
+|-------|-------|
+| Docker, desktop CLI, sync, HTTPS services | [Setup](docs/setup.md) |
+| Authentication, permissions, vault conventions | [Authentication and vault settings](docs/configuration.md) |
+| Environment variables, health checks, dependency updates | [Server reference](docs/server.md) |
+| Available tools, file access, moves, and safety guards | [Tools](docs/tools.md) |
+| Per-client connection steps | [Client setup](clients.md) |
 
 ## Similar projects
 
-[obsidian-web-mcp](https://github.com/jimprosser/obsidian-web-mcp) is another remote MCP server for Obsidian vaults, written in Python. The two cover much of the same ground but are built differently: obsidian-web-mcp keeps an in-memory index of the vault, while obsidian-remote-mcp is stateless, reading the current vault on each request. 
+[obsidian-web-mcp](https://github.com/jimprosser/obsidian-web-mcp) is another remote MCP server for Obsidian vaults, written in Python.
 
 ## Tests
 
@@ -582,5 +132,3 @@ With the CLI available, `vault_links` also asks Obsidian for backlinks, which fo
 bun run test
 bun run typecheck
 ```
-
-Folder-operation performance checks are opt-in: `VAULT_MCP_TEST=1 VAULT_FOLDER_BENCH=1 bun test test/vault-folder-operations.test.ts`. They report timings and verify one content read per rewrite candidate; they do not impose machine-dependent timing thresholds.

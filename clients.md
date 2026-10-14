@@ -1,24 +1,29 @@
 # Client setup guides
 
-Per-client setup for connecting to an obsidian-remote-mcp server. See the [README](README.md) for running and configuring the server.
+Run the server with the [setup guide](docs/setup.md), then follow the instructions for your client.
 
-### Claude.ai
+## Claude.ai
 
-Available on paid plans, as a custom connector. Use your base URL with `/mcp` included. Under advanced settings, set OAuth client ID to your **`MCP_CLIENT_ID`**, and OAuth client secret to your **`MCP_CLIENT_SECRET`** if you've configured one for your server. On the server, set **`MCP_BASE_URL`** to the same origin as the connector URL, without `/mcp`.
+Connect Claude to the server with a custom connector.
 
-Claude's OAuth callback is in the server's default redirect allowlist, so no further configuration is needed.
+1. On the server, set `MCP_BASE_URL` to your public HTTPS address without `/mcp`, such as `https://mcp.example.com`. Restart the server or recreate the container after changing its settings.
+2. In Claude, add a custom connector with `/mcp` included in the URL, such as `https://mcp.example.com/mcp`.
+3. Under advanced settings, enter the server's `MCP_CLIENT_ID` as the OAuth client ID.
+4. If you configured `MCP_CLIENT_SECRET` on the server, enter the same value as the OAuth client secret. Otherwise, leave it blank.
 
-### Cursor
+Claude's OAuth callback is allowed by default. If you replace the redirect allowlist, retain Claude's callback as described in [OAuth setup](docs/configuration.md#oauth-browser-sign-in).
 
-Cursor supports both auth styles in `mcp.json`. Pick one — do not set both `auth` and `headers` on the same entry.
+## Cursor
 
-OAuth:
+In Cursor's `mcp.json`, use either `auth` for browser sign-in or an `Authorization` header for an API key. Do not set both on one entry.
+
+### Browser sign-in
 
 ```json
 {
   "mcpServers": {
     "obsidian-vault": {
-      "url": "https://your-host/mcp",
+      "url": "https://mcp.example.com/mcp",
       "auth": {
         "CLIENT_ID": "your-mcp-client-id",
         "CLIENT_SECRET": "your-mcp-client-secret (optional)"
@@ -28,13 +33,13 @@ OAuth:
 }
 ```
 
-API key:
+### API key
 
 ```json
 {
   "mcpServers": {
     "obsidian-vault": {
-      "url": "https://your-host/mcp",
+      "url": "https://mcp.example.com/mcp",
       "headers": {
         "Authorization": "Bearer YOUR_MCP_STATIC_BEARER_TOKEN"
       }
@@ -45,67 +50,85 @@ API key:
 
 Cursor's OAuth redirect URI (`cursor://anysphere.cursor-mcp/oauth/callback`) is in the default allowlist. If you set **`MCP_CLIENT_ALLOWED_REDIRECT_URIS`** yourself, include it so Cursor can still complete OAuth.
 
-### ChatGPT and Codex
+## ChatGPT and Codex
 
-ChatGPT has two MCP setup surfaces with different authentication paths. Pick the one for the app you are using.
+### ChatGPT web
 
-#### ChatGPT web
-
-Use OpenAI's current [custom MCP server flow](https://developers.openai.com/api/docs/guides/custom-mcp-server). It does not require enabling developer mode. Adding and using custom plugins remains subject to workspace permissions and security restrictions.
+Use OpenAI's [custom MCP server flow](https://developers.openai.com/api/docs/guides/custom-mcp-server). Set `MCP_BASE_URL` on the server to its public HTTPS address without `/mcp`.
 
 1. Go to [ChatGPT Plugins](https://chatgpt.com/plugins), select **+ → Add custom MCP server**.
-2. Enter a name and your server URL, including `/mcp` (for example, `https://your-host/mcp`).
+2. Enter a name and your server URL, including `/mcp` (for example, `https://mcp.example.com/mcp`).
 3. Choose **OAuth** and configure one of the authentication options below.
 4. Review the connection warning, select **I understand and want to continue**, then **Create as a plugin**. Complete browser authentication when prompted, using your approval password if configured.
 5. Find the plugin in your personal plugins or the workspace where you created it, and install it. In a conversation, type `@` and select it.
 
-Two ways to configure OAuth:
-
-- **Dynamic client registration** — enable `MCP_DCR_ENABLED=true` on the server and keep `APPROVAL_PASSWORD` set. Select DCR in ChatGPT's OAuth settings; the server's discovery metadata advertises its registration endpoint. ChatGPT registers its own client and callback. You can restrict accepted callbacks with `MCP_DCR_ALLOWED_REDIRECT_URIS`.
-- **User-defined OAuth client** — enter your `MCP_CLIENT_ID` and, if configured, `MCP_CLIENT_SECRET` in ChatGPT's OAuth settings. The legacy callback (`https://chatgpt.com/connector_platform_oauth_redirect`) is in the server's default allowlist. For a per-app callback (`https://chatgpt.com/connector/oauth/…`), add the exact URL ChatGPT shows to `MCP_CLIENT_ALLOWED_REDIRECT_URIS` if it is not already allowed. Setting this variable replaces the default list, so retain callbacks needed by other clients.
-
-Set `MCP_BASE_URL` to the public origin without `/mcp`. Use the DCR or user-defined client options above; do not select CIMD unless the server supports and advertises it.
-
 ChatGPT supports this server's read and write tools without requiring tools named `search` or `fetch`. Write actions are subject to ChatGPT's confirmation settings. To pick up changed tools or server instructions, refresh its MCP connection in the plugin settings.
 
-#### ChatGPT desktop app and Codex
+#### Dynamic client registration
 
-The desktop app doesn't take a client ID/secret. Two paths work:
+Enable `MCP_DCR_ENABLED=true` on the server and keep `APPROVAL_PASSWORD` set. Select DCR in ChatGPT's OAuth settings. ChatGPT registers its own client and callback. To restrict accepted callbacks, set `MCP_DCR_ALLOWED_REDIRECT_URIS`.
 
-- **OAuth via self-registration** — with `MCP_DCR_ENABLED=true` on the server (see above), add the server over **Streamable HTTP** and complete the browser sign-in; it registers itself, no header needed.
-- **Static bearer token** — set **`MCP_STATIC_BEARER_TOKEN`** on the server to a long random value, then in the desktop app open **Settings → MCP servers → Add server**. Choose **Streamable HTTP**, enter `https://your-host/mcp`, and add this header:
+#### User-defined OAuth client
 
-  ```text
-  Authorization: Bearer YOUR_MCP_STATIC_BEARER_TOKEN
-  ```
+Enter your `MCP_CLIENT_ID` and, if configured, `MCP_CLIENT_SECRET` in ChatGPT's OAuth settings.
 
-  The **Bearer token env var** field expects the *name* of an environment variable available to the desktop app, not the token itself. A static `Authorization` header is the straightforward option. Save the server and restart the app. `CORS_ALLOWED_ORIGINS` does not need changing for this path: the desktop app connects as an HTTP client, not browser JavaScript.
+The legacy callback (`https://chatgpt.com/connector_platform_oauth_redirect`) is allowed by default. For a per-app callback (`https://chatgpt.com/connector/oauth/…`), add the exact URL ChatGPT shows to `MCP_CLIENT_ALLOWED_REDIRECT_URIS` if needed. This replaces the default list, so retain callbacks needed by other clients.
 
-### Poke
+### ChatGPT desktop app and Codex
 
-[Poke](https://poke.com) supports both auth styles:
+The desktop app does not accept a client ID and secret. Use OAuth self-registration or an API key.
 
-- **API key (simpler).** Set `MCP_STATIC_BEARER_TOKEN` on the server. At [poke.com/integrations/new](https://poke.com/integrations/new), enter your MCP URL and paste the same token into the **API Key** field. Poke sends it as `Authorization: Bearer …`, which is exactly what the server expects.
-- **OAuth (via Kitchen).** Poke's standard OAuth path uses dynamic client registration. If you set `MCP_DCR_ENABLED=true` on the server (see the [README](README.md#oauth-browser-sign-in)), that path works directly. Otherwise use Poke's fixed-credentials flow: at [poke.com/kitchen](https://poke.com/kitchen), create a template with your MCP URL, **`MCP_CLIENT_ID`**, and **`MCP_CLIENT_SECRET`**, then a recipe that includes it. Leave **scopes** blank (the server ignores them). Poke's callback (`https://poke.com/api/v1/mcp/callback`) is in the default redirect allowlist.
+#### OAuth self-registration
 
-### Scripts and headless clients
+Enable `MCP_DCR_ENABLED=true` and keep `APPROVAL_PASSWORD` set on the server. Add the server over **Streamable HTTP** and complete browser sign-in. The client registers itself.
 
-For anything that just sends HTTP headers, use the API key. Antigravity `mcp_config.json`:
+#### API key
+
+1. Set `MCP_STATIC_BEARER_TOKEN` on the server to a long random value.
+2. In the desktop app, open **Settings → MCP servers → Add server**.
+3. Choose **Streamable HTTP** and enter `https://mcp.example.com/mcp`.
+4. Add the header below, save the server, and restart the app.
+
+```text
+Authorization: Bearer YOUR_MCP_STATIC_BEARER_TOKEN
+```
+
+The **Bearer token env var** field expects an environment variable's name, not the token itself. Use a static `Authorization` header to enter the token directly.
+
+The desktop app makes HTTP requests directly, so this path does not require a `CORS_ALLOWED_ORIGINS` change.
+
+## Poke
+
+### API key
+
+Set `MCP_STATIC_BEARER_TOKEN` on the server. At [Poke's integration setup](https://poke.com/integrations/new), enter your MCP URL and paste the token into **API Key**.
+
+### OAuth
+
+Enable `MCP_DCR_ENABLED=true` for Poke's standard OAuth flow. See [OAuth setup](docs/configuration.md#oauth-browser-sign-in) for the approval-password requirement.
+
+With DCR disabled, use [Kitchen](https://poke.com/kitchen). Create a template with your MCP URL, `MCP_CLIENT_ID`, and `MCP_CLIENT_SECRET`, then create a recipe that includes it. Leave **scopes** blank. The server ignores that field.
+
+Poke's callback (`https://poke.com/api/v1/mcp/callback`) is allowed by default.
+
+## Scripts and headless clients
+
+For scripts and other HTTP clients, send the API key in an `Authorization` header. Add this entry to Antigravity's `mcp_config.json`.
 
 ```json
 "obsidian-vault": {
-  "serverUrl": "https://your-host/mcp",
+  "serverUrl": "https://mcp.example.com/mcp",
   "headers": {
     "Authorization": "Bearer YOUR_MCP_STATIC_BEARER_TOKEN"
   }
 }
 ```
 
-Bridging over stdio with **`mcp-remote`**:
+For a client that requires stdio, use an `mcp-remote` entry.
 
 ```json
 "obsidian-vault": {
   "command": "bunx",
-  "args": ["-y", "mcp-remote", "https://your-host/mcp", "--transport", "http-only", "--header", "Authorization: Bearer YOUR_MCP_STATIC_BEARER_TOKEN"]
+  "args": ["-y", "mcp-remote", "https://mcp.example.com/mcp", "--transport", "http-only", "--header", "Authorization: Bearer YOUR_MCP_STATIC_BEARER_TOKEN"]
 }
 ```

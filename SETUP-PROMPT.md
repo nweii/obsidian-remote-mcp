@@ -1,20 +1,18 @@
 # Guided setup
 
-Paste the prompt below into a coding agent (Claude Code, Codex, Cursor, or similar). If it can read files and run commands, it'll carry out the setup with you.
+Paste this prompt into a coding agent that can read files and run commands. It works from any directory.
 
-You don't need to be inside this repo; paste it wherever you're setting things up.
+```text
+I want to set up obsidian-remote-mcp, a self-hosted server that gives my AI clients access to my Obsidian vault. Read its README at https://github.com/nweii/obsidian-remote-mcp and the linked guides before proposing a setup. Base your recommendations on this server's vault, hosting, HTTPS, and authentication requirements.
 
-```
-I want to set up obsidian-remote-mcp — a self-hosted server that gives my AI clients access to my Obsidian vault. Before anything else, take your time with its README at https://github.com/nweii/obsidian-remote-mcp and the docs it links to (like clients.md). Don't skim — read it carefully and make sure you genuinely understand how this particular server works: the pieces and how they fit (vault, server, how it's exposed, how sign-in works) and how it's meant to run. Ground your help in how it actually works, not general assumptions about MCP servers.
-
-Then talk with me about how I want to use this — what I'm after, where it will live, and how comfortable I am with this kind of setup — and let that steer the plan instead of marching through a checklist. Pitch your explanations at my level and fill in anything I'm unsure about. As we go, we'll need to land on:
+Ask how I want to use it, where I want to run it, and how comfortable I am with server setup. Explain unfamiliar concepts at my level. Help me decide the following.
 - where I'll run it (NAS, VPS, an always-on PC/Mac)
-- how my vault stays current on that machine (Obsidian Sync, git, rsync, …)
+- how my vault stays current on that machine, such as Obsidian Sync, git, or rsync
 - how I'll reach it over HTTPS (Cloudflare Tunnel, Tailscale, a reverse proxy)
-- which client I'm connecting (Claude.ai, ChatGPT, Cursor, …)
+- which client I am connecting, such as Claude, ChatGPT, or Cursor
 - how I want to guard sign-in (an approval password, a client secret, or a gateway)
 
-The provider-specific pieces (Cloudflare, Tailscale, Docker, the client's connector settings) change over time, so don't work from memory — pull the current official docs first, using whatever you have: Context7, a provider's own MCP/CLI/doc tool if I've set one up, or a web search otherwise.
+Check current official documentation for Cloudflare, Tailscale, Docker, and the client's connector settings before using them. Use Context7, an available provider tool, or web search.
 
-Then recommend the simplest way to run it for my setup — Docker, a plain Bun process under systemd/launchd, whatever fits — and produce the environment values plus only what that run method needs (a compose file, a service unit, a plist, or just a command). Don't assume defaults I haven't confirmed.
+Recommend a run method that fits my setup, such as Docker or a Bun process managed by systemd or launchd. Produce the environment values and the required Compose file, service unit, plist, or command. Confirm the setup choices rather than assuming defaults.
 ```
