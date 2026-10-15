@@ -50,7 +50,7 @@ The tool returns Markdown for the calling agent to save with `vault_create`. Set
 
 Select notes with `paths` (paths or titles), a regex `query` optionally limited to a `folder`, or a `folder` alone. `max_notes` defaults to 20.
 
-Decision models return a probability rather than generated text. Choose a provider with `SKIM_PROVIDER`.
+Decision models return a probability rather than generated text. Choose a provider with `DECISION_PROVIDER`.
 
 | Provider | Key | Default model |
 | --- | --- | --- |
@@ -58,7 +58,7 @@ Decision models return a probability rather than generated text. Choose a provid
 | `openrouter` | `OPENROUTER_API_KEY` | `typesafe/jev-1.13` |
 | `openai` | `OPENAI_API_KEY` | `gpt-6-luna` |
 
-`SKIM_MODEL` overrides the model. Without the chosen provider's key, `vault_skim` is not listed.
+`DECISION_MODEL` overrides the model. Without the chosen provider's key, `vault_skim` is not listed. `SKIM_PROVIDER` and `SKIM_MODEL` remain supported aliases. See [decision-model settings](server.md#decision-models) for precedence and migration details.
 
 The tool requires approval before sending note text to the model provider.
 
