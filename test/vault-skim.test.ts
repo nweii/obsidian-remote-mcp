@@ -113,8 +113,75 @@ describe('resolveDecisionProvider', () => {
     expect(p).toMatchObject({ name: 'openrouter', endpoint: 'https://openrouter.ai/api/alpha/decisions', model: 'typesafe/jev-2' });
   });
 
-  test('rejects an unknown provider', () => {
-    expect(() => resolveDecisionProvider({ SKIM_PROVIDER: 'gemini', TYPESAFE_API_KEY: 'k' })).toThrow(/SKIM_PROVIDER/);
+  test.each([
+    ['typesafe', 'TYPESAFE_API_KEY', 'jev-latest'],
+    ['openrouter', 'OPENROUTER_API_KEY', 'typesafe/jev-1.13'],
+    ['openai', 'OPENAI_API_KEY', 'gpt-6-luna'],
+  ])('selects %s through DECISION_PROVIDER with its existing key and default model', (provider, key, model) => {
+    expect(resolveDecisionProvider({ DECISION_PROVIDER: provider, [key]: 'k' })).toMatchObject({ name: provider, model });
+  });
+
+  test('trims decision settings and accepts provider names without case sensitivity', () => {
+    expect(resolveDecisionProvider({ DECISION_PROVIDER: ' OpenAI ', OPENAI_API_KEY: ' k ', DECISION_MODEL: ' custom-model ' }))
+      .toMatchObject({ name: 'openai', apiKey: 'k', model: 'custom-model' });
+  });
+
+  test('does not select a different provider because its key is available', () => {
+    expect(resolveDecisionProvider({ DECISION_PROVIDER: 'openai', TYPESAFE_API_KEY: 'k' })).toBeNull();
+  });
+
+  test('uses legacy settings when decision settings are blank', () => {
+    expect(resolveDecisionProvider({
+      DECISION_PROVIDER: ' ', DECISION_MODEL: '\t',
+      SKIM_PROVIDER: 'openrouter', SKIM_MODEL: 'legacy-model', OPENROUTER_API_KEY: 'k',
+    })).toMatchObject({ name: 'openrouter', model: 'legacy-model' });
+  });
+
+  test('resolves provider and model aliases independently', () => {
+    expect(resolveDecisionProvider({ DECISION_PROVIDER: 'openai', SKIM_MODEL: 'custom-model', OPENAI_API_KEY: 'k' }))
+      .toMatchObject({ name: 'openai', model: 'custom-model' });
+    expect(resolveDecisionProvider({ SKIM_PROVIDER: 'openai', DECISION_MODEL: 'custom-model', OPENAI_API_KEY: 'k' }))
+      .toMatchObject({ name: 'openai', model: 'custom-model' });
+  });
+
+  test('equal settings and legacy-only settings do not warn', () => {
+    const warn = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      resolveDecisionProvider({ SKIM_PROVIDER: 'openai', SKIM_MODEL: 'custom-model', OPENAI_API_KEY: 'k' });
+      resolveDecisionProvider({
+        DECISION_PROVIDER: ' OpenAI ', SKIM_PROVIDER: 'openai',
+        DECISION_MODEL: ' custom-model ', SKIM_MODEL: 'custom-model', OPENAI_API_KEY: 'k',
+      });
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  test('preferred settings win conflicts and each setting warns once per process', () => {
+    const warn = spyOn(console, 'warn').mockImplementation(() => {});
+    const env = {
+      DECISION_PROVIDER: 'openai', SKIM_PROVIDER: 'typesafe',
+      DECISION_MODEL: 'preferred-model', SKIM_MODEL: 'legacy-model', OPENAI_API_KEY: 'secret-test-key',
+    };
+    try {
+      expect(resolveDecisionProvider(env)).toMatchObject({ name: 'openai', model: 'preferred-model' });
+      resolveDecisionProvider(env);
+      expect(warn).toHaveBeenCalledTimes(2);
+      expect(warn.mock.calls).toEqual([
+        ['[obsidian-remote-mcp] DECISION_PROVIDER and SKIM_PROVIDER differ; using DECISION_PROVIDER.'],
+        ['[obsidian-remote-mcp] DECISION_MODEL and SKIM_MODEL differ; using DECISION_MODEL.'],
+      ]);
+      expect(() => resolveDecisionProvider({ ...env, DECISION_PROVIDER: 'unknown' })).toThrow(/DECISION_PROVIDER/);
+      expect(warn).toHaveBeenCalledTimes(2);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  test.each(['gemini', 'constructor', '__proto__'])('rejects unknown provider %s under either setting name', provider => {
+    expect(() => resolveDecisionProvider({ SKIM_PROVIDER: provider, TYPESAFE_API_KEY: 'k' })).toThrow(/SKIM_PROVIDER/);
+    expect(() => resolveDecisionProvider({ DECISION_PROVIDER: provider, TYPESAFE_API_KEY: 'k' })).toThrow(/DECISION_PROVIDER/);
   });
 });
 

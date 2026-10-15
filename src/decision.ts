@@ -21,19 +21,35 @@ export function providerKeyVar(name: ProviderName): string {
   return PROVIDERS[name].keyVar;
 }
 
-// SKIM_PROVIDER picks the provider (default typesafe); its standard key variable supplies the key and
-// SKIM_MODEL optionally overrides its default model. Returns null when the provider's key is unset,
-// which leaves vault_skim unregistered. An unknown SKIM_PROVIDER throws so a typo fails loudly.
+const warnedConflicts = new Set<string>();
+
+function decisionSetting(env: NodeJS.ProcessEnv, setting: 'PROVIDER' | 'MODEL'): string | undefined {
+  const name = `DECISION_${setting}`;
+  const alias = `SKIM_${setting}`;
+  const normalize = (value: string | undefined) => setting === 'PROVIDER' ? value?.trim().toLowerCase() : value?.trim();
+  const preferred = normalize(env[name]);
+  const legacy = normalize(env[alias]);
+  if (preferred && legacy && preferred !== legacy && !warnedConflicts.has(name)) {
+    console.warn(`[obsidian-remote-mcp] ${name} and ${alias} differ; using ${name}.`);
+    warnedConflicts.add(name);
+  }
+  return preferred || legacy;
+}
+
+// DECISION_PROVIDER picks the provider (default typesafe); its standard key variable supplies the key and
+// DECISION_MODEL optionally overrides its default model. SKIM_PROVIDER and SKIM_MODEL are fallback aliases.
+// Returns null when the provider's key is unset, which leaves vault_skim unregistered. An unknown provider
+// throws so a typo fails loudly, including when a valid alias is set.
 export function resolveDecisionProvider(env: NodeJS.ProcessEnv = process.env): DecisionProvider | null {
-  const raw = env.SKIM_PROVIDER?.trim().toLowerCase() || 'typesafe';
-  if (!(raw in PROVIDERS)) {
-    throw new Error(`SKIM_PROVIDER must be one of ${Object.keys(PROVIDERS).join(', ')} (got "${env.SKIM_PROVIDER}").`);
+  const raw = decisionSetting(env, 'PROVIDER') || 'typesafe';
+  if (!Object.hasOwn(PROVIDERS, raw)) {
+    throw new Error(`DECISION_PROVIDER (or legacy SKIM_PROVIDER) must be one of ${Object.keys(PROVIDERS).join(', ')} (got "${raw}").`);
   }
   const spec = PROVIDERS[raw as ProviderName];
   const apiKey = env[spec.keyVar]?.trim();
   if (!apiKey) return null;
   const { keyVar: _keyVar, defaultModel, ...identity } = spec;
-  return { ...identity, apiKey, model: env.SKIM_MODEL?.trim() || defaultModel };
+  return { ...identity, apiKey, model: decisionSetting(env, 'MODEL') || defaultModel };
 }
 
 // --- Requests ------------------------------------------------------------------

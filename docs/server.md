@@ -87,13 +87,23 @@ The [quick start](../README.md#1-run-the-server) shows the startup settings. Set
 | `VAULT_ATTACHMENT_MAX_BYTES` | no | Max bytes `vault_read_attachment` will read before rejecting. Defaults to `10485760` (10 MB). |
 | `WEB_CLIPPER_SETTINGS_PATH` | no | Web Clipper settings export used by `vault_clip_url`, absolute or vault-relative. Unset, the newest `obsidian-web-clipper-settings*.json` within four folder levels of the vault root is used, whether or not `.mcpignore` hides it. |
 
+### Decision models
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `DECISION_PROVIDER` | no | Decision-model provider: `typesafe` (default), `openrouter`, or `openai`. Used by `vault_skim`, which is registered only when that provider's key is set. An unknown value disables the tool and logs why. |
+| `TYPESAFE_API_KEY` / `OPENROUTER_API_KEY` / `OPENAI_API_KEY` | no | Credential for the chosen provider. |
+| `DECISION_MODEL` | no | Overrides the provider's default decision model (`jev-latest`, `typesafe/jev-1.13`, `gpt-6-luna`). |
+| `SKIM_PROVIDER` / `SKIM_MODEL` | no | Supported aliases. Each is used when the corresponding `DECISION_*` setting is unset or blank. If both specify different values, the `DECISION_*` value wins and the server warns once per setting per process. |
+
+Provider names ignore case and surrounding whitespace. Model names ignore surrounding whitespace. When migrating an existing provider and model override, rename both settings together so an old model override does not accompany a different provider. The API key names stay the same.
+
+The Web Clipper interpreter uses its own settings export. Decision-model settings do not configure that interpreter.
+
 ### Skimming
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `SKIM_PROVIDER` | no | Decision-model provider for `vault_skim`: `typesafe` (default), `openrouter`, or `openai`. `vault_skim` is registered only when that provider's key is set. An unknown value disables the tool and logs why. |
-| `TYPESAFE_API_KEY` / `OPENROUTER_API_KEY` / `OPENAI_API_KEY` | no | Key for the chosen `SKIM_PROVIDER`. |
-| `SKIM_MODEL` | no | Overrides the provider's default decision model (`jev-latest`, `typesafe/jev-1.13`, `gpt-6-luna`). |
 | `SKIM_EXCLUDE_TAGS` | no | Comma-separated tags whose notes `vault_skim` never sends. `x` matches `#x` only; `x/*` matches `#x` and nested tags. |
 | `SKIM_EXCLUDE_PATHS` | no | Comma-separated vault-relative path rules whose notes (and everything under them) `vault_skim` never sends. Rules use `.mcpignore` syntax, so `*`, `?` and `**` wildcards work. |
 
