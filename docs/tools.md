@@ -28,7 +28,7 @@
 | `vault_tags` | List all tags with note counts, or note paths for one `tag`; counts frontmatter and inline `#tag` |
 | `vault_periodic_note` | Read or create a daily, weekly, monthly, quarterly, or yearly note at the path the vault's Obsidian config or an env template sets |
 | `vault_clip_url` | Save a web page to the vault as a markdown note |
-| `vault_skim` | Return only the parts of selected notes relevant to a goal, judged chunk by chunk by an external decision model; plans first and sends nothing until confirmed. Listed only when a decision-model key is set (see [Skimming notes](tools.md#skimming-notes)) |
+| `vault_skim` | Find notes by meaning and return only the passages relevant to a goal, judged by an external decision model; searches the whole vault or a folder, query, or path selection. Listed only when a decision-model key is set (see [Finding and skimming notes](tools.md#finding-and-skimming-notes)) |
 | `vault_cli_help` / `vault_cli` | List and run Obsidian CLI commands against this vault. Opt-in, and listed only when the CLI reaches this vault (see [Obsidian CLI tools](tools.md#obsidian-cli-tools)) |
 | `vault_feedback` | Log a structured note when an agent gets stuck or wants a tool that doesn't exist |
 
@@ -44,11 +44,14 @@ The tool returns Markdown for the calling agent to save with `vault_create`. Set
 
 `use_server_interpreter` defaults to `false`. Unresolved template prompts return `needs_interpretation` for the calling agent to fill through `slot_overrides`. Setting `use_server_interpreter: true` sends page content to the model provider configured in the Web Clipper settings.
 
-## Skimming notes
+## Finding and skimming notes
 
-`vault_skim` returns the passages relevant to a goal. It splits notes into roughly 2,000-character chunks with overlap, then asks a decision model which chunks are relevant. Returned passages include `path:start-end` citations for follow-up reads with `vault_read`.
+`vault_skim` finds notes by meaning and returns the passages relevant to a goal. A decision model (a model that returns a probability for a yes/no question instead of generating text) judges relevance in two stages:
 
-Select notes with `paths` (paths or titles), a regex `query` optionally limited to a `folder`, or a `folder` alone. `max_notes` defaults to 20.
+1. **Ranking.** Each candidate note is judged from a short card: its title, folder, tags, and `description` property, or its first 400 characters when it has none. Notes at or above `threshold` are ranked, and the best `max_notes` (default 10) move on.
+2. **Skimming.** Those notes are split into roughly 2,000-character chunks with overlap, and each chunk is judged against the goal. Kept passages include `path:start-end` citations for follow-up reads with `vault_read`.
+
+With no selection, the candidates are every note in the vault. `folder`, a regex `query` (optionally within a `folder`), or `paths` (paths or titles) narrow them. When the selection fits within `max_notes`, ranking is skipped and every selected note is skimmed. `passages: false` stops after ranking and returns the ranked notes with their descriptions. A call skims at most 500 chunks.
 
 Decision models return a probability rather than generated text. Choose a provider with `DECISION_PROVIDER`.
 
@@ -60,26 +63,23 @@ Decision models return a probability rather than generated text. Choose a provid
 
 `DECISION_MODEL` overrides the model. Without the chosen provider's key, `vault_skim` is not listed. `SKIM_PROVIDER` and `SKIM_MODEL` remain supported aliases. See [decision-model settings](server.md#decision-models) for precedence and migration details.
 
-The tool requires approval before sending note text to the model provider.
+### Cached judgments
 
-1. Call without `confirm` to get a plan. The plan lists the goal, selection method, notes and chunk counts, withheld notes and reasons, and the provider and model. No note text is sent to the provider.
-2. Show the plan to the user. After approval, call again with the same arguments and `confirm` set to the returned `planId`.
-
-If the goal, provider, model, or any planned note changes, confirmation fails and the tool returns a fresh plan. A call can send at most 500 chunks.
+Every judgment is cached under a hash of the provider, model, prompt, goal (ignoring case and extra spaces), note path, and the exact text judged. Repeating a call sends nothing, and editing a note re-judges only that note's card and chunks. The cache stores hashes and probabilities, never note text. It lives in `SKIM_CACHE_PATH` (default `./skim-cache.json`) and drops entries after 90 days.
 
 ### Exclusions
 
 Exclusions apply together. A call can add exclusions but cannot override the server's rules.
 
 - `.mcpignore` blocks matching paths from the vault file tools.
-- `SKIM_EXCLUDE_TAGS` and `SKIM_EXCLUDE_PATHS` apply to every skim call.
+- `SKIM_EXCLUDE_TAGS` and `SKIM_EXCLUDE_PATHS` apply to every call.
 - `exclude_tags` and `exclude_paths` add exclusions for one call.
 
 Use comma-separated tags and paths for the server settings. `private` matches only `#private`. `work/*` matches `#work` and all nested tags. Tags are read from frontmatter and inline `#tag`.
 
 Path rules use [`.mcpignore` syntax](#exclude-paths-with-mcpignore) and cover each matching path and its contents. For example, `**/Private` excludes every `Private` folder.
 
-Path exclusions are checked against normalized requested paths and resolved file locations before note text is read, including during query selection. Equivalent spellings and symlinks cannot bypass an excluded folder. Plans list allowed aliases once, using the resolved vault-relative path. A path-excluded note in a query's scope is reported as withheld without reading it to test the query.
+Path exclusions are checked against normalized requested paths and resolved file locations before note text is read, including during query selection. Equivalent spellings and symlinks cannot bypass an excluded folder. Allowed aliases are judged once, under the resolved vault-relative path. A path-excluded note in a query's scope is counted as withheld without reading it to test the query. Tag exclusions are checked on every read, including when a ranked note is read again for skimming. Results report how many notes were withheld, and list each one with its reason when the notes were named with `paths`.
 
 A chunk the model couldn't judge (a failed request, a malformed answer) is kept and marked `unjudged`, so a provider failure can return more text than expected but never silently drops any.
 
@@ -237,15 +237,11 @@ The search walks notes and parses frontmatter for each request. Searches and ind
 
 Both batch tools accept at most 50 entries. They are not transactions. One failed item does not roll back successful items or stop the rest.
 
-### Skim plans and provider requests
+### Skim provider requests
 
-In addition to sending requested notes to connected clients, `vault_skim` can send selected text to a model provider. Its `planId` hashes the goal, provider, model, and each planned note's `versionOf`.
+In addition to sending requested notes to connected clients, `vault_skim` sends note cards and chunks to a model provider. Note cards are short, so their criteria travel once per request in the state, and up to 100 cards share a request. Chunks carry their criteria per question, up to 24 to a request. Both kinds run four requests at a time, retry rate limits and server errors, and split a batch when the provider reports a question limit.
 
-The calling agent must show the plan and obtain approval. The hash checks that the arguments and note contents still match. It does not verify human consent.
-
-Path exclusions use `ignore.ts`. Tag exclusions use `getNoteTags`, which reads frontmatter and inline tags. See [skimming notes](#skimming-notes) for selection, exclusions, and confirmation.
-
-`decision.ts` uses System One `noul` questions for TypeSafe and OpenRouter, and named `predicate` questions for OpenAI. It splits a batch if the provider reports a question-count limit.
+Path exclusions use `ignore.ts`. Tag exclusions use `getNoteTags`, which reads frontmatter and inline tags. See [finding and skimming notes](#finding-and-skimming-notes) for selection and exclusions.
 
 ### CLI execution
 

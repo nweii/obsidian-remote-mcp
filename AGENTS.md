@@ -29,7 +29,8 @@ src/
   access.ts       — Per-connection access: the approval page's scopes (edit notes, Obsidian CLI) and whether the current request's connection holds one
   clip.ts         — Registers vault_clip_url when the optional web-clipper-headless is installed
   cli.ts          — Registers vault_cli / vault_cli_help when the obsidian CLI is opted in and reaches this vault: guards, probe, help parsing; backlinks via Obsidian
-  skim.ts         — Registers vault_skim when a decision-model key is set: note selection, exclusions, plan ids, rendering
+  skim.ts         — Registers vault_skim when a decision-model key is set: note selection, exclusions, note ranking, passage skimming, rendering
+  judgment-cache.ts — Persisted decision-model judgments for vault_skim, keyed by a hash of the exact text judged
   chunk.ts        — Line-aware chunker with overlap used by vault_skim
   decision.ts     — Decision-model client (TypeSafe, OpenRouter, OpenAI): provider resolution, request shapes, batching, retries
   log.ts          — Configures the kit's audit logger and its redaction

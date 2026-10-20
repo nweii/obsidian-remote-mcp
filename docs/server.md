@@ -106,6 +106,7 @@ The Web Clipper interpreter uses its own settings export. Decision-model setting
 |----------|----------|-------------|
 | `SKIM_EXCLUDE_TAGS` | no | Comma-separated tags whose notes `vault_skim` never sends. `x` matches `#x` only; `x/*` matches `#x` and nested tags. |
 | `SKIM_EXCLUDE_PATHS` | no | Comma-separated vault-relative path rules whose notes (and everything under them) `vault_skim` never sends. Rules use `.mcpignore` syntax, so `*`, `?` and `**` wildcards work. |
+| `SKIM_CACHE_PATH` | no | File for cached decision-model judgments (default `./skim-cache.json`). Stores hashes and probabilities only. `off` keeps the cache in memory. |
 
 ### Obsidian CLI
 

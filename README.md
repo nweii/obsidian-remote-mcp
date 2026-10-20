@@ -110,7 +110,7 @@ Clients authenticate with OAuth or an API key. Browser sign-in lets you choose w
 
 Vault file access is confined to the vault folder. `.mcpignore` blocks notes from file reads, edits, and searches. Optional [CLI access has a separate .mcpignore limitation](docs/tools.md#safety-guards) to review before enabling it.
 
-Connected clients receive the notes they request. The optional [skim tool](docs/tools.md#skimming-notes) can also send selected note text to a model provider after you approve a plan. [Audit logs](docs/configuration.md#audit-log-privacy) can contain paths and search queries; use `LOG_ENABLED=false` to disable logging.
+Connected clients receive the notes they request. The optional [skim tool](docs/tools.md#finding-and-skimming-notes), enabled by setting a decision-model API key, sends note text to that model provider, except for notes under its exclusion rules. [Audit logs](docs/configuration.md#audit-log-privacy) can contain paths and search queries; use `LOG_ENABLED=false` to disable logging.
 
 ## Guides and reference
 
