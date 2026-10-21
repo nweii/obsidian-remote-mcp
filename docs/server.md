@@ -124,7 +124,8 @@ The Web Clipper interpreter uses its own settings export. Decision-model setting
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `LOG_ENABLED` | no | Set to `false` to disable tool-call logging and skip registering `vault_feedback`. Defaults to `true`. |
-| `LOG_DIR` | no | Directory for JSONL logs (`tool-calls.jsonl`, `feedback.jsonl`). Defaults to `./logs`. Created on first write. Skipped when `VAULT_MCP_TEST=1` or `LOG_ENABLED=false`. |
+| `LOG_DIR` | no | Directory for JSONL logs (`tool-calls.jsonl`, `feedback.jsonl`, `decision-usage.jsonl`). Defaults to `./logs`. Created on first write. Skipped when `VAULT_MCP_TEST=1` or `LOG_ENABLED=false`. |
+| `LOG_MAX_BYTES` | no | At startup, each log larger than this moves to `<name>.1`, replacing the previous one. Defaults to `10485760` (10 MB); `0` disables rotation. |
 | `HEALTH_TOKEN` | no | Token for `GET /health`, sent as `Authorization: Bearer YOUR_HEALTH_TOKEN`. Unset returns `404`. Separate from client credentials. See [health monitoring](#health-endpoint). |
 
 ## Request handling

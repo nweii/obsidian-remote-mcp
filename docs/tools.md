@@ -65,7 +65,7 @@ Decision models return a probability rather than generated text. Choose a provid
 
 ### Cached judgments
 
-Every judgment is cached under a hash of the provider, model, prompt, goal (ignoring case and extra spaces), note path, and the exact text judged. Repeating a call sends nothing, and editing a note re-judges only that note's card and chunks. The cache stores hashes and probabilities, never note text. It lives in `SEMANTIC_CACHE_PATH` (default `./semantic-cache.json`) and drops entries after 90 days.
+Every judgment is cached under a hash of the provider, model, prompt, goal (ignoring case and extra spaces), note path, and the exact text judged. Repeating a call sends nothing, and editing a note re-judges only that note's card and chunks. The cache stores hashes and probabilities, never note text. It lives in `SEMANTIC_CACHE_PATH` (default `./semantic-cache.json`) drops entries after 90 days, and keeps at most 200,000 entries (about 20 MB).
 
 ### Exclusions
 

@@ -1,8 +1,9 @@
 // ABOUTME: Configures the kit's audit logger for this vault — the log directory, the argument names
 // that carry note content (always redacted), and the enable/test-suppression gates — and re-exports
 // the wired helpers (registerLogged, logFeedback, isLoggingEnabled, …) the tool layer calls. Also writes
-// decision-model usage (requests, tokens, cost, resolved models) under the same gates.
-import { appendFileSync, mkdirSync } from 'node:fs';
+// decision-model usage (requests, tokens, cost, resolved models) under the same gates, and rotates
+// oversized logs at startup.
+import { appendFileSync, mkdirSync, readdirSync, renameSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { createAuditLog, currentCaller } from 'mcp-server-kit';
 
@@ -56,6 +57,38 @@ export function logDecisionUsage(entry: DecisionUsageLog): void {
   } catch (err) {
     console.error('[log] failed to write decision-usage.jsonl:', err);
   }
+}
+
+const DEFAULT_LOG_MAX_BYTES = 10 * 1024 * 1024;
+
+// Rotates each LOG_DIR/*.jsonl larger than LOG_MAX_BYTES (default 10 MB; 0 disables) to `<name>.1`,
+// replacing the previous `.1`, so each log keeps at most two generations on disk. Runs once at
+// startup, so a server that restarts regularly stays near the cap. Returns the rotated file names.
+export function rotateLogs(env: NodeJS.ProcessEnv = process.env): string[] {
+  if (env.VAULT_MCP_TEST === '1' && !env.LOG_DIR) return [];
+  const raw = env.LOG_MAX_BYTES?.trim();
+  const parsed = raw ? Number(raw) : DEFAULT_LOG_MAX_BYTES;
+  const maxBytes = Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_LOG_MAX_BYTES;
+  if (maxBytes === 0) return [];
+  const dir = env.LOG_DIR ?? './logs';
+  let names: string[];
+  try {
+    names = readdirSync(dir).filter(name => name.endsWith('.jsonl'));
+  } catch {
+    return []; // no log directory yet
+  }
+  const rotated: string[] = [];
+  for (const name of names) {
+    const file = join(dir, name);
+    try {
+      if (statSync(file).size <= maxBytes) continue;
+      renameSync(file, `${file}.1`);
+      rotated.push(name);
+    } catch (err) {
+      console.error(`[log] failed to rotate ${name}:`, err);
+    }
+  }
+  return rotated;
 }
 
 export type { ToolContent, ToolResult } from 'mcp-server-kit';

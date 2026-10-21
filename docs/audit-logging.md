@@ -8,7 +8,7 @@ Logging is enabled by default. Tool calls go to `LOG_DIR/tool-calls.jsonl`; feed
 
 Set `LOG_ENABLED=false` to disable all three logs and omit the `vault_feedback` tool.
 
-Logs do not rotate automatically. Use a persistent volume for `LOG_DIR` when logs must survive container replacement. Rotate or truncate the files to limit disk usage.
+At startup, each log larger than `LOG_MAX_BYTES` (default 10 MB) is renamed to `<name>.1`, replacing the previous `.1`, so a log keeps at most two generations on disk. Rotation happens only at startup, so a server that runs for a long time without restarting can grow a log past the cap until its next start. Set `LOG_MAX_BYTES=0` to manage the files yourself. Use a persistent volume for `LOG_DIR` when logs must survive container replacement.
 
 ## Recorded fields
 
