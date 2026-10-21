@@ -20,7 +20,7 @@ import {
   type Transport,
 } from '../src/decision.js';
 import { NOTE_PROMPT, registerSemanticSearchTool, runSemanticSearch, selectNotes } from '../src/semantic-search.js';
-import { exclusionRules, pathMatches, tagMatches } from '../src/api-exclusions.js';
+import { exclusionRules, pathMatches, unsupportedExclusionSetting } from '../src/api-exclusions.js';
 import { JudgmentCache } from '../src/judgment-cache.js';
 
 const typesafe: DecisionProvider = {
@@ -304,21 +304,15 @@ describe('judgeChunks', () => {
 });
 
 describe('exclusion rules', () => {
-  test('tag patterns: exact or branch', () => {
-    expect(tagMatches('Private', 'private')).toBe(true);
-    expect(tagMatches('private/health', 'private')).toBe(false);
-    expect(tagMatches('work/acme', 'work/*')).toBe(true);
-    expect(tagMatches('work', 'work/*')).toBe(true);
-    expect(tagMatches('workshop', 'work/*')).toBe(false);
+  test('the SKIM_EXCLUDE_PATHS alias adds to EXTERNAL_API_EXCLUDE_PATHS rather than replacing it', () => {
+    const rules = exclusionRules({}, { EXTERNAL_API_EXCLUDE_PATHS: 'Journal', SKIM_EXCLUDE_PATHS: 'Inbox' });
+    expect(rules.paths.map(r => r.pattern)).toEqual(['Journal', 'Inbox']);
   });
 
-  test('SKIM_EXCLUDE_* aliases add to EXTERNAL_API_EXCLUDE_* rather than replacing them', () => {
-    const rules = exclusionRules({}, {
-      EXTERNAL_API_EXCLUDE_TAGS: 'private', SKIM_EXCLUDE_TAGS: 'secret',
-      EXTERNAL_API_EXCLUDE_PATHS: 'Journal', SKIM_EXCLUDE_PATHS: 'Inbox',
-    });
-    expect(rules.tags.map(r => r.pattern)).toEqual(['private', 'secret']);
-    expect(rules.paths.map(r => r.pattern)).toEqual(['Journal', 'Inbox']);
+  test('a leftover SKIM_EXCLUDE_TAGS setting is reported as unsupported', () => {
+    expect(unsupportedExclusionSetting({ SKIM_EXCLUDE_TAGS: 'private' })).toContain('tag exclusions are not supported');
+    expect(unsupportedExclusionSetting({ SKIM_EXCLUDE_TAGS: ' ' })).toBeNull();
+    expect(unsupportedExclusionSetting({})).toBeNull();
   });
 
   test('path patterns cover the path and everything under it', () => {
@@ -337,11 +331,8 @@ describe('exclusion rules', () => {
   });
 
   test('request rules add to config rules', () => {
-    const rules = exclusionRules({ exclude_tags: ['#Draft'], exclude_paths: ['/Inbox/'] }, { EXTERNAL_API_EXCLUDE_TAGS: 'private, work/*', EXTERNAL_API_EXCLUDE_PATHS: 'Journal' });
-    expect(rules.tags.map(r => [r.pattern, r.origin])).toEqual([
-      ['private', 'server config'], ['work/*', 'server config'], ['draft', 'this request'],
-    ]);
-    expect(rules.paths.map(r => r.pattern)).toEqual(['Journal', 'Inbox']);
+    const rules = exclusionRules({ exclude_paths: ['/Inbox/'] }, { EXTERNAL_API_EXCLUDE_PATHS: 'Journal' });
+    expect(rules.paths.map(r => [r.pattern, r.origin])).toEqual([['Journal', 'server config'], ['Inbox', 'this request']]);
   });
 });
 
@@ -372,7 +363,7 @@ describe('note prompt requests', () => {
 
 describe('vault_search_semantic over a temp vault', () => {
   let vaultPath: string;
-  const env = { EXTERNAL_API_EXCLUDE_TAGS: 'private', EXTERNAL_API_EXCLUDE_PATHS: 'Journal' };
+  const env = { EXTERNAL_API_EXCLUDE_PATHS: 'Journal, Notes/Secret.md' };
   const fresh = () => new JudgmentCache(null);
 
   async function seed(rel: string, content: string) {
@@ -409,23 +400,21 @@ describe('vault_search_semantic over a temp vault', () => {
 
   test('selection withholds config and request exclusions', async () => {
     process.env.VAULT_PATH = vaultPath;
-    const selection = await selectNotes({ goal: 'stakes', query: 'needle', exclude_tags: ['draft'] }, env);
+    const selection = await selectNotes({ goal: 'stakes', query: 'needle', exclude_paths: ['Notes/Draft.md'] }, env);
     expect(selection.candidates.map(n => n.path)).toEqual(['Notes/Garden.md']);
     const reasons = Object.fromEntries(selection.excluded.map(e => [e.path, e.reason]));
     expect(reasons['Journal/2026-10-11.md']).toBe('path Journal (server config)');
-    expect(reasons['Notes/Secret.md']).toBe('tag #private (server config)');
-    expect(reasons['Notes/Draft.md']).toBe('tag #draft (this request)');
+    expect(reasons['Notes/Secret.md']).toBe('path Notes/Secret.md (server config)');
+    expect(reasons['Notes/Draft.md']).toBe('path Notes/Draft.md (this request)');
   });
 
-  test('a note with unreadable frontmatter is withheld when tag rules apply, and judged otherwise', async () => {
+  test('a note with unreadable frontmatter is still judged, by its title and opening text', async () => {
     process.env.VAULT_PATH = vaultPath;
     await seed('Broken/Bad.md', '---\ntags: [a\n  b: : c\n---\nneedle text\n');
     try {
-      const guarded = await selectNotes({ goal: 'g', folder: 'Broken' }, env);
-      expect(guarded.candidates).toEqual([]);
-      expect(guarded.excluded).toEqual([{ path: 'Broken/Bad.md', reason: 'unreadable frontmatter, so its tags cannot be checked' }]);
-      const open = await selectNotes({ goal: 'g', folder: 'Broken' }, {});
-      expect(open.candidates.map(c => c.path)).toEqual(['Broken/Bad.md']);
+      const selection = await selectNotes({ goal: 'g', folder: 'Broken' }, env);
+      expect(selection.candidates.map(c => c.path)).toEqual(['Broken/Bad.md']);
+      expect(selection.candidates[0]!.card).toStartWith('Title: Bad\nFolder: Broken\nOpening text: ');
     } finally {
       await rm(path.join(vaultPath, 'Broken'), { recursive: true, force: true });
     }
@@ -585,6 +574,23 @@ describe('vault_search_semantic over a temp vault', () => {
     expect(missing.content[0].text).not.toContain(vaultPath);
     expect(calls.length).toBe(0);
     await client.close();
+  });
+
+  test('tool is not registered while SKIM_EXCLUDE_TAGS is set', async () => {
+    const previous = process.env.SKIM_EXCLUDE_TAGS;
+    process.env.SKIM_EXCLUDE_TAGS = 'private';
+    const errors = spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const client = await connect(scoringTransport('x'));
+      const { tools } = await client.listTools();
+      expect(tools.map(t => t.name)).not.toContain('vault_search_semantic');
+      expect(String(errors.mock.calls[0]?.[0])).toContain('SKIM_EXCLUDE_TAGS');
+      await client.close();
+    } finally {
+      errors.mockRestore();
+      if (previous === undefined) delete process.env.SKIM_EXCLUDE_TAGS;
+      else process.env.SKIM_EXCLUDE_TAGS = previous;
+    }
   });
 
   test('tool is not registered without a provider', async () => {

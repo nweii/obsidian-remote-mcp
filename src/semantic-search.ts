@@ -9,7 +9,7 @@ import * as vault from "./vault.js";
 import { chunkText, type Chunk } from "./chunk.js";
 import { CHUNK_PROMPT, resolveDecisionProvider, type DecisionProvider, type JudgeOptions, type JudgePrompt } from "./decision.js";
 import { parseFrontmatter, splitFrontmatter } from "./frontmatter.js";
-import { contentExclusion, exclusionRules, pathExclusion } from "./api-exclusions.js";
+import { exclusionRules, pathExclusion, unsupportedExclusionSetting } from "./api-exclusions.js";
 import { judgeWithCache, judgmentCacheFromEnv, type JudgmentCache } from "./judgment-cache.js";
 import { registerLogged } from "./log.js";
 
@@ -29,7 +29,6 @@ export interface SemanticSearchRequest {
   paths?: string[];
   folder?: string;
   query?: string;
-  exclude_tags?: string[];
   exclude_paths?: string[];
 }
 
@@ -106,7 +105,7 @@ export function noteCard(notePath: string, content: string): Candidate {
 }
 
 // Every note that may be sent for this request, with the notes withheld and why. Path rules are checked
-// before a note is read; tag rules after.
+// against the requested and resolved paths before a note is read.
 export async function selectNotes(req: SemanticSearchRequest, env: NodeJS.ProcessEnv = process.env): Promise<Selection> {
   const rules = exclusionRules(req, env);
   const { label, named, paths, missing } = await candidatePaths(req);
@@ -145,11 +144,6 @@ export async function selectNotes(req: SemanticSearchRequest, env: NodeJS.Proces
       continue;
     }
     if (query && !content.split("\n").some(line => query.test(line))) continue;
-    const byTag = contentExclusion(content, rules);
-    if (byTag) {
-      excluded.push({ path: relPath, reason: byTag });
-      continue;
-    }
     if (candidates.length >= MAX_CANDIDATES) {
       throw new SearchScopeError(`More than ${MAX_CANDIDATES} notes are in scope. Narrow with folder, query, or paths.`);
     }
@@ -203,8 +197,8 @@ interface NotePassages {
   kept: { chunk: Chunk; p: number | null }[];
 }
 
-// Reads each note again, re-checks its tags against the rules (the note may have changed since
-// selection), and keeps the chunks that bear on the goal.
+// Reads each ranked note in full and keeps the chunks that bear on the goal. Path rules were applied
+// to these notes, by their resolved paths, during selection.
 async function readPassages(
   provider: DecisionProvider,
   req: SemanticSearchRequest,
@@ -213,7 +207,6 @@ async function readPassages(
   cache: JudgmentCache,
   usage: Usage,
 ): Promise<{ skims: NotePassages[]; overChunkLimit: number }> {
-  const rules = exclusionRules(req, options.env);
   const planned: { note: RankedNote; chunks: Chunk[] }[] = [];
   let chunkCount = 0;
   let overChunkLimit = 0;
@@ -224,7 +217,6 @@ async function readPassages(
     } catch {
       continue;
     }
-    if (contentExclusion(content, rules)) continue;
     const chunks = chunkText(content);
     if (chunks.length === 0) continue;
     if (chunkCount + chunks.length > MAX_CHUNKS) {
@@ -405,6 +397,11 @@ function loadProviderOnce(): DecisionProvider | null {
 export function registerSemanticSearchTool(server: McpServer, options: { provider?: DecisionProvider | null; cache?: JudgmentCache } & JudgeOptions = {}) {
   const provider = options.provider !== undefined ? options.provider : loadProviderOnce();
   if (!provider) return;
+  const unsupported = unsupportedExclusionSetting();
+  if (unsupported) {
+    console.error(`[obsidian-remote-mcp] vault_search_semantic disabled: ${unsupported}`);
+    return;
+  }
 
   registerLogged(server,
     "vault_search_semantic",
@@ -415,14 +412,13 @@ export function registerSemanticSearchTool(server: McpServer, options: { provide
         `Finds notes by meaning and returns only the passages relevant to a goal, judged by an external decision model (${provider.label}, ${provider.model}). ` +
         "It works in two stages. First it ranks candidate notes from a short card (title, folder, tags, and description or opening text). Then it splits the best notes into ~2,000-char chunks and keeps the ones that bear on the goal, cited as path:start-end. " +
         "With no selection it searches the whole vault; narrow with folder, query (regex, as vault_search_content), or paths (paths or titles). A selection that fits within max_notes skips ranking and is read directly. passages: false returns only the ranked notes, which is faster. " +
-        "Judgments are cached, so repeating a call costs nothing. Note text is sent to the provider; notes under the server's configured exclusions are never sent, and exclude_tags and exclude_paths withhold more for this call. " +
+        "Judgments are cached, so repeating a call costs nothing. Note text is sent to the provider; notes under the server's configured exclusions are never sent, and exclude_paths withholds more for this call. " +
         "Use vault_search_content for exact words or names, and vault_outline + vault_read_section for a single well-structured note.",
       inputSchema: z.object({
         goal: z.string().min(1).describe("What the reader is trying to find out or accomplish. Specific goals filter better."),
         paths: z.array(z.string()).optional().describe("Notes to consider, as vault-relative paths or bare titles. Takes precedence over query and folder."),
         query: z.string().optional().describe("Regex; consider only notes whose text matches it (as vault_search_content)."),
         folder: z.string().optional().describe('Consider only notes in this folder (e.g. "03-Records/Working").'),
-        exclude_tags: z.array(z.string()).optional().describe('Also withhold notes carrying these tags, for this call. "work/*" covers #work and its nested tags.'),
         exclude_paths: z.array(z.string()).optional().describe('Also withhold notes at or under these vault-relative paths, for this call. Wildcards as in .mcpignore: "**/Private" covers every Private folder.'),
         max_notes: z.number().int().optional().default(DEFAULT_MAX_NOTES).describe(`Most notes to return (default ${DEFAULT_MAX_NOTES}, up to ${MAX_NOTES_CAP}).`),
         passages: z.boolean().optional().default(true).describe("Return relevant passages from the best notes (default). False returns only the ranked notes."),
@@ -430,9 +426,9 @@ export function registerSemanticSearchTool(server: McpServer, options: { provide
         max_chunks_per_note: z.number().int().optional().describe("Keep at most this many chunks per note, best first."),
       }),
     },
-    async ({ goal, paths, query, folder, exclude_tags, exclude_paths, max_notes, passages, threshold, max_chunks_per_note }) => {
+    async ({ goal, paths, query, folder, exclude_paths, max_notes, passages, threshold, max_chunks_per_note }) => {
       try {
-        const text = await runSemanticSearch({ goal, paths, query, folder, exclude_tags, exclude_paths }, provider, {
+        const text = await runSemanticSearch({ goal, paths, query, folder, exclude_paths }, provider, {
           maxNotes: max_notes,
           passages,
           threshold,

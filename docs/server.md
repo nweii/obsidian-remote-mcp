@@ -104,10 +104,10 @@ The Web Clipper interpreter uses its own settings export. Decision-model setting
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `EXTERNAL_API_EXCLUDE_TAGS` | no | Comma-separated tags whose notes are never sent to an external model API (by any feature that sends note text, such as `vault_search_semantic`). Connected clients can still read them; use `.mcpignore` to hide notes from clients too. `x` matches `#x` only; `x/*` matches `#x` and nested tags. |
-| `EXTERNAL_API_EXCLUDE_PATHS` | no | Comma-separated vault-relative path rules whose notes (and everything under them) are never sent to an external model API. Rules use `.mcpignore` syntax, so `*`, `?` and `**` wildcards work. |
+| `EXTERNAL_API_EXCLUDE_PATHS` | no | Comma-separated vault-relative path rules whose notes (and everything under them) are never sent to an external model API (by any feature that sends note text, such as `vault_search_semantic`). Connected clients can still read them; use `.mcpignore` to hide notes from clients too. Rules use `.mcpignore` syntax, so `*`, `?` and `**` wildcards work. |
 | `SEMANTIC_CACHE_PATH` | no | File for cached decision-model judgments (default `./semantic-cache.json`). Stores hashes and probabilities only. `off` keeps the cache in memory. |
-| `SKIM_EXCLUDE_TAGS` / `SKIM_EXCLUDE_PATHS` / `SKIM_CACHE_PATH` | no | Supported aliases. Exclusion rules from both forms combine; for the cache path, `SEMANTIC_CACHE_PATH` wins. |
+| `SKIM_EXCLUDE_PATHS` / `SKIM_CACHE_PATH` | no | Supported aliases. Path rules from both forms combine; for the cache path, `SEMANTIC_CACHE_PATH` wins. |
+| `SKIM_EXCLUDE_TAGS` | no | Retired; tag exclusions are not supported. While it is set, `vault_search_semantic` stays unregistered and the server logs why. |
 
 ### Obsidian CLI
 

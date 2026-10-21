@@ -69,17 +69,17 @@ Every judgment is cached under a hash of the provider, model, prompt, goal (igno
 
 ### Exclusions
 
-Exclusions apply together. A call can add exclusions but cannot override the server's rules.
+Exclusions are path rules, and they add up. A call can add exclusions but cannot override the server's rules.
 
-- `.mcpignore` hides matching paths from every tool and connected client.
-- `EXTERNAL_API_EXCLUDE_TAGS` and `EXTERNAL_API_EXCLUDE_PATHS` keep notes readable by connected clients but never send them to an external model API. They apply to every feature that does so. `SKIM_EXCLUDE_TAGS` and `SKIM_EXCLUDE_PATHS` are supported aliases; when both forms are set, their rules combine.
-- `exclude_tags` and `exclude_paths` add exclusions for one call.
+- `.mcpignore` hides matching paths from every tool and connected client, so those notes are never candidates.
+- `EXTERNAL_API_EXCLUDE_PATHS` keeps notes readable by connected clients but never sends them to an external model API. It applies to every feature that does so. `SKIM_EXCLUDE_PATHS` is a supported alias; when both are set, their rules combine.
+- `exclude_paths` adds exclusions for one call.
 
-Use comma-separated tags and paths for the server settings. `private` matches only `#private`. `work/*` matches `#work` and all nested tags. Tags are read from frontmatter and inline `#tag`.
+Rules use [`.mcpignore` syntax](#exclude-paths-with-mcpignore), separated by commas in the server setting, and cover each matching path and its contents. For example, `**/Private` excludes every `Private` folder.
 
-Path rules use [`.mcpignore` syntax](#exclude-paths-with-mcpignore) and cover each matching path and its contents. For example, `**/Private` excludes every `Private` folder.
+Tag-based exclusions are not supported. While the retired `SKIM_EXCLUDE_TAGS` setting is set, `vault_search_semantic` stays unregistered and the server logs why, so notes that setting was meant to withhold are never sent. Replace it with path rules, then remove it.
 
-Path exclusions are checked against normalized requested paths and resolved file locations before note text is read, including during query selection. Equivalent spellings and symlinks cannot bypass an excluded folder. Allowed aliases are judged once, under the resolved vault-relative path. A path-excluded note in a query's scope is counted as withheld without reading it to test the query. Tag exclusions are checked on every read, including when a ranked note is read again for passages. Results report how many notes were withheld, and list each one with its reason when the notes were named with `paths`.
+Path exclusions are checked against normalized requested paths and resolved file locations before note text is read, including during query selection. Equivalent spellings and symlinks cannot bypass an excluded folder. Allowed aliases are judged once, under the resolved vault-relative path. A path-excluded note in a query's scope is counted as withheld without reading it to test the query. Results report how many notes were withheld, and list each one with its reason when the notes were named with `paths`.
 
 A chunk the model couldn't judge (a failed request, a malformed answer) is kept and marked `unjudged`, so a provider failure can return more text than expected but never silently drops any.
 
@@ -241,7 +241,7 @@ Both batch tools accept at most 50 entries. They are not transactions. One faile
 
 In addition to sending requested notes to connected clients, `vault_search_semantic` sends note cards and chunks to a model provider. Note cards are short, so their criteria travel once per request in the state, and up to 100 cards share a request. Chunks carry their criteria per question, up to 24 to a request. Both kinds run four requests at a time, retry rate limits and server errors, and split a batch when the provider reports a question limit.
 
-Path exclusions use `ignore.ts`. Tag exclusions use `getNoteTags`, which reads frontmatter and inline tags. See [semantic search](#semantic-search) for selection and exclusions.
+Path exclusions use `ignore.ts`. See [semantic search](#semantic-search) for selection and exclusions.
 
 ### CLI execution
 
