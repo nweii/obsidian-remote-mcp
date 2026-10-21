@@ -7,11 +7,11 @@ import path from "node:path";
 import { z } from "zod";
 import * as vault from "./vault.js";
 import { chunkText, type Chunk } from "./chunk.js";
-import { CHUNK_PROMPT, resolveDecisionProvider, type DecisionProvider, type JudgeOptions, type JudgePrompt } from "./decision.js";
+import { addUsage, CHUNK_PROMPT, emptyUsage, resolveDecisionProvider, type DecisionUsage, type DecisionProvider, type JudgeOptions, type JudgePrompt } from "./decision.js";
 import { parseFrontmatter, splitFrontmatter } from "./frontmatter.js";
 import { exclusionRules, pathExclusion, unsupportedExclusionSetting } from "./api-exclusions.js";
 import { judgeWithCache, judgmentCacheFromEnv, type JudgmentCache } from "./judgment-cache.js";
-import { registerLogged } from "./log.js";
+import { logDecisionUsage, registerLogged } from "./log.js";
 
 export const DEFAULT_MAX_NOTES = 10;
 export const MAX_NOTES_CAP = 100;
@@ -187,6 +187,7 @@ interface Usage {
   requests: number;
   fromCache: number;
   failures: string[];
+  reported: DecisionUsage;
 }
 
 interface NotePassages {
@@ -234,6 +235,7 @@ async function readPassages(
   usage.requests += judgement.requests;
   usage.fromCache += judgement.fromCache;
   usage.failures.push(...judgement.failures);
+  usage.reported = addUsage(usage.reported, judgement.usage);
 
   const threshold = options.threshold ?? DEFAULT_THRESHOLD;
   let offset = 0;
@@ -277,7 +279,7 @@ export async function runSemanticSearch(req: SemanticSearchRequest, provider: De
   const maxNotes = Math.min(MAX_NOTES_CAP, Math.max(1, options.maxNotes ?? DEFAULT_MAX_NOTES));
   const threshold = options.threshold ?? DEFAULT_THRESHOLD;
   const passages = options.passages ?? true;
-  const usage: Usage = { requests: 0, fromCache: 0, failures: [] };
+  const usage: Usage = { requests: 0, fromCache: 0, failures: [], reported: emptyUsage() };
 
   const selection = await selectNotes(req, env);
   const lines: string[] = [];
@@ -294,6 +296,7 @@ export async function runSemanticSearch(req: SemanticSearchRequest, provider: De
     usage.requests += judgement.requests;
     usage.fromCache += judgement.fromCache;
     usage.failures.push(...judgement.failures);
+    usage.reported = addUsage(usage.reported, judgement.usage);
     const ranked = selection.candidates
       .map((candidate, i) => ({ candidate, p: judgement.probabilities[i] ?? null }))
       .filter(note => {
@@ -327,7 +330,20 @@ export async function runSemanticSearch(req: SemanticSearchRequest, provider: De
     lines.push(`Read ${skims.length} note(s) for passages: kept ${kept} of ${total} chunk(s), ${fmtChars(chars)} → ${fmtChars(keptChars)} chars (${saved}% saved). Chunks are cited as path:start-end lines; use vault_read for surrounding context.`);
   }
   if (usage.requests > 0 || usage.fromCache > 0) {
-    lines.push(`${usage.requests} request(s) to ${provider.label}; ${usage.fromCache} judgment(s) reused from cache.`);
+    const tokens = usage.requests > 0 && usage.reported.inputTokens !== null ? `, ${usage.reported.inputTokens.toLocaleString("en-US")} input tokens` : "";
+    const cost = usage.requests > 0 && usage.reported.costUsd !== null ? `, $${usage.reported.costUsd.toFixed(4)}` : "";
+    lines.push(`${usage.requests} request(s) to ${provider.label}${tokens}${cost}; ${usage.fromCache} judgment(s) reused from cache.`);
+    logDecisionUsage({
+      tool: "vault_search_semantic",
+      provider: provider.name,
+      model: provider.model,
+      resolved_models: usage.reported.models,
+      requests: usage.requests,
+      from_cache: usage.fromCache,
+      input_tokens: usage.requests > 0 ? usage.reported.inputTokens : 0,
+      output_tokens: usage.requests > 0 ? usage.reported.outputTokens : 0,
+      cost_usd: usage.requests > 0 ? usage.reported.costUsd : 0,
+    });
   }
   if (usage.failures.length > 0) {
     lines.push(`Warning: ${usage.failures.length} request(s) failed (${[...new Set(usage.failures)].join("; ")}).${passages ? " Their chunks are included unjudged." : ""}`);

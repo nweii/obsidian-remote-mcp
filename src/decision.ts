@@ -268,10 +268,47 @@ export function planBatches(items: JudgeItem[], prompt: JudgePrompt = CHUNK_PROM
   return batches;
 }
 
+// What the provider reported for the successful requests. Token and cost totals are null when any
+// successful response left them out, so a partial sum is never mistaken for the whole.
+export interface DecisionUsage {
+  inputTokens: number | null;
+  outputTokens: number | null;
+  costUsd: number | null;
+  models: string[]; // resolved model ids the provider reported, e.g. a dated version behind an alias
+}
+
 export interface Judgement {
   probabilities: (number | null)[]; // per item, in input order; null = unjudged
   failures: string[];               // one message per failed batch
   requests: number;
+  usage: DecisionUsage;
+}
+
+export const emptyUsage = (): DecisionUsage => ({ inputTokens: 0, outputTokens: 0, costUsd: 0, models: [] });
+
+export function addUsage(total: DecisionUsage, more: DecisionUsage): DecisionUsage {
+  const sum = (a: number | null, b: number | null) => (a === null || b === null ? null : a + b);
+  return {
+    inputTokens: sum(total.inputTokens, more.inputTokens),
+    outputTokens: sum(total.outputTokens, more.outputTokens),
+    costUsd: sum(total.costUsd, more.costUsd),
+    models: [...new Set([...total.models, ...more.models])],
+  };
+}
+
+const finiteNumber = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+
+// Reads `usage` and `model` from one response. Field names follow the System One API; OpenAI-style
+// prompt/completion names are accepted too.
+export function responseUsage(response: unknown): DecisionUsage {
+  const usage = isRecord(response) && isRecord(response.usage) ? response.usage : {};
+  const model = isRecord(response) && typeof response.model === 'string' ? response.model : null;
+  return {
+    inputTokens: finiteNumber(usage.input_tokens) ?? finiteNumber(usage.prompt_tokens),
+    outputTokens: finiteNumber(usage.output_tokens) ?? finiteNumber(usage.completion_tokens),
+    costUsd: finiteNumber(usage.cost),
+    models: model ? [model] : [],
+  };
 }
 
 export interface JudgeOptions {
@@ -299,6 +336,7 @@ export async function judgeItems(
   const probabilities: (number | null)[] = Array(items.length).fill(null);
   const failures: string[] = [];
   let requests = 0;
+  let usage = emptyUsage();
 
   const queue = planBatches(items, prompt).map(indexes => ({ indexes, splits: 0 }));
 
@@ -307,6 +345,7 @@ export async function judgeItems(
     try {
       requests++;
       const response = await evaluate(provider, buildRequest(provider, goal, batchItems, prompt), transport, sleep);
+      usage = addUsage(usage, responseUsage(response));
       parseAnswers(provider, response, indexes.length, prompt).forEach((p, j) => {
         probabilities[indexes[j]!] = p;
       });
@@ -331,5 +370,5 @@ export async function judgeItems(
   }
   await Promise.all(Array.from({ length: Math.min(CONCURRENCY, queue.length) }, worker));
 
-  return { probabilities, failures, requests };
+  return { probabilities, failures, requests, usage };
 }

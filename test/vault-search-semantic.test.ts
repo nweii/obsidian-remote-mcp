@@ -336,6 +336,46 @@ describe('exclusion rules', () => {
   });
 });
 
+describe('reported usage', () => {
+  const items = Array.from({ length: 30 }, (_, i) => ({ source: `${i}.md`, lines: '1-1', text: `chunk ${i}` }));
+  const answering = (usage: (call: number) => unknown, models: string[] = []): Transport => {
+    let call = 0;
+    return async (_e, _k, body) => {
+      const n = call++;
+      const chunks = (body as any).state.chunks as { id: string }[];
+      return {
+        status: 200,
+        json: {
+          answers: Object.fromEntries(chunks.map(c => [c.id, { type: 'noul', noul: 0.5 }])),
+          usage: usage(n),
+          ...(models[n] ? { model: models[n] } : {}),
+        },
+      };
+    };
+  };
+
+  test('sums tokens and cost across requests and lists resolved models once', async () => {
+    const result = await judgeChunks(typesafe, 'g', items, {
+      transport: answering(n => ({ input_tokens: 100 + n, output_tokens: 5, cost: 0.001 }), ['jev-1.13.0', 'jev-1.13.0']),
+      sleep: noSleep,
+    });
+    expect(result.requests).toBe(2);
+    expect(result.usage.inputTokens).toBe(201);
+    expect(result.usage.outputTokens).toBe(10);
+    expect(result.usage.costUsd).toBeCloseTo(0.002);
+    expect(result.usage.models).toEqual(['jev-1.13.0']);
+  });
+
+  test('a total is null when any response left it out', async () => {
+    const result = await judgeChunks(typesafe, 'g', items, {
+      transport: answering(n => (n === 0 ? { input_tokens: 100 } : {})),
+      sleep: noSleep,
+    });
+    expect(result.usage.inputTokens).toBeNull();
+    expect(result.usage.costUsd).toBeNull();
+  });
+});
+
 describe('note prompt requests', () => {
   const items = [{ source: 'A.md', text: 'Title: A' }, { source: 'B.md', text: 'Title: B' }];
 
@@ -533,6 +573,45 @@ describe('vault_search_semantic over a temp vault', () => {
     expect(calls.length).toBe(2);
     expect((calls[1] as any).state.notes.map((n: any) => n.source)).toEqual(['Notes/Recipes.md']);
     expect(edited).toContain('2 judgment(s) reused from cache');
+  });
+
+  test('logs usage per call without the goal or note text, and shows tokens in the result', async () => {
+    process.env.VAULT_PATH = vaultPath;
+    const logDir = await mkdtemp(path.join(os.tmpdir(), 'orm-usage-log-'));
+    const previous = { test: process.env.VAULT_MCP_TEST, dir: process.env.LOG_DIR };
+    process.env.VAULT_MCP_TEST = '0';
+    process.env.LOG_DIR = logDir;
+    const transport: Transport = async (_e, _k, body) => {
+      const items = ((body as any).state.notes ?? (body as any).state.chunks) as { id: string }[];
+      return {
+        status: 200,
+        json: {
+          answers: Object.fromEntries(items.map(c => [c.id, { type: 'noul', noul: 0.9 }])),
+          usage: { input_tokens: 40, output_tokens: 2 },
+          model: 'jev-1.13.0',
+        },
+      };
+    };
+    try {
+      const text = await runSemanticSearch({ goal: 'confidential soup question', folder: 'Notes' }, typesafe, {
+        transport, sleep: noSleep, cache: fresh(), env, passages: false,
+      });
+      expect(text).toContain('1 request(s) to TypeSafe, 40 input tokens;');
+      const lines = (await fs.readFile(path.join(logDir, 'decision-usage.jsonl'), 'utf-8')).trim().split('\n');
+      expect(lines.length).toBe(1);
+      const record = JSON.parse(lines[0]!);
+      expect(record).toMatchObject({
+        tool: 'vault_search_semantic', provider: 'typesafe', model: 'jev-latest', resolved_models: ['jev-1.13.0'],
+        requests: 1, from_cache: 0, input_tokens: 40, output_tokens: 2, cost_usd: null,
+      });
+      expect(lines[0]).not.toContain('confidential');
+      expect(lines[0]).not.toContain('Lentils');
+    } finally {
+      process.env.VAULT_MCP_TEST = previous.test;
+      if (previous.dir === undefined) delete process.env.LOG_DIR;
+      else process.env.LOG_DIR = previous.dir;
+      await rm(logDir, { recursive: true, force: true });
+    }
   });
 
   test('tool runs without confirmation and never sends excluded notes, however they are named', async () => {

@@ -5,6 +5,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import {
+  emptyUsage,
   judgeItems,
   type DecisionProvider,
   type JudgeItem,
@@ -132,7 +133,7 @@ export async function judgeWithCache(
     if (hit === undefined) pending.push(i);
     else probabilities[i] = hit;
   }
-  if (pending.length === 0) return { probabilities, failures: [], requests: 0, fromCache: items.length };
+  if (pending.length === 0) return { probabilities, failures: [], requests: 0, usage: emptyUsage(), fromCache: items.length };
 
   const fresh = await judgeItems(provider, goal, pending.map(i => items[i]!), prompt, options);
   for (let j = 0; j < pending.length; j++) {
@@ -142,5 +143,5 @@ export async function judgeWithCache(
     await cache.set(keys[pending[j]!]!, p);
   }
   await cache.save();
-  return { probabilities, failures: fresh.failures, requests: fresh.requests, fromCache: items.length - pending.length };
+  return { probabilities, failures: fresh.failures, requests: fresh.requests, usage: fresh.usage, fromCache: items.length - pending.length };
 }

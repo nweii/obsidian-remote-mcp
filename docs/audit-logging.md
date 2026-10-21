@@ -4,9 +4,9 @@
 
 ## Files and controls
 
-Logging is enabled by default. Tool calls go to `LOG_DIR/tool-calls.jsonl`; feedback goes to `LOG_DIR/feedback.jsonl`.
+Logging is enabled by default. Tool calls go to `LOG_DIR/tool-calls.jsonl`; feedback goes to `LOG_DIR/feedback.jsonl`; decision-model usage goes to `LOG_DIR/decision-usage.jsonl`.
 
-Set `LOG_ENABLED=false` to disable both logs and omit the `vault_feedback` tool.
+Set `LOG_ENABLED=false` to disable all three logs and omit the `vault_feedback` tool.
 
 Logs do not rotate automatically. Use a persistent volume for `LOG_DIR` when logs must survive container replacement. Rotate or truncate the files to limit disk usage.
 
@@ -33,6 +33,16 @@ Tool names, paths, titles, search queries, tags, frontmatter field names, and st
 `vault_cli` and `vault_cli_help` record the command, parameter names, and flags instead of raw arguments. Parameter values are omitted. Refusal messages may name a path, command ID, or parameter name.
 
 YAML parser errors record fixed diagnostic categories and line numbers. `AmbiguousHeadingError.message` includes line numbers without note previews. `candidatesText()` puts previews in the response's second content block, which the logger does not record.
+
+## Decision-model usage
+
+Each `vault_search_semantic` call that judges anything writes one entry: `{ ts, client, client_name?, tool, provider, model, resolved_models, requests, from_cache, input_tokens, output_tokens, cost_usd }`.
+
+- `model` is the configured model or alias. `resolved_models` lists the versions the provider reported answering with.
+- `from_cache` counts judgments answered from the cache with no request.
+- Token and cost fields are what the provider reported. A field is `null` when any request's response left it out, so a partial sum is never recorded as the total. Only some providers report `cost_usd`; for the rest, multiply `input_tokens` by the provider's published price.
+
+Entries hold counts and model names only, never the goal, note paths, or note text. The tool's result also shows the request count and input tokens.
 
 ## Feedback
 
