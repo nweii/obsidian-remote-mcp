@@ -71,8 +71,8 @@ Every judgment is cached under a hash of the provider, model, prompt, goal (igno
 
 Exclusions apply together. A call can add exclusions but cannot override the server's rules.
 
-- `.mcpignore` blocks matching paths from the vault file tools.
-- `SEMANTIC_EXCLUDE_TAGS` and `SEMANTIC_EXCLUDE_PATHS` apply to every call. `SKIM_EXCLUDE_TAGS` and `SKIM_EXCLUDE_PATHS` are supported aliases; when both forms are set, their rules combine.
+- `.mcpignore` hides matching paths from every tool and connected client.
+- `EXTERNAL_API_EXCLUDE_TAGS` and `EXTERNAL_API_EXCLUDE_PATHS` keep notes readable by connected clients but never send them to an external model API. They apply to every feature that does so. `SKIM_EXCLUDE_TAGS` and `SKIM_EXCLUDE_PATHS` are supported aliases; when both forms are set, their rules combine.
 - `exclude_tags` and `exclude_paths` add exclusions for one call.
 
 Use comma-separated tags and paths for the server settings. `private` matches only `#private`. `work/*` matches `#work` and all nested tags. Tags are read from frontmatter and inline `#tag`.

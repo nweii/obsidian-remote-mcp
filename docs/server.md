@@ -104,8 +104,8 @@ The Web Clipper interpreter uses its own settings export. Decision-model setting
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `SEMANTIC_EXCLUDE_TAGS` | no | Comma-separated tags whose notes `vault_search_semantic` never sends. `x` matches `#x` only; `x/*` matches `#x` and nested tags. |
-| `SEMANTIC_EXCLUDE_PATHS` | no | Comma-separated vault-relative path rules whose notes (and everything under them) `vault_search_semantic` never sends. Rules use `.mcpignore` syntax, so `*`, `?` and `**` wildcards work. |
+| `EXTERNAL_API_EXCLUDE_TAGS` | no | Comma-separated tags whose notes are never sent to an external model API (by any feature that sends note text, such as `vault_search_semantic`). Connected clients can still read them; use `.mcpignore` to hide notes from clients too. `x` matches `#x` only; `x/*` matches `#x` and nested tags. |
+| `EXTERNAL_API_EXCLUDE_PATHS` | no | Comma-separated vault-relative path rules whose notes (and everything under them) are never sent to an external model API. Rules use `.mcpignore` syntax, so `*`, `?` and `**` wildcards work. |
 | `SEMANTIC_CACHE_PATH` | no | File for cached decision-model judgments (default `./semantic-cache.json`). Stores hashes and probabilities only. `off` keeps the cache in memory. |
 | `SKIM_EXCLUDE_TAGS` / `SKIM_EXCLUDE_PATHS` / `SKIM_CACHE_PATH` | no | Supported aliases. Exclusion rules from both forms combine; for the cache path, `SEMANTIC_CACHE_PATH` wins. |
 

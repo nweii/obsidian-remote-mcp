@@ -30,6 +30,7 @@ src/
   clip.ts         — Registers vault_clip_url when the optional web-clipper-headless is installed
   cli.ts          — Registers vault_cli / vault_cli_help when the obsidian CLI is opted in and reaches this vault: guards, probe, help parsing; backlinks via Obsidian
   semantic-search.ts — Registers vault_search_semantic when a decision-model key is set: note selection, exclusions, note ranking, passage extraction, rendering
+  api-exclusions.ts — Which notes may be sent to an external model API: EXTERNAL_API_EXCLUDE_* rules plus per-call additions
   judgment-cache.ts — Persisted decision-model judgments for vault_search_semantic, keyed by a hash of the exact text judged
   chunk.ts        — Line-aware chunker with overlap used by vault_search_semantic
   decision.ts     — Decision-model client (TypeSafe, OpenRouter, OpenAI): provider resolution, request shapes, batching, retries

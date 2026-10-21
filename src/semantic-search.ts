@@ -1,6 +1,6 @@
 // ABOUTME: Registers vault_search_semantic, which finds notes by meaning through a decision model: it ranks
 // candidate notes from short note cards, then returns only the passages of the best notes that bear on a
-// goal. Judgments are cached. Notes can be withheld by tag or path, from config or per call.
+// goal. Judgments are cached. Notes under the external-API exclusions, or excluded per call, are never sent.
 
 import type { McpServer } from "@modelcontextprotocol/server";
 import path from "node:path";
@@ -9,7 +9,7 @@ import * as vault from "./vault.js";
 import { chunkText, type Chunk } from "./chunk.js";
 import { CHUNK_PROMPT, resolveDecisionProvider, type DecisionProvider, type JudgeOptions, type JudgePrompt } from "./decision.js";
 import { parseFrontmatter, splitFrontmatter } from "./frontmatter.js";
-import { compileIgnoreRules } from "./ignore.js";
+import { contentExclusion, exclusionRules, pathExclusion } from "./api-exclusions.js";
 import { judgeWithCache, judgmentCacheFromEnv, type JudgmentCache } from "./judgment-cache.js";
 import { registerLogged } from "./log.js";
 
@@ -21,92 +21,6 @@ export const DEFAULT_THRESHOLD = 0.5;
 const EXCLUDED_DISPLAY_LIMIT = 20;
 const OTHER_RELEVANT_LIMIT = 20;
 const EXCERPT_CHARS = 400;
-
-// --- Exclusion rules --------------------------------------------------------------
-
-type RuleOrigin = "server config" | "this request";
-
-interface ExclusionRules {
-  tags: { pattern: string; origin: RuleOrigin }[];
-  paths: { pattern: string; origin: RuleOrigin; matches: (relPath: string) => boolean }[];
-}
-
-const splitList = (raw: string | undefined): string[] =>
-  (raw ?? "").split(",").map(s => s.trim()).filter(Boolean);
-
-const normalizeTag = (tag: string) => tag.trim().replace(/^#/, "").toLowerCase();
-const normalizePath = (p: string) => path.posix.normalize(p.trim().replace(/^\/+|\/+$/g, "") || ".").normalize("NFC");
-
-// Config rules come from SEMANTIC_EXCLUDE_TAGS / SEMANTIC_EXCLUDE_PATHS, plus their SKIM_EXCLUDE_* aliases
-// when set (the two lists combine, so neither can drop the other's rules). Request rules are added on top
-// and can never remove a config rule.
-export function exclusionRules(
-  request: { exclude_tags?: string[]; exclude_paths?: string[] },
-  env: NodeJS.ProcessEnv = process.env,
-): ExclusionRules {
-  const tag = (origin: RuleOrigin) => (t: string) => ({ pattern: normalizeTag(t), origin });
-  const path = (origin: RuleOrigin) => (p: string) => {
-    const pattern = normalizePath(p);
-    return { pattern, origin, matches: pathMatcher(pattern) };
-  };
-  return {
-    tags: [
-      ...[...splitList(env.SEMANTIC_EXCLUDE_TAGS), ...splitList(env.SKIM_EXCLUDE_TAGS)].map(tag("server config")),
-      ...(request.exclude_tags ?? []).map(tag("this request")),
-    ].filter(r => r.pattern !== "" && r.pattern !== "*"),
-    paths: [
-      ...[...splitList(env.SEMANTIC_EXCLUDE_PATHS), ...splitList(env.SKIM_EXCLUDE_PATHS)].map(path("server config")),
-      ...(request.exclude_paths ?? []).filter(p => p.trim() !== "").map(path("this request")),
-    ],
-  };
-}
-
-// `private` matches only #private; `work/*` matches #work and every tag nested under it.
-export function tagMatches(tag: string, pattern: string): boolean {
-  const t = normalizeTag(tag);
-  if (pattern.endsWith("/*")) {
-    const base = pattern.slice(0, -2);
-    return t === base || t.startsWith(base + "/");
-  }
-  return t === pattern;
-}
-
-// A path rule uses .mcpignore's syntax and matching: it covers the path and everything under it,
-// ignoring case, and `*`, `?` and `**` wildcards are allowed. "." (or "/") covers the whole vault.
-function pathMatcher(pattern: string): (relPath: string) => boolean {
-  const rule = normalizePath(pattern);
-  if (rule === ".") return () => true;
-  const ignored = compileIgnoreRules(rule);
-  return relPath => ignored(normalizePath(relPath));
-}
-
-export function pathMatches(relPath: string, pattern: string): boolean {
-  return pathMatcher(pattern)(relPath);
-}
-
-function pathExclusion(relPath: string, rules: ExclusionRules): string | null {
-  const rule = rules.paths.find(r => r.matches(relPath));
-  return rule ? `path ${rule.pattern} (${rule.origin})` : null;
-}
-
-// A note whose tags cannot be read can't be checked against the tag rules, so it is withheld.
-function contentExclusion(content: string, rules: ExclusionRules): string | null {
-  let tags: string[];
-  try {
-    tags = vault.getNoteTags(content);
-  } catch {
-    return rules.tags.length > 0 ? "unreadable frontmatter, so its tags cannot be checked" : null;
-  }
-  return tagExclusion(tags, rules);
-}
-
-function tagExclusion(tags: string[], rules: ExclusionRules): string | null {
-  for (const rule of rules.tags) {
-    const hit = tags.find(t => tagMatches(t, rule.pattern));
-    if (hit) return `tag #${hit} (${rule.origin})`;
-  }
-  return null;
-}
 
 // --- Selection --------------------------------------------------------------------
 

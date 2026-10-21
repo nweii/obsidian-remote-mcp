@@ -19,7 +19,8 @@ import {
   type HttpResponse,
   type Transport,
 } from '../src/decision.js';
-import { exclusionRules, NOTE_PROMPT, pathMatches, registerSemanticSearchTool, runSemanticSearch, selectNotes, tagMatches } from '../src/semantic-search.js';
+import { NOTE_PROMPT, registerSemanticSearchTool, runSemanticSearch, selectNotes } from '../src/semantic-search.js';
+import { exclusionRules, pathMatches, tagMatches } from '../src/api-exclusions.js';
 import { JudgmentCache } from '../src/judgment-cache.js';
 
 const typesafe: DecisionProvider = {
@@ -311,10 +312,10 @@ describe('exclusion rules', () => {
     expect(tagMatches('workshop', 'work/*')).toBe(false);
   });
 
-  test('SKIM_EXCLUDE_* aliases add to SEMANTIC_EXCLUDE_* rather than replacing them', () => {
+  test('SKIM_EXCLUDE_* aliases add to EXTERNAL_API_EXCLUDE_* rather than replacing them', () => {
     const rules = exclusionRules({}, {
-      SEMANTIC_EXCLUDE_TAGS: 'private', SKIM_EXCLUDE_TAGS: 'secret',
-      SEMANTIC_EXCLUDE_PATHS: 'Journal', SKIM_EXCLUDE_PATHS: 'Inbox',
+      EXTERNAL_API_EXCLUDE_TAGS: 'private', SKIM_EXCLUDE_TAGS: 'secret',
+      EXTERNAL_API_EXCLUDE_PATHS: 'Journal', SKIM_EXCLUDE_PATHS: 'Inbox',
     });
     expect(rules.tags.map(r => r.pattern)).toEqual(['private', 'secret']);
     expect(rules.paths.map(r => r.pattern)).toEqual(['Journal', 'Inbox']);
@@ -336,7 +337,7 @@ describe('exclusion rules', () => {
   });
 
   test('request rules add to config rules', () => {
-    const rules = exclusionRules({ exclude_tags: ['#Draft'], exclude_paths: ['/Inbox/'] }, { SEMANTIC_EXCLUDE_TAGS: 'private, work/*', SEMANTIC_EXCLUDE_PATHS: 'Journal' });
+    const rules = exclusionRules({ exclude_tags: ['#Draft'], exclude_paths: ['/Inbox/'] }, { EXTERNAL_API_EXCLUDE_TAGS: 'private, work/*', EXTERNAL_API_EXCLUDE_PATHS: 'Journal' });
     expect(rules.tags.map(r => [r.pattern, r.origin])).toEqual([
       ['private', 'server config'], ['work/*', 'server config'], ['draft', 'this request'],
     ]);
@@ -371,7 +372,7 @@ describe('note prompt requests', () => {
 
 describe('vault_search_semantic over a temp vault', () => {
   let vaultPath: string;
-  const env = { SEMANTIC_EXCLUDE_TAGS: 'private', SEMANTIC_EXCLUDE_PATHS: 'Journal' };
+  const env = { EXTERNAL_API_EXCLUDE_TAGS: 'private', EXTERNAL_API_EXCLUDE_PATHS: 'Journal' };
   const fresh = () => new JudgmentCache(null);
 
   async function seed(rel: string, content: string) {
@@ -547,8 +548,8 @@ describe('vault_search_semantic over a temp vault', () => {
 
   test('tool runs without confirmation and never sends excluded notes, however they are named', async () => {
     process.env.VAULT_PATH = vaultPath;
-    const previous = process.env.SEMANTIC_EXCLUDE_PATHS;
-    process.env.SEMANTIC_EXCLUDE_PATHS = 'Journal';
+    const previous = process.env.EXTERNAL_API_EXCLUDE_PATHS;
+    process.env.EXTERNAL_API_EXCLUDE_PATHS = 'Journal';
     const calls: unknown[] = [];
     const client = await connect(scoringTransport('needle', calls));
     try {
@@ -565,8 +566,8 @@ describe('vault_search_semantic over a temp vault', () => {
       expect(result.content[0].text).toContain('Withheld 3 note(s) by exclusion rules.');
     } finally {
       await client.close();
-      if (previous === undefined) delete process.env.SEMANTIC_EXCLUDE_PATHS;
-      else process.env.SEMANTIC_EXCLUDE_PATHS = previous;
+      if (previous === undefined) delete process.env.EXTERNAL_API_EXCLUDE_PATHS;
+      else process.env.EXTERNAL_API_EXCLUDE_PATHS = previous;
     }
   });
 
