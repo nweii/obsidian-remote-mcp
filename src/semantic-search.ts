@@ -1,5 +1,5 @@
-// ABOUTME: Registers vault_skim, which finds and reads notes by meaning through a decision model: it ranks
-// candidate notes from short note cards, then keeps only the passages of the best notes that bear on a
+// ABOUTME: Registers vault_search_semantic, which finds notes by meaning through a decision model: it ranks
+// candidate notes from short note cards, then returns only the passages of the best notes that bear on a
 // goal. Judgments are cached. Notes can be withheld by tag or path, from config or per call.
 
 import type { McpServer } from "@modelcontextprotocol/server";
@@ -37,8 +37,9 @@ const splitList = (raw: string | undefined): string[] =>
 const normalizeTag = (tag: string) => tag.trim().replace(/^#/, "").toLowerCase();
 const normalizePath = (p: string) => path.posix.normalize(p.trim().replace(/^\/+|\/+$/g, "") || ".").normalize("NFC");
 
-// Config rules come from SKIM_EXCLUDE_TAGS / SKIM_EXCLUDE_PATHS; request rules are added on top and
-// can never remove a config rule.
+// Config rules come from SEMANTIC_EXCLUDE_TAGS / SEMANTIC_EXCLUDE_PATHS, plus their SKIM_EXCLUDE_* aliases
+// when set (the two lists combine, so neither can drop the other's rules). Request rules are added on top
+// and can never remove a config rule.
 export function exclusionRules(
   request: { exclude_tags?: string[]; exclude_paths?: string[] },
   env: NodeJS.ProcessEnv = process.env,
@@ -50,11 +51,11 @@ export function exclusionRules(
   };
   return {
     tags: [
-      ...splitList(env.SKIM_EXCLUDE_TAGS).map(tag("server config")),
+      ...[...splitList(env.SEMANTIC_EXCLUDE_TAGS), ...splitList(env.SKIM_EXCLUDE_TAGS)].map(tag("server config")),
       ...(request.exclude_tags ?? []).map(tag("this request")),
     ].filter(r => r.pattern !== "" && r.pattern !== "*"),
     paths: [
-      ...splitList(env.SKIM_EXCLUDE_PATHS).map(path("server config")),
+      ...[...splitList(env.SEMANTIC_EXCLUDE_PATHS), ...splitList(env.SKIM_EXCLUDE_PATHS)].map(path("server config")),
       ...(request.exclude_paths ?? []).filter(p => p.trim() !== "").map(path("this request")),
     ],
   };
@@ -109,7 +110,7 @@ function tagExclusion(tags: string[], rules: ExclusionRules): string | null {
 
 // --- Selection --------------------------------------------------------------------
 
-export interface SkimRequest {
+export interface SemanticSearchRequest {
   goal: string;
   paths?: string[];
   folder?: string;
@@ -132,9 +133,9 @@ export interface Selection {
   missing: { input: string; reason: string }[];
 }
 
-export class SkimScopeError extends Error {}
+export class SearchScopeError extends Error {}
 
-async function candidatePaths(req: SkimRequest): Promise<{ label: string; named: boolean; paths: string[]; missing: Selection["missing"] }> {
+async function candidatePaths(req: SemanticSearchRequest): Promise<{ label: string; named: boolean; paths: string[]; missing: Selection["missing"] }> {
   const missing: Selection["missing"] = [];
 
   if (req.paths && req.paths.length > 0) {
@@ -192,10 +193,10 @@ export function noteCard(notePath: string, content: string): Candidate {
 
 // Every note that may be sent for this request, with the notes withheld and why. Path rules are checked
 // before a note is read; tag rules after.
-export async function selectNotes(req: SkimRequest, env: NodeJS.ProcessEnv = process.env): Promise<Selection> {
+export async function selectNotes(req: SemanticSearchRequest, env: NodeJS.ProcessEnv = process.env): Promise<Selection> {
   const rules = exclusionRules(req, env);
   const { label, named, paths, missing } = await candidatePaths(req);
-  // Match as vault_search_content does, but only after skim path exclusions have been applied.
+  // Match as vault_search_content does, but only after path exclusions have been applied.
   const query = !named && req.query ? vault.compileSearchPattern(req.query, "i") : null;
 
   const candidates: Candidate[] = [];
@@ -236,7 +237,7 @@ export async function selectNotes(req: SkimRequest, env: NodeJS.ProcessEnv = pro
       continue;
     }
     if (candidates.length >= MAX_CANDIDATES) {
-      throw new SkimScopeError(`More than ${MAX_CANDIDATES} notes are in scope. Narrow with folder, query, or paths.`);
+      throw new SearchScopeError(`More than ${MAX_CANDIDATES} notes are in scope. Narrow with folder, query, or paths.`);
     }
     candidates.push(noteCard(notePath, content));
   }
@@ -265,7 +266,7 @@ export interface RankedNote {
   p: number | null; // null when the note stage was skipped or the note went unjudged
 }
 
-export interface SkimOptions extends JudgeOptions {
+export interface SemanticSearchOptions extends JudgeOptions {
   maxNotes?: number;
   passages?: boolean;
   threshold?: number;
@@ -280,7 +281,7 @@ interface Usage {
   failures: string[];
 }
 
-interface NoteSkim {
+interface NotePassages {
   path: string;
   p: number | null;
   total: number;
@@ -290,14 +291,14 @@ interface NoteSkim {
 
 // Reads each note again, re-checks its tags against the rules (the note may have changed since
 // selection), and keeps the chunks that bear on the goal.
-async function skimNotes(
+async function readPassages(
   provider: DecisionProvider,
-  req: SkimRequest,
+  req: SemanticSearchRequest,
   notes: RankedNote[],
-  options: SkimOptions,
+  options: SemanticSearchOptions,
   cache: JudgmentCache,
   usage: Usage,
-): Promise<{ skims: NoteSkim[]; overChunkLimit: number }> {
+): Promise<{ skims: NotePassages[]; overChunkLimit: number }> {
   const rules = exclusionRules(req, options.env);
   const planned: { note: RankedNote; chunks: Chunk[] }[] = [];
   let chunkCount = 0;
@@ -362,9 +363,9 @@ function noteLine(note: RankedNote): string {
   return note.candidate.description ? `${line}: ${note.candidate.description}` : line;
 }
 
-// Ranks notes when the selection is larger than max_notes or only a ranking was asked for, then skims
-// the best notes for passages. Named notes that fit within max_notes are skimmed directly.
-export async function runSkim(req: SkimRequest, provider: DecisionProvider, options: SkimOptions = {}): Promise<string> {
+// Ranks notes when the selection is larger than max_notes or only a ranking was asked for, then reads
+// the best notes for passages. A selection that fits within max_notes is read directly.
+export async function runSemanticSearch(req: SemanticSearchRequest, provider: DecisionProvider, options: SemanticSearchOptions = {}): Promise<string> {
   const env = options.env ?? process.env;
   const cache = options.cache ?? judgmentCacheFromEnv(env);
   const maxNotes = Math.min(MAX_NOTES_CAP, Math.max(1, options.maxNotes ?? DEFAULT_MAX_NOTES));
@@ -405,10 +406,10 @@ export async function runSkim(req: SkimRequest, provider: DecisionProvider, opti
 
   if (selection.candidates.length === 0) lines.push("No notes to judge after exclusions.");
 
-  let skims: NoteSkim[] = [];
+  let skims: NotePassages[] = [];
   let overChunkLimit = 0;
   if (passages && chosen.length > 0) {
-    ({ skims, overChunkLimit } = await skimNotes(provider, req, chosen, options, cache, usage));
+    ({ skims, overChunkLimit } = await readPassages(provider, req, chosen, options, cache, usage));
   }
 
   if (passages && skims.length > 0) {
@@ -417,7 +418,7 @@ export async function runSkim(req: SkimRequest, provider: DecisionProvider, opti
     const chars = skims.reduce((n, s) => n + s.chars, 0);
     const keptChars = skims.reduce((n, s) => n + s.kept.reduce((m, k) => m + k.chunk.text.length, 0), 0);
     const saved = chars > 0 ? Math.round((1 - keptChars / chars) * 100) : 0;
-    lines.push(`Skimmed ${skims.length} note(s): kept ${kept} of ${total} chunk(s), ${fmtChars(chars)} → ${fmtChars(keptChars)} chars (${saved}% saved). Chunks are cited as path:start-end lines; use vault_read for surrounding context.`);
+    lines.push(`Read ${skims.length} note(s) for passages: kept ${kept} of ${total} chunk(s), ${fmtChars(chars)} → ${fmtChars(keptChars)} chars (${saved}% saved). Chunks are cited as path:start-end lines; use vault_read for surrounding context.`);
   }
   if (usage.requests > 0 || usage.fromCache > 0) {
     lines.push(`${usage.requests} request(s) to ${provider.label}; ${usage.fromCache} judgment(s) reused from cache.`);
@@ -426,7 +427,7 @@ export async function runSkim(req: SkimRequest, provider: DecisionProvider, opti
     lines.push(`Warning: ${usage.failures.length} request(s) failed (${[...new Set(usage.failures)].join("; ")}).${passages ? " Their chunks are included unjudged." : ""}`);
   }
   if (unjudgedNotes > 0) lines.push(`Warning: ${unjudgedNotes} note(s) could not be ranked and are left out.`);
-  if (overChunkLimit > 0) lines.push(`${overChunkLimit} more note(s) were not skimmed: the ${MAX_CHUNKS}-chunk limit per call was reached. Lower max_notes or narrow the selection.`);
+  if (overChunkLimit > 0) lines.push(`${overChunkLimit} more note(s) were not read for passages: the ${MAX_CHUNKS}-chunk limit per call was reached. Lower max_notes or narrow the selection.`);
 
   const body = [lines.join("\n")];
   if (selection.excluded.length > 0) {
@@ -460,7 +461,7 @@ export async function runSkim(req: SkimRequest, provider: DecisionProvider, opti
     if (nothing.length > 0) body.push(`## Nothing relevant in ${nothing.length} note(s)\n${nothing.map(p => `- ${p}`).join("\n")}`);
     if (others.length > 0) {
       body.push([
-        `## Other relevant notes (not skimmed)`,
+        `## Other relevant notes (passages not returned)`,
         ...others.slice(0, OTHER_RELEVANT_LIMIT).map(noteLine),
         ...(others.length > OTHER_RELEVANT_LIMIT ? [`- …and ${others.length - OTHER_RELEVANT_LIMIT} more`] : []),
       ].join("\n"));
@@ -481,25 +482,25 @@ function loadProviderOnce(): DecisionProvider | null {
   try {
     providerOnce = resolveDecisionProvider();
   } catch (e) {
-    console.error(`[obsidian-remote-mcp] vault_skim disabled: ${e instanceof Error ? e.message : String(e)}`);
+    console.error(`[obsidian-remote-mcp] vault_search_semantic disabled: ${e instanceof Error ? e.message : String(e)}`);
     providerOnce = null;
   }
   return providerOnce;
 }
 
-export function registerSkimTool(server: McpServer, options: { provider?: DecisionProvider | null; cache?: JudgmentCache } & JudgeOptions = {}) {
+export function registerSemanticSearchTool(server: McpServer, options: { provider?: DecisionProvider | null; cache?: JudgmentCache } & JudgeOptions = {}) {
   const provider = options.provider !== undefined ? options.provider : loadProviderOnce();
   if (!provider) return;
 
   registerLogged(server,
-    "vault_skim",
+    "vault_search_semantic",
     {
       annotations: { readOnlyHint: true, openWorldHint: true },
-      title: "Find and skim notes by meaning",
+      title: "Search notes by meaning",
       description:
         `Finds notes by meaning and returns only the passages relevant to a goal, judged by an external decision model (${provider.label}, ${provider.model}). ` +
         "It works in two stages. First it ranks candidate notes from a short card (title, folder, tags, and description or opening text). Then it splits the best notes into ~2,000-char chunks and keeps the ones that bear on the goal, cited as path:start-end. " +
-        "With no selection it searches the whole vault; narrow with folder, query (regex, as vault_search_content), or paths (paths or titles). Notes named with paths that fit within max_notes skip ranking and are skimmed directly. passages: false returns only the ranked notes, which is faster. " +
+        "With no selection it searches the whole vault; narrow with folder, query (regex, as vault_search_content), or paths (paths or titles). A selection that fits within max_notes skips ranking and is read directly. passages: false returns only the ranked notes, which is faster. " +
         "Judgments are cached, so repeating a call costs nothing. Note text is sent to the provider; notes under the server's configured exclusions are never sent, and exclude_tags and exclude_paths withhold more for this call. " +
         "Use vault_search_content for exact words or names, and vault_outline + vault_read_section for a single well-structured note.",
       inputSchema: z.object({
@@ -509,7 +510,7 @@ export function registerSkimTool(server: McpServer, options: { provider?: Decisi
         folder: z.string().optional().describe('Consider only notes in this folder (e.g. "03-Records/Working").'),
         exclude_tags: z.array(z.string()).optional().describe('Also withhold notes carrying these tags, for this call. "work/*" covers #work and its nested tags.'),
         exclude_paths: z.array(z.string()).optional().describe('Also withhold notes at or under these vault-relative paths, for this call. Wildcards as in .mcpignore: "**/Private" covers every Private folder.'),
-        max_notes: z.number().int().optional().default(DEFAULT_MAX_NOTES).describe(`Most notes to return or skim (default ${DEFAULT_MAX_NOTES}, up to ${MAX_NOTES_CAP}).`),
+        max_notes: z.number().int().optional().default(DEFAULT_MAX_NOTES).describe(`Most notes to return (default ${DEFAULT_MAX_NOTES}, up to ${MAX_NOTES_CAP}).`),
         passages: z.boolean().optional().default(true).describe("Return relevant passages from the best notes (default). False returns only the ranked notes."),
         threshold: z.number().min(0).max(1).optional().default(DEFAULT_THRESHOLD).describe("Keep notes and chunks with P(relevant) at or above this (default 0.5). Lower it if nothing comes back."),
         max_chunks_per_note: z.number().int().optional().describe("Keep at most this many chunks per note, best first."),
@@ -517,7 +518,7 @@ export function registerSkimTool(server: McpServer, options: { provider?: Decisi
     },
     async ({ goal, paths, query, folder, exclude_tags, exclude_paths, max_notes, passages, threshold, max_chunks_per_note }) => {
       try {
-        const text = await runSkim({ goal, paths, query, folder, exclude_tags, exclude_paths }, provider, {
+        const text = await runSemanticSearch({ goal, paths, query, folder, exclude_tags, exclude_paths }, provider, {
           maxNotes: max_notes,
           passages,
           threshold,
@@ -529,7 +530,7 @@ export function registerSkimTool(server: McpServer, options: { provider?: Decisi
         return { content: [{ type: "text" as const, text }] };
       } catch (e) {
         // Caller errors become results; nothing has been sent for them.
-        if (e instanceof SkimScopeError) return { content: [{ type: "text" as const, text: `Error: ${e.message}` }], isError: true };
+        if (e instanceof SearchScopeError) return { content: [{ type: "text" as const, text: `Error: ${e.message}` }], isError: true };
         if (!vault.isVaultError(e)) throw e;
         return { content: [{ type: "text" as const, text: `Error: could not select notes: ${e.message}` }], isError: true };
       }

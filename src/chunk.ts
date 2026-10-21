@@ -1,4 +1,4 @@
-// ABOUTME: Line-aware text chunker for vault_skim. Splits a note into ~fixed-size chunks that remember
+// ABOUTME: Line-aware text chunker for vault_search_semantic. Splits a note into ~fixed-size chunks that remember
 // their 1-based line range, repeating a slice of each chunk's tail at the start of the next.
 
 export interface Chunk {

@@ -1,4 +1,4 @@
-// ABOUTME: Persisted cache of decision-model judgments for vault_skim. Keys hash everything that shapes an
+// ABOUTME: Persisted cache of decision-model judgments for vault_search_semantic. Keys hash everything that shapes an
 // answer (provider, model, prompt, goal, and the exact text judged), so a repeat costs nothing and an
 // edited note is re-judged. Stores only hashes and probabilities, never note text.
 import fs from 'node:fs/promises';
@@ -86,14 +86,14 @@ export class JudgmentCache {
 
 const caches = new Map<string, JudgmentCache>();
 
-// SKIM_CACHE_PATH sets the file (default ./skim-cache.json); "off" disables persistence. Tests keep
-// the cache in memory unless they set a path.
+// SEMANTIC_CACHE_PATH (or its SKIM_CACHE_PATH alias) sets the file (default ./semantic-cache.json); "off"
+// disables persistence. Tests keep the cache in memory unless they set a path.
 export function judgmentCacheFromEnv(env: NodeJS.ProcessEnv = process.env): JudgmentCache {
-  const configured = env.SKIM_CACHE_PATH?.trim();
+  const configured = env.SEMANTIC_CACHE_PATH?.trim() || env.SKIM_CACHE_PATH?.trim();
   const filePath = configured === 'off' ? null
     : configured ? path.resolve(configured)
     : env.VAULT_MCP_TEST === '1' ? null
-    : path.resolve('./skim-cache.json');
+    : path.resolve('./semantic-cache.json');
   const key = filePath ?? ':memory:';
   let cache = caches.get(key);
   if (!cache) {

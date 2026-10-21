@@ -28,7 +28,7 @@
 | `vault_tags` | List all tags with note counts, or note paths for one `tag`; counts frontmatter and inline `#tag` |
 | `vault_periodic_note` | Read or create a daily, weekly, monthly, quarterly, or yearly note at the path the vault's Obsidian config or an env template sets |
 | `vault_clip_url` | Save a web page to the vault as a markdown note |
-| `vault_skim` | Find notes by meaning and return only the passages relevant to a goal, judged by an external decision model; searches the whole vault or a folder, query, or path selection. Listed only when a decision-model key is set (see [Finding and skimming notes](tools.md#finding-and-skimming-notes)) |
+| `vault_search_semantic` | Find notes by meaning and return only the passages relevant to a goal, judged by an external decision model; searches the whole vault or a folder, query, or path selection. Listed only when a decision-model key is set (see [Semantic search](tools.md#semantic-search)) |
 | `vault_cli_help` / `vault_cli` | List and run Obsidian CLI commands against this vault. Opt-in, and listed only when the CLI reaches this vault (see [Obsidian CLI tools](tools.md#obsidian-cli-tools)) |
 | `vault_feedback` | Log a structured note when an agent gets stuck or wants a tool that doesn't exist |
 
@@ -44,14 +44,14 @@ The tool returns Markdown for the calling agent to save with `vault_create`. Set
 
 `use_server_interpreter` defaults to `false`. Unresolved template prompts return `needs_interpretation` for the calling agent to fill through `slot_overrides`. Setting `use_server_interpreter: true` sends page content to the model provider configured in the Web Clipper settings.
 
-## Finding and skimming notes
+## Semantic search
 
-`vault_skim` finds notes by meaning and returns the passages relevant to a goal. A decision model (a model that returns a probability for a yes/no question instead of generating text) judges relevance in two stages:
+`vault_search_semantic` finds notes by meaning and returns the passages relevant to a goal. A decision model (a model that returns a probability for a yes/no question instead of generating text) judges relevance in two stages:
 
 1. **Ranking.** Each candidate note is judged from a short card: its title, folder, tags, and `description` property, or its first 400 characters when it has none. Notes at or above `threshold` are ranked, and the best `max_notes` (default 10) move on.
-2. **Skimming.** Those notes are split into roughly 2,000-character chunks with overlap, and each chunk is judged against the goal. Kept passages include `path:start-end` citations for follow-up reads with `vault_read`.
+2. **Passages.** Those notes are split into roughly 2,000-character chunks with overlap, and each chunk is judged against the goal. Kept passages include `path:start-end` citations for follow-up reads with `vault_read`.
 
-With no selection, the candidates are every note in the vault. `folder`, a regex `query` (optionally within a `folder`), or `paths` (paths or titles) narrow them. When the selection fits within `max_notes`, ranking is skipped and every selected note is skimmed. `passages: false` stops after ranking and returns the ranked notes with their descriptions. A call skims at most 500 chunks.
+With no selection, the candidates are every note in the vault. `folder`, a regex `query` (optionally within a `folder`), or `paths` (paths or titles) narrow them. When the selection fits within `max_notes`, ranking is skipped and every selected note is read for passages. `passages: false` stops after ranking and returns the ranked notes with their descriptions. A call reads at most 500 chunks.
 
 Decision models return a probability rather than generated text. Choose a provider with `DECISION_PROVIDER`.
 
@@ -61,25 +61,25 @@ Decision models return a probability rather than generated text. Choose a provid
 | `openrouter` | `OPENROUTER_API_KEY` | `typesafe/jev-1.13` |
 | `openai` | `OPENAI_API_KEY` | `gpt-6-luna` |
 
-`DECISION_MODEL` overrides the model. Without the chosen provider's key, `vault_skim` is not listed. `SKIM_PROVIDER` and `SKIM_MODEL` remain supported aliases. See [decision-model settings](server.md#decision-models) for precedence and migration details.
+`DECISION_MODEL` overrides the model. Without the chosen provider's key, `vault_search_semantic` is not listed. `SKIM_PROVIDER` and `SKIM_MODEL` remain supported aliases. See [decision-model settings](server.md#decision-models) for precedence and migration details.
 
 ### Cached judgments
 
-Every judgment is cached under a hash of the provider, model, prompt, goal (ignoring case and extra spaces), note path, and the exact text judged. Repeating a call sends nothing, and editing a note re-judges only that note's card and chunks. The cache stores hashes and probabilities, never note text. It lives in `SKIM_CACHE_PATH` (default `./skim-cache.json`) and drops entries after 90 days.
+Every judgment is cached under a hash of the provider, model, prompt, goal (ignoring case and extra spaces), note path, and the exact text judged. Repeating a call sends nothing, and editing a note re-judges only that note's card and chunks. The cache stores hashes and probabilities, never note text. It lives in `SEMANTIC_CACHE_PATH` (default `./semantic-cache.json`) and drops entries after 90 days.
 
 ### Exclusions
 
 Exclusions apply together. A call can add exclusions but cannot override the server's rules.
 
 - `.mcpignore` blocks matching paths from the vault file tools.
-- `SKIM_EXCLUDE_TAGS` and `SKIM_EXCLUDE_PATHS` apply to every call.
+- `SEMANTIC_EXCLUDE_TAGS` and `SEMANTIC_EXCLUDE_PATHS` apply to every call. `SKIM_EXCLUDE_TAGS` and `SKIM_EXCLUDE_PATHS` are supported aliases; when both forms are set, their rules combine.
 - `exclude_tags` and `exclude_paths` add exclusions for one call.
 
 Use comma-separated tags and paths for the server settings. `private` matches only `#private`. `work/*` matches `#work` and all nested tags. Tags are read from frontmatter and inline `#tag`.
 
 Path rules use [`.mcpignore` syntax](#exclude-paths-with-mcpignore) and cover each matching path and its contents. For example, `**/Private` excludes every `Private` folder.
 
-Path exclusions are checked against normalized requested paths and resolved file locations before note text is read, including during query selection. Equivalent spellings and symlinks cannot bypass an excluded folder. Allowed aliases are judged once, under the resolved vault-relative path. A path-excluded note in a query's scope is counted as withheld without reading it to test the query. Tag exclusions are checked on every read, including when a ranked note is read again for skimming. Results report how many notes were withheld, and list each one with its reason when the notes were named with `paths`.
+Path exclusions are checked against normalized requested paths and resolved file locations before note text is read, including during query selection. Equivalent spellings and symlinks cannot bypass an excluded folder. Allowed aliases are judged once, under the resolved vault-relative path. A path-excluded note in a query's scope is counted as withheld without reading it to test the query. Tag exclusions are checked on every read, including when a ranked note is read again for passages. Results report how many notes were withheld, and list each one with its reason when the notes were named with `paths`.
 
 A chunk the model couldn't judge (a failed request, a malformed answer) is kept and marked `unjudged`, so a provider failure can return more text than expected but never silently drops any.
 
@@ -237,11 +237,11 @@ The search walks notes and parses frontmatter for each request. Searches and ind
 
 Both batch tools accept at most 50 entries. They are not transactions. One failed item does not roll back successful items or stop the rest.
 
-### Skim provider requests
+### Semantic search provider requests
 
-In addition to sending requested notes to connected clients, `vault_skim` sends note cards and chunks to a model provider. Note cards are short, so their criteria travel once per request in the state, and up to 100 cards share a request. Chunks carry their criteria per question, up to 24 to a request. Both kinds run four requests at a time, retry rate limits and server errors, and split a batch when the provider reports a question limit.
+In addition to sending requested notes to connected clients, `vault_search_semantic` sends note cards and chunks to a model provider. Note cards are short, so their criteria travel once per request in the state, and up to 100 cards share a request. Chunks carry their criteria per question, up to 24 to a request. Both kinds run four requests at a time, retry rate limits and server errors, and split a batch when the provider reports a question limit.
 
-Path exclusions use `ignore.ts`. Tag exclusions use `getNoteTags`, which reads frontmatter and inline tags. See [finding and skimming notes](#finding-and-skimming-notes) for selection and exclusions.
+Path exclusions use `ignore.ts`. Tag exclusions use `getNoteTags`, which reads frontmatter and inline tags. See [semantic search](#semantic-search) for selection and exclusions.
 
 ### CLI execution
 

@@ -1,5 +1,5 @@
-// ABOUTME: Tests for vault_skim — chunking, provider resolution, request shapes per provider, batching and
-// failure handling with a fake transport, exclusion rules, note ranking, passage skimming, the judgment
+// ABOUTME: Tests for vault_search_semantic — chunking, provider resolution, request shapes per provider, batching and
+// failure handling with a fake transport, exclusion rules, note ranking, passage extraction, the judgment
 // cache, and calls over MCP.
 import { afterAll, beforeAll, describe, expect, spyOn, test } from 'bun:test';
 import fs, { mkdir, mkdtemp, rm, symlink, writeFile } from 'fs/promises';
@@ -19,7 +19,7 @@ import {
   type HttpResponse,
   type Transport,
 } from '../src/decision.js';
-import { exclusionRules, NOTE_PROMPT, pathMatches, registerSkimTool, runSkim, selectNotes, tagMatches } from '../src/skim.js';
+import { exclusionRules, NOTE_PROMPT, pathMatches, registerSemanticSearchTool, runSemanticSearch, selectNotes, tagMatches } from '../src/semantic-search.js';
 import { JudgmentCache } from '../src/judgment-cache.js';
 
 const typesafe: DecisionProvider = {
@@ -311,6 +311,15 @@ describe('exclusion rules', () => {
     expect(tagMatches('workshop', 'work/*')).toBe(false);
   });
 
+  test('SKIM_EXCLUDE_* aliases add to SEMANTIC_EXCLUDE_* rather than replacing them', () => {
+    const rules = exclusionRules({}, {
+      SEMANTIC_EXCLUDE_TAGS: 'private', SKIM_EXCLUDE_TAGS: 'secret',
+      SEMANTIC_EXCLUDE_PATHS: 'Journal', SKIM_EXCLUDE_PATHS: 'Inbox',
+    });
+    expect(rules.tags.map(r => r.pattern)).toEqual(['private', 'secret']);
+    expect(rules.paths.map(r => r.pattern)).toEqual(['Journal', 'Inbox']);
+  });
+
   test('path patterns cover the path and everything under it', () => {
     expect(pathMatches('03-Records/Journaling/2026.md', '03-Records/Journaling')).toBe(true);
     expect(pathMatches('03-Records/Journaling-old/x.md', '03-Records/Journaling')).toBe(false);
@@ -327,7 +336,7 @@ describe('exclusion rules', () => {
   });
 
   test('request rules add to config rules', () => {
-    const rules = exclusionRules({ exclude_tags: ['#Draft'], exclude_paths: ['/Inbox/'] }, { SKIM_EXCLUDE_TAGS: 'private, work/*', SKIM_EXCLUDE_PATHS: 'Journal' });
+    const rules = exclusionRules({ exclude_tags: ['#Draft'], exclude_paths: ['/Inbox/'] }, { SEMANTIC_EXCLUDE_TAGS: 'private, work/*', SEMANTIC_EXCLUDE_PATHS: 'Journal' });
     expect(rules.tags.map(r => [r.pattern, r.origin])).toEqual([
       ['private', 'server config'], ['work/*', 'server config'], ['draft', 'this request'],
     ]);
@@ -360,9 +369,9 @@ describe('note prompt requests', () => {
   });
 });
 
-describe('vault_skim over a temp vault', () => {
+describe('vault_search_semantic over a temp vault', () => {
   let vaultPath: string;
-  const env = { SKIM_EXCLUDE_TAGS: 'private', SKIM_EXCLUDE_PATHS: 'Journal' };
+  const env = { SEMANTIC_EXCLUDE_TAGS: 'private', SEMANTIC_EXCLUDE_PATHS: 'Journal' };
   const fresh = () => new JudgmentCache(null);
 
   async function seed(rel: string, content: string) {
@@ -372,17 +381,17 @@ describe('vault_skim over a temp vault', () => {
   }
 
   async function connect(transport: Transport, cache = fresh()) {
-    const server = new McpServer({ name: 'skim-test', version: '0' });
-    registerSkimTool(server, { provider: typesafe, transport, sleep: noSleep, cache });
+    const server = new McpServer({ name: 'semantic-test', version: '0' });
+    registerSemanticSearchTool(server, { provider: typesafe, transport, sleep: noSleep, cache });
     const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
     await server.connect(serverSide);
-    const client = new Client({ name: 'skim-test-client', version: '0' });
+    const client = new Client({ name: 'semantic-test-client', version: '0' });
     await client.connect(clientSide);
     return client;
   }
 
   beforeAll(async () => {
-    vaultPath = await mkdtemp(path.join(os.tmpdir(), 'orm-skim-test-'));
+    vaultPath = await mkdtemp(path.join(os.tmpdir(), 'orm-semantic-test-'));
     process.env.VAULT_PATH = vaultPath;
     const filler = Array.from({ length: 60 }, (_, i) => `Filler paragraph ${i} about nothing in particular, padded out.`).join('\n');
     await seed('Notes/Garden.md', `---\ndescription: "Tomato staking and the garden plan"\n---\n# Garden\n\n${filler}\nThe tomatoes need needle-thin stakes by May.\n${filler}\n`);
@@ -456,7 +465,7 @@ describe('vault_skim over a temp vault', () => {
   test('named notes within max_notes skip ranking and keep only relevant chunks', async () => {
     process.env.VAULT_PATH = vaultPath;
     const calls: unknown[] = [];
-    const text = await runSkim({ goal: 'stakes', paths: ['Notes/Garden.md'] }, typesafe, {
+    const text = await runSemanticSearch({ goal: 'stakes', paths: ['Notes/Garden.md'] }, typesafe, {
       transport: scoringTransport('tomatoes', calls), sleep: noSleep, cache: fresh(), env,
     });
     expect(calls.map(stage).every(s => s === 'chunks')).toBe(true);
@@ -470,7 +479,7 @@ describe('vault_skim over a temp vault', () => {
 
   test('keeps unjudged chunks when requests fail', async () => {
     process.env.VAULT_PATH = vaultPath;
-    const text = await runSkim({ goal: 'stakes', paths: ['Notes/Garden.md'] }, typesafe, {
+    const text = await runSemanticSearch({ goal: 'stakes', paths: ['Notes/Garden.md'] }, typesafe, {
       transport: async () => ({ status: 500, json: {} }), sleep: noSleep, cache: fresh(), env,
     });
     expect(text).toContain('Warning: ');
@@ -482,7 +491,7 @@ describe('vault_skim over a temp vault', () => {
   test('with no selection, ranks the whole vault, then skims the best notes', async () => {
     process.env.VAULT_PATH = vaultPath;
     const calls: unknown[] = [];
-    const text = await runSkim({ goal: 'staking tomatoes' }, typesafe, {
+    const text = await runSemanticSearch({ goal: 'staking tomatoes' }, typesafe, {
       transport: scoringTransport('omato', calls), sleep: noSleep, cache: fresh(), env, maxNotes: 1,
     });
     expect(stage(calls[0])).toBe('notes');
@@ -499,7 +508,7 @@ describe('vault_skim over a temp vault', () => {
   test('passages: false returns only the ranked notes', async () => {
     process.env.VAULT_PATH = vaultPath;
     const calls: unknown[] = [];
-    const text = await runSkim({ goal: 'soup', folder: 'Notes' }, typesafe, {
+    const text = await runSemanticSearch({ goal: 'soup', folder: 'Notes' }, typesafe, {
       transport: scoringTransport('soup', calls), sleep: noSleep, cache: fresh(), env, passages: false,
     });
     expect(calls.map(stage)).toEqual(['notes']);
@@ -509,7 +518,7 @@ describe('vault_skim over a temp vault', () => {
 
   test('reports the closest notes when none reach the threshold', async () => {
     process.env.VAULT_PATH = vaultPath;
-    const text = await runSkim({ goal: 'astronomy', folder: 'Notes' }, typesafe, {
+    const text = await runSemanticSearch({ goal: 'astronomy', folder: 'Notes' }, typesafe, {
       transport: scoringTransport('nothing-matches'), sleep: noSleep, cache: fresh(), env, passages: false,
     });
     expect(text).toContain('0 relevant');
@@ -520,7 +529,7 @@ describe('vault_skim over a temp vault', () => {
     process.env.VAULT_PATH = vaultPath;
     const cache = fresh();
     const calls: unknown[] = [];
-    const run = (goal: string) => runSkim({ goal, folder: 'Notes' }, typesafe, {
+    const run = (goal: string) => runSemanticSearch({ goal, folder: 'Notes' }, typesafe, {
       transport: scoringTransport('soup', calls), sleep: noSleep, cache, env, passages: false,
     });
     await run('soup ideas');
@@ -538,13 +547,13 @@ describe('vault_skim over a temp vault', () => {
 
   test('tool runs without confirmation and never sends excluded notes, however they are named', async () => {
     process.env.VAULT_PATH = vaultPath;
-    const previous = process.env.SKIM_EXCLUDE_PATHS;
-    process.env.SKIM_EXCLUDE_PATHS = 'Journal';
+    const previous = process.env.SEMANTIC_EXCLUDE_PATHS;
+    process.env.SEMANTIC_EXCLUDE_PATHS = 'Journal';
     const calls: unknown[] = [];
     const client = await connect(scoringTransport('needle', calls));
     try {
       const result = await client.callTool({
-        name: 'vault_skim',
+        name: 'vault_search_semantic',
         arguments: {
           goal: 'needle',
           paths: ['Notes/Garden.md', './Journal/2026-10-11.md', 'Notes/../Journal/2026-10-11.md', 'Notes/Journal-link.md'],
@@ -556,8 +565,8 @@ describe('vault_skim over a temp vault', () => {
       expect(result.content[0].text).toContain('Withheld 3 note(s) by exclusion rules.');
     } finally {
       await client.close();
-      if (previous === undefined) delete process.env.SKIM_EXCLUDE_PATHS;
-      else process.env.SKIM_EXCLUDE_PATHS = previous;
+      if (previous === undefined) delete process.env.SEMANTIC_EXCLUDE_PATHS;
+      else process.env.SEMANTIC_EXCLUDE_PATHS = previous;
     }
   });
 
@@ -566,10 +575,10 @@ describe('vault_skim over a temp vault', () => {
     const calls: unknown[] = [];
     const client = await connect(scoringTransport('tomatoes', calls));
     for (const query of ['(', 'a'.repeat(1001)]) {
-      const result = await client.callTool({ name: 'vault_skim', arguments: { goal: 'stakes', query } }) as any;
+      const result = await client.callTool({ name: 'vault_search_semantic', arguments: { goal: 'stakes', query } }) as any;
       expect(result.isError).toBe(true);
     }
-    const missing = await client.callTool({ name: 'vault_skim', arguments: { goal: 'stakes', folder: 'Nowhere' } }) as any;
+    const missing = await client.callTool({ name: 'vault_search_semantic', arguments: { goal: 'stakes', folder: 'Nowhere' } }) as any;
     expect(missing.isError).toBe(true);
     expect(missing.content[0].text).toContain('Folder not found: Nowhere');
     expect(missing.content[0].text).not.toContain(vaultPath);
@@ -578,14 +587,14 @@ describe('vault_skim over a temp vault', () => {
   });
 
   test('tool is not registered without a provider', async () => {
-    const server = new McpServer({ name: 'skim-test', version: '0' });
-    registerSkimTool(server, { provider: null });
+    const server = new McpServer({ name: 'semantic-test', version: '0' });
+    registerSemanticSearchTool(server, { provider: null });
     const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
     await server.connect(serverSide);
-    const client = new Client({ name: 'skim-test-client', version: '0' });
+    const client = new Client({ name: 'semantic-test-client', version: '0' });
     await client.connect(clientSide);
     const { tools } = await client.listTools();
-    expect(tools.map(t => t.name)).not.toContain('vault_skim');
+    expect(tools.map(t => t.name)).not.toContain('vault_search_semantic');
     await client.close();
   });
 });

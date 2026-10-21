@@ -1,4 +1,4 @@
-// ABOUTME: Decision-model client for vault_skim. Resolves a provider (TypeSafe,
+// ABOUTME: Decision-model client for vault_search_semantic. Resolves a provider (TypeSafe,
 // OpenRouter, or OpenAI) from env, asks one yes/no question per item (a text chunk or a note card) in
 // batched requests, and returns P(relevant) per item.
 
@@ -39,7 +39,7 @@ function decisionSetting(env: NodeJS.ProcessEnv, setting: 'PROVIDER' | 'MODEL'):
 
 // DECISION_PROVIDER picks the provider (default typesafe); its standard key variable supplies the key and
 // DECISION_MODEL optionally overrides its default model. SKIM_PROVIDER and SKIM_MODEL are fallback aliases.
-// Returns null when the provider's key is unset, which leaves vault_skim unregistered. An unknown provider
+// Returns null when the provider's key is unset, which leaves vault_search_semantic unregistered. An unknown provider
 // throws so a typo fails loudly, including when a valid alias is set.
 export function resolveDecisionProvider(env: NodeJS.ProcessEnv = process.env): DecisionProvider | null {
   const raw = decisionSetting(env, 'PROVIDER') || 'typesafe';
