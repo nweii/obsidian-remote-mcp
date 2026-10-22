@@ -1,5 +1,6 @@
-// ABOUTME: Decision-model client for vault_skim. Resolves a provider (TypeSafe, OpenRouter, or OpenAI)
-// from env, asks one yes/no question per text chunk in batched requests, and returns P(relevant) per chunk.
+// ABOUTME: Decision-model client for vault_search_semantic. Resolves a provider (TypeSafe,
+// OpenRouter, or OpenAI) from env, asks one yes/no question per item (a text chunk or a note card) in
+// batched requests, and returns P(relevant) per item.
 
 export type ProviderName = 'typesafe' | 'openrouter' | 'openai';
 
@@ -38,7 +39,7 @@ function decisionSetting(env: NodeJS.ProcessEnv, setting: 'PROVIDER' | 'MODEL'):
 
 // DECISION_PROVIDER picks the provider (default typesafe); its standard key variable supplies the key and
 // DECISION_MODEL optionally overrides its default model. SKIM_PROVIDER and SKIM_MODEL are fallback aliases.
-// Returns null when the provider's key is unset, which leaves vault_skim unregistered. An unknown provider
+// Returns null when the provider's key is unset, which leaves vault_search_semantic unregistered. An unknown provider
 // throws so a typo fails loudly, including when a valid alias is set.
 export function resolveDecisionProvider(env: NodeJS.ProcessEnv = process.env): DecisionProvider | null {
   const raw = decisionSetting(env, 'PROVIDER') || 'typesafe';
@@ -56,78 +57,97 @@ export function resolveDecisionProvider(env: NodeJS.ProcessEnv = process.env): D
 
 export interface JudgeItem {
   source: string; // vault-relative note path
-  lines: string;  // "start-end"
+  lines?: string; // "start-end", for chunks
   text: string;
 }
 
-interface ChunkQuestion {
-  instructions: { question: string; chunk: string };
+// What is being judged and how. Items sit in the request state under `collection`, each with an id
+// `${kind}_${index}`; every question names one id. With `criteriaInState`, the criteria travel once per
+// request in the state instead of inside every question, which matters when items are short.
+export interface JudgePrompt {
+  kind: string;
+  collection: string;
+  question: (id: string) => string;
   criteria: { true: string; false: string };
+  criteriaInState: boolean;
+  maxItemsPerBatch: number;
+  overheadBytes: number; // per-item question and JSON envelope, for batch sizing
 }
 
-const CRITERIA = {
-  true: 'The chunk itself carries substance that bears on the goal: facts, decisions, reflections, plans, steps, names, dates, numbers, or reasoning the reader would otherwise have to go read.',
-  false: 'Boilerplate (bare frontmatter, navigation, link lists, empty template sections), passages about a different topic, or a chunk that only mentions a keyword from the goal without saying anything useful about it.',
+export const CHUNK_PROMPT: JudgePrompt = {
+  kind: 'chunk',
+  collection: 'chunks',
+  question: id => `Would chunk \`${id}\` in \`chunks\` help someone accomplish \`goal\`? Judge only that one chunk.`,
+  criteria: {
+    true: 'The chunk itself carries substance that bears on the goal: facts, decisions, reflections, plans, steps, names, dates, numbers, or reasoning the reader would otherwise have to go read.',
+    false: 'Boilerplate (bare frontmatter, navigation, link lists, empty template sections), passages about a different topic, or a chunk that only mentions a keyword from the goal without saying anything useful about it.',
+  },
+  criteriaInState: false,
+  maxItemsPerBatch: 24,
+  overheadBytes: 600,
 };
 
-function question(id: string): ChunkQuestion {
-  return {
-    instructions: {
-      question: `Would chunk \`${id}\` in \`chunks\` help someone accomplish \`goal\`? Judge only that one chunk.`,
-      chunk: id,
-    },
-    criteria: CRITERIA,
-  };
-}
-
-const chunkId = (index: number) => `chunk_${index}`;
+const itemId = (prompt: JudgePrompt, index: number) => `${prompt.kind}_${index}`;
 
 // TypeSafe and OpenRouter take System One requests (a state plus keyed `noul` questions); OpenAI
 // takes a flat input string plus named `predicate` questions.
-export function buildRequest(provider: DecisionProvider, goal: string, items: JudgeItem[]): unknown {
-  const state = {
+export function buildRequest(provider: DecisionProvider, goal: string, items: JudgeItem[], prompt: JudgePrompt = CHUNK_PROMPT): unknown {
+  const state: Record<string, unknown> = {
     goal,
-    chunks: items.map((item, i) => ({ id: chunkId(i), source: item.source, lines: item.lines, text: item.text })),
+    [prompt.collection]: items.map((item, i) => ({
+      id: itemId(prompt, i),
+      source: item.source,
+      ...(item.lines !== undefined ? { lines: item.lines } : {}),
+      text: item.text,
+    })),
   };
-  const questions = items.map((_, i) => question(chunkId(i)));
+  if (prompt.criteriaInState) state.criteria = prompt.criteria;
+  const ids = items.map((_, i) => itemId(prompt, i));
+  const instructions = (id: string) => ({ question: prompt.question(id), [prompt.kind]: id });
   if (provider.name === 'openai') {
     return {
       model: provider.model,
       input: JSON.stringify(state),
-      questions: questions.map((q, i) => ({
+      questions: ids.map(id => ({
         type: 'predicate',
-        name: chunkId(i),
-        instructions: `${q.instructions.question}\nTrue: ${q.criteria.true}\nFalse: ${q.criteria.false}`,
+        name: id,
+        instructions: prompt.criteriaInState
+          ? prompt.question(id)
+          : `${prompt.question(id)}\nTrue: ${prompt.criteria.true}\nFalse: ${prompt.criteria.false}`,
       })),
     };
   }
   return {
     model: provider.model,
     state,
-    questions: Object.fromEntries(questions.map((q, i) => [chunkId(i), { type: 'noul', ...q }])),
+    questions: Object.fromEntries(ids.map(id => [id, {
+      type: 'noul',
+      instructions: instructions(id),
+      ...(prompt.criteriaInState ? {} : { criteria: prompt.criteria }),
+    }])),
   };
 }
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 const isProbability = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 1;
 
-// Per-chunk P(relevant), in request order. A missing or malformed answer is null (unjudged) rather
-// than a guess, so the caller can keep that chunk.
-export function parseAnswers(provider: DecisionProvider, response: unknown, count: number): (number | null)[] {
+// Per-item P(relevant), in request order. A missing or malformed answer is null (unjudged) rather
+// than a guess, so the caller can keep that item.
+export function parseAnswers(provider: DecisionProvider, response: unknown, count: number, prompt: JudgePrompt = CHUNK_PROMPT): (number | null)[] {
   const out: (number | null)[] = Array(count).fill(null);
   if (!isRecord(response)) return out;
   if (provider.name === 'openai') {
     if (!Array.isArray(response.answers)) return out;
     for (const answer of response.answers) {
       if (!isRecord(answer) || answer.type !== 'predicate' || typeof answer.name !== 'string') continue;
-      const index = Number(answer.name.replace(/^chunk_/, ''));
+      const index = Number(answer.name.replace(`${prompt.kind}_`, ''));
       if (Number.isInteger(index) && index >= 0 && index < count && isProbability(answer.probability)) out[index] = answer.probability;
     }
     return out;
   }
   if (!isRecord(response.answers)) return out;
   for (let i = 0; i < count; i++) {
-    const answer = response.answers[chunkId(i)];
+    const answer = response.answers[itemId(prompt, i)];
     if (isRecord(answer) && answer.type === 'noul' && isProbability(answer.noul)) out[i] = answer.noul;
   }
   return out;
@@ -223,20 +243,20 @@ async function evaluate(provider: DecisionProvider, body: unknown, transport: Tr
 
 // --- Batching ---------------------------------------------------------------------
 
-// Each chunk's text sits in the request state, so requests are packed by size as well as count.
+// Each item's text sits in the request state, so requests are packed by size as well as count.
 // Byte bounds are deliberately conservative, not a tokenizer.
-export const MAX_ITEMS_PER_BATCH = 24;
+export const MAX_ITEMS_PER_BATCH = CHUNK_PROMPT.maxItemsPerBatch;
 export const MAX_BATCH_BYTES = 50_000;
 const CONCURRENCY = 4;
 
-export function planBatches(items: JudgeItem[]): number[][] {
+export function planBatches(items: JudgeItem[], prompt: JudgePrompt = CHUNK_PROMPT): number[][] {
   const encoder = new TextEncoder();
   const batches: number[][] = [];
   let current: number[] = [];
   let bytes = 0;
   items.forEach((item, index) => {
-    const size = encoder.encode(item.text).length + 600; // question, criteria, and JSON envelope
-    if (current.length > 0 && (current.length >= MAX_ITEMS_PER_BATCH || bytes + size > MAX_BATCH_BYTES)) {
+    const size = encoder.encode(item.text).length + prompt.overheadBytes;
+    if (current.length > 0 && (current.length >= prompt.maxItemsPerBatch || bytes + size > MAX_BATCH_BYTES)) {
       batches.push(current);
       current = [];
       bytes = 0;
@@ -248,10 +268,47 @@ export function planBatches(items: JudgeItem[]): number[][] {
   return batches;
 }
 
+// What the provider reported for the successful requests. Token and cost totals are null when any
+// successful response left them out, so a partial sum is never mistaken for the whole.
+export interface DecisionUsage {
+  inputTokens: number | null;
+  outputTokens: number | null;
+  costUsd: number | null;
+  models: string[]; // resolved model ids the provider reported, e.g. a dated version behind an alias
+}
+
 export interface Judgement {
   probabilities: (number | null)[]; // per item, in input order; null = unjudged
   failures: string[];               // one message per failed batch
   requests: number;
+  usage: DecisionUsage;
+}
+
+export const emptyUsage = (): DecisionUsage => ({ inputTokens: 0, outputTokens: 0, costUsd: 0, models: [] });
+
+export function addUsage(total: DecisionUsage, more: DecisionUsage): DecisionUsage {
+  const sum = (a: number | null, b: number | null) => (a === null || b === null ? null : a + b);
+  return {
+    inputTokens: sum(total.inputTokens, more.inputTokens),
+    outputTokens: sum(total.outputTokens, more.outputTokens),
+    costUsd: sum(total.costUsd, more.costUsd),
+    models: [...new Set([...total.models, ...more.models])],
+  };
+}
+
+const finiteNumber = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+
+// Reads `usage` and `model` from one response. Field names follow the System One API; OpenAI-style
+// prompt/completion names are accepted too.
+export function responseUsage(response: unknown): DecisionUsage {
+  const usage = isRecord(response) && isRecord(response.usage) ? response.usage : {};
+  const model = isRecord(response) && typeof response.model === 'string' ? response.model : null;
+  return {
+    inputTokens: finiteNumber(usage.input_tokens) ?? finiteNumber(usage.prompt_tokens),
+    outputTokens: finiteNumber(usage.output_tokens) ?? finiteNumber(usage.completion_tokens),
+    costUsd: finiteNumber(usage.cost),
+    models: model ? [model] : [],
+  };
 }
 
 export interface JudgeOptions {
@@ -259,25 +316,37 @@ export interface JudgeOptions {
   sleep?: Sleep;
 }
 
-export async function judgeChunks(
+export function judgeChunks(
   provider: DecisionProvider,
   goal: string,
   items: JudgeItem[],
+  options: JudgeOptions = {},
+): Promise<Judgement> {
+  return judgeItems(provider, goal, items, CHUNK_PROMPT, options);
+}
+
+export async function judgeItems(
+  provider: DecisionProvider,
+  goal: string,
+  items: JudgeItem[],
+  prompt: JudgePrompt,
   options: JudgeOptions = {},
 ): Promise<Judgement> {
   const { transport = fetchTransport, sleep = realSleep } = options;
   const probabilities: (number | null)[] = Array(items.length).fill(null);
   const failures: string[] = [];
   let requests = 0;
+  let usage = emptyUsage();
 
-  const queue = planBatches(items).map(indexes => ({ indexes, splits: 0 }));
+  const queue = planBatches(items, prompt).map(indexes => ({ indexes, splits: 0 }));
 
   async function runBatch(indexes: number[], splits = 0): Promise<void> {
     const batchItems = indexes.map(i => items[i]!);
     try {
       requests++;
-      const response = await evaluate(provider, buildRequest(provider, goal, batchItems), transport, sleep);
-      parseAnswers(provider, response, indexes.length).forEach((p, j) => {
+      const response = await evaluate(provider, buildRequest(provider, goal, batchItems, prompt), transport, sleep);
+      usage = addUsage(usage, responseUsage(response));
+      parseAnswers(provider, response, indexes.length, prompt).forEach((p, j) => {
         probabilities[indexes[j]!] = p;
       });
     } catch (e) {
@@ -301,5 +370,5 @@ export async function judgeChunks(
   }
   await Promise.all(Array.from({ length: Math.min(CONCURRENCY, queue.length) }, worker));
 
-  return { probabilities, failures, requests };
+  return { probabilities, failures, requests, usage };
 }

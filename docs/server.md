@@ -91,7 +91,7 @@ The [quick start](../README.md#1-run-the-server) shows the startup settings. Set
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `DECISION_PROVIDER` | no | Decision-model provider: `typesafe` (default), `openrouter`, or `openai`. Used by `vault_skim`, which is registered only when that provider's key is set. An unknown value disables the tool and logs why. |
+| `DECISION_PROVIDER` | no | Decision-model provider: `typesafe` (default), `openrouter`, or `openai`. Used by `vault_search_semantic`, which is registered only when that provider's key is set. An unknown value disables the tool and logs why. |
 | `TYPESAFE_API_KEY` / `OPENROUTER_API_KEY` / `OPENAI_API_KEY` | no | Credential for the chosen provider. |
 | `DECISION_MODEL` | no | Overrides the provider's default decision model (`jev-latest`, `typesafe/jev-1.13`, `gpt-6-luna`). |
 | `SKIM_PROVIDER` / `SKIM_MODEL` | no | Supported aliases. Each is used when the corresponding `DECISION_*` setting is unset or blank. If both specify different values, the `DECISION_*` value wins and the server warns once per setting per process. |
@@ -100,12 +100,14 @@ Provider names ignore case and surrounding whitespace. Model names ignore surrou
 
 The Web Clipper interpreter uses its own settings export. Decision-model settings do not configure that interpreter.
 
-### Skimming
+### Semantic search
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `SKIM_EXCLUDE_TAGS` | no | Comma-separated tags whose notes `vault_skim` never sends. `x` matches `#x` only; `x/*` matches `#x` and nested tags. |
-| `SKIM_EXCLUDE_PATHS` | no | Comma-separated vault-relative path rules whose notes (and everything under them) `vault_skim` never sends. Rules use `.mcpignore` syntax, so `*`, `?` and `**` wildcards work. |
+| `EXTERNAL_API_EXCLUDE_PATHS` | no | Comma-separated vault-relative path rules whose notes (and everything under them) are never sent to an external model API (by any feature that sends note text, such as `vault_search_semantic`). Connected clients can still read them; use `.mcpignore` to hide notes from clients too. Rules use `.mcpignore` syntax, so `*`, `?` and `**` wildcards work. |
+| `SEMANTIC_CACHE_PATH` | no | File for cached decision-model judgments (default `./semantic-cache.json`). Stores hashes and probabilities only. `off` keeps the cache in memory. |
+| `SKIM_EXCLUDE_PATHS` / `SKIM_CACHE_PATH` | no | Supported aliases. Path rules from both forms combine; for the cache path, `SEMANTIC_CACHE_PATH` wins. |
+| `SKIM_EXCLUDE_TAGS` | no | Retired; tag exclusions are not supported. While it is set, `vault_search_semantic` stays unregistered and the server logs why. |
 
 ### Obsidian CLI
 
@@ -122,7 +124,8 @@ The Web Clipper interpreter uses its own settings export. Decision-model setting
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `LOG_ENABLED` | no | Set to `false` to disable tool-call logging and skip registering `vault_feedback`. Defaults to `true`. |
-| `LOG_DIR` | no | Directory for JSONL logs (`tool-calls.jsonl`, `feedback.jsonl`). Defaults to `./logs`. Created on first write. Skipped when `VAULT_MCP_TEST=1` or `LOG_ENABLED=false`. |
+| `LOG_DIR` | no | Directory for JSONL logs (`tool-calls.jsonl`, `feedback.jsonl`, `decision-usage.jsonl`). Defaults to `./logs`. Created on first write. Skipped when `VAULT_MCP_TEST=1` or `LOG_ENABLED=false`. |
+| `LOG_MAX_BYTES` | no | At startup, each log larger than this moves to `<name>.1`, replacing the previous one. Defaults to `10485760` (10 MB); `0` disables rotation. |
 | `HEALTH_TOKEN` | no | Token for `GET /health`, sent as `Authorization: Bearer YOUR_HEALTH_TOKEN`. Unset returns `404`. Separate from client credentials. See [health monitoring](#health-endpoint). |
 
 ## Request handling

@@ -3,8 +3,12 @@
 // approval page is unguarded, so a misconfigured deployment fails fast here rather than booting.
 import { startServer } from 'mcp-server-kit';
 import { createApp } from './app.js';
+import { rotateLogs } from './log.js';
 
 const PORT = parseInt(process.env.PORT ?? '3456', 10);
+
+const rotated = rotateLogs();
+if (rotated.length) console.log(`[log] rotated ${rotated.join(', ')} to .1`);
 
 let built: ReturnType<typeof createApp>;
 try {
