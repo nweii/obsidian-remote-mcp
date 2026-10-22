@@ -12,10 +12,10 @@
   },
   "dependencies": {
     "@modelcontextprotocol/server": "2.3.1",
-    "express": "4.22.2",
+    "express": "4.22.3",
     "hono": "4.13.13",
     "js-yaml": "4.3.2",
-    "mcp-server-kit": "git+https://github.com/nweii/mcp-server-kit.git#30b94e4144a4c614a0a3bedcb2ba65261de47c7d",
+    "mcp-server-kit": "git+https://github.com/nweii/mcp-server-kit.git#a8b4b1f43eca67585551dc5a5033b6c577d58bb8",
     "zod": "4.2.0"
   },
   "optionalDependencies": {
@@ -37,8 +37,6 @@
     "@xmldom/xmldom": "0.9.12",
     "defuddle": "0.19.4",
     "ip-address": "10.7.1",
-    "proxy-addr": "2.0.8",
-    "@modelcontextprotocol/server-legacy": "2.3.1",
-    "@modelcontextprotocol/server": "2.3.1"
+    "proxy-addr": "2.0.8"
   }
 }
