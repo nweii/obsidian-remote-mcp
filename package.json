@@ -16,7 +16,7 @@
     "hono": "4.13.13",
     "js-yaml": "4.3.2",
     "mcp-server-kit": "git+https://github.com/nweii/mcp-server-kit.git#a8b4b1f43eca67585551dc5a5033b6c577d58bb8",
-    "zod": "4.2.0"
+    "zod": "4.6.7"
   },
   "optionalDependencies": {
     "web-clipper-headless": "github:nweii/web-clipper-headless#1ffc79c347ae0fde22bb0d2a534bdfdebdf0c914"
@@ -30,7 +30,7 @@
     "typescript": "6.0.3"
   },
   "overrides": {
-    "body-parser": "1.20.6",
+    "body-parser": "1.20.9",
     "dompurify": "3.4.17",
     "qs": "6.16.0",
     "@hono/node-server": "1.19.15",
