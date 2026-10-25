@@ -19,7 +19,7 @@
     "zod": "4.2.0"
   },
   "optionalDependencies": {
-    "web-clipper-headless": "github:nweii/web-clipper-headless"
+    "web-clipper-headless": "github:nweii/web-clipper-headless#1ffc79c347ae0fde22bb0d2a534bdfdebdf0c914"
   },
   "devDependencies": {
     "@modelcontextprotocol/client": "2.3.1",
