@@ -10,7 +10,7 @@
         "hono": "4.13.13",
         "js-yaml": "4.3.2",
         "mcp-server-kit": "git+https://github.com/nweii/mcp-server-kit.git#a8b4b1f43eca67585551dc5a5033b6c577d58bb8",
-        "zod": "4.2.0",
+        "zod": "4.6.7",
       },
       "devDependencies": {
         "@modelcontextprotocol/client": "2.3.1",
@@ -21,14 +21,14 @@
         "typescript": "6.0.3",
       },
       "optionalDependencies": {
-        "web-clipper-headless": "github:nweii/web-clipper-headless",
+        "web-clipper-headless": "github:nweii/web-clipper-headless#1ffc79c347ae0fde22bb0d2a534bdfdebdf0c914",
       },
     },
   },
   "overrides": {
     "@hono/node-server": "1.19.15",
     "@xmldom/xmldom": "0.9.12",
-    "body-parser": "1.20.6",
+    "body-parser": "1.20.9",
     "defuddle": "0.19.4",
     "dompurify": "3.4.17",
     "ip-address": "10.7.4",
@@ -86,7 +86,7 @@
 
     "array-flatten": ["array-flatten@1.1.1", "", {}, "sha512-PCVAQswWemu6UdxsDFFX/+gVeYqKAod3D3UVm91jHwynguOwAvYPhx8nNlM++NqRcK6CxxpUafjmhIdKiHibqg=="],
 
-    "body-parser": ["body-parser@1.20.6", "", { "dependencies": { "bytes": "~3.1.2", "content-type": "~1.0.5", "debug": "2.6.9", "depd": "2.0.0", "destroy": "~1.2.0", "http-errors": "~2.0.1", "iconv-lite": "~0.4.24", "on-finished": "~2.4.1", "qs": "~6.15.1", "raw-body": "~2.5.3", "type-is": "~1.6.18", "unpipe": "~1.0.0" } }, "sha512-p5tAzS57i5MV9fZFDj9LeIiTZEufbSe2eDozP+ElheSUq1m74CRq1jI4mYNDdVs9vQztXFLuk/Gd6BWTdwRJ5g=="],
+    "body-parser": ["body-parser@1.20.9", "", { "dependencies": { "bytes": "~3.1.2", "content-type": "~1.0.5", "debug": "2.6.9", "depd": "2.0.0", "destroy": "~1.2.0", "http-errors": "~2.0.1", "iconv-lite": "~0.4.24", "on-finished": "~2.4.1", "qs": "~6.16.0", "raw-body": "~2.5.3", "type-is": "~1.6.18", "unpipe": "~1.0.0" } }, "sha512-FISIQxV5u91Y9gvuFq3q/tA/qTqLJn3AhRcEvyozyhJTh5OBFFtv827AdHU7Rbyct4r+Ba1/99oFa1Y3yuFsdw=="],
 
     "boolbase": ["boolbase@1.0.0", "", {}, "sha512-JZOSA7Mo9sNGB8+UjSgzdLtokWAky1zbztM3WRLCbZ70/3cTANmQmOdR7y2g+J0e2WXywy1yS468tY+IruqEww=="],
 
@@ -304,11 +304,11 @@
 
     "vary": ["vary@1.1.2", "", {}, "sha512-BNGbWLfd0eUPabhkXUVm0j8uuvREyTh5ovRa/dyow/BqAbZJyC+5fU+IzQOzmAKzYqYRAISoRhdQr3eIZ/PXqg=="],
 
-    "web-clipper-headless": ["web-clipper-headless@github:nweii/web-clipper-headless#cfed8d3", { "dependencies": { "linkedom": "^0.18.0", "obsidian-clipper": "github:obsidianmd/obsidian-clipper" }, "bin": { "wch": "bin/cli.ts" } }, "nweii-web-clipper-headless-cfed8d3", "sha512-VuAfeMdARtuPctoM56JXx7d0DY2+Qs7bMsujcuTcCNIeFzbN7TjGAZZxqA0aSGKEFm5Sc6zsszNuxY2jUkPkEQ=="],
+    "web-clipper-headless": ["web-clipper-headless@github:nweii/web-clipper-headless#1ffc79c", { "dependencies": { "linkedom": "^0.18.0", "obsidian-clipper": "github:obsidianmd/obsidian-clipper" }, "bin": { "wch": "bin/cli.ts" } }, "nweii-web-clipper-headless-1ffc79c", "sha512-VqPM9Df6Iuiqg/fyhDEZlrv15rAHSNuO8RRNWqMVCSw1bq7CrCfUzJSfdngI4mPavu9zVZ1ilO7WGSneAaAR0g=="],
 
     "which": ["which@2.0.2", "", { "dependencies": { "isexe": "^2.0.0" }, "bin": { "node-which": "./bin/node-which" } }, "sha512-BLI3Tl1TW3Pvl70l3yq3Y64i+awpwXqsGBYWkkqMtnbXgrMD+yj7rhW0kuEDxzJaYXGjEW5ogapKNMEKNMjibA=="],
 
-    "zod": ["zod@4.2.0", "", {}, "sha512-Bd5fw9wlIhtqCCxotZgdTOMwGm1a0u75wARVEY9HMs1X17trvA/lMi4+MGK5EUfYkXVTbX8UDiDKW4OgzHVUZw=="],
+    "zod": ["zod@4.6.7", "", {}, "sha512-g8W2D2kU6a8untc053fX1uVBKzM7yqAxW/3zwk83+6RyF2+SKOuV+c0wBDhUwzV1PaGapmZH+rmcUzPf+3CGwg=="],
 
     "@modelcontextprotocol/server-legacy/raw-body": ["raw-body@3.0.2", "", { "dependencies": { "bytes": "~3.1.2", "http-errors": "~2.0.1", "iconv-lite": "~0.7.0", "unpipe": "~1.0.0" } }, "sha512-K5zQjDllxWkf7Z5xJdV0/B0WTNqx6vxG70zJE4N0kBs4LovmEYWJzQGxC9bS9RAKu3bgM40lrd5zoLJ12MQ5BA=="],
 
