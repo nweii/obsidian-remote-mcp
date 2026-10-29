@@ -57,7 +57,6 @@ Endpoints: OAuth discovery `GET /.well-known/oauth-authorization-server`, token 
 
 ## Before changing code
 
-- Adding or changing an optional tool (one that registers only when configured): follow the contract on `OPTIONAL_TOOLS` in `src/tools.ts`.
 - Path checks, `.mcpignore`, hidden folders, or anything that reads, writes or walks vault files: read [docs/vault-access-policy.md](docs/vault-access-policy.md).
 - Write paths, locking, atomic writes, frontmatter or section edits: [docs/writes.md](docs/writes.md).
 - Tool behaviour (context note, periodic notes and their Obsidian config, frontmatter search, batch tools): [docs/tools.md](docs/tools.md).

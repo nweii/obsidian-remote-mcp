@@ -312,20 +312,6 @@ function renderFrontmatterBlock(fm: Record<string, unknown> | null): string {
   return Object.entries(fm).map(([k, v]) => `${k}: ${renderFrontmatterValue(v)}`).join("\n");
 }
 
-// Optional tools. Each lives in its own module and registers nothing unless its feature is
-// configured and available, so deleting one is deleting its file and its entry here. A module:
-// - checks its settings or dependency once per process, since registerTools runs on every request
-//   (the Obsidian CLI rechecks on a timer, because the app can quit and come back);
-// - reaches notes only through vault.ts, which applies .mcpignore and hidden-path rules;
-// - registers through registerLogged, or a narrower logger when tool input holds note text.
-// A failure in one is logged and skipped so the core vault tools always register.
-const OPTIONAL_TOOLS: [name: string, register: (server: McpServer) => void | Promise<void>][] = [
-  ["vault_clip_url", server => registerClipTool(server, vault.getVaultRoot())],
-  ["vault_skim", server => registerSkimTool(server)],
-  ["vault_semantic_search", server => registerQmdTool(server)],
-  ["vault_cli and vault_cli_help", server => registerCliTools(server)],
-];
-
 export async function registerTools(server: McpServer) {
   // Tools whose only job is writing the vault. In read-only mode they are not registered, so agents
   // never see a tool that can only fail. Tools that read or write depending on their arguments
@@ -333,15 +319,46 @@ export async function registerTools(server: McpServer) {
   // registered; the vault layer refuses their writes.
   const registerWrite: typeof registerLogged = vault.isReadOnly() ? () => {} : registerVaultTool;
 
-  for (const [name, register] of OPTIONAL_TOOLS) {
-    try {
-      await register(server);
-    } catch (err) {
-      console.error(
-        `[obsidian-remote-mcp] ${name} registration failed; continuing with core tools.`,
-        err instanceof Error ? err.message : err,
-      );
-    }
+  // Optional: vault_clip_url. Wrapped in try/catch so a failure in the optional clip layer
+  // can never break registration of the core vault tools.
+  try {
+    await registerClipTool(server, vault.getVaultRoot());
+  } catch (err) {
+    console.error(
+      "[obsidian-remote-mcp] vault_clip_url registration failed; continuing with core tools.",
+      err instanceof Error ? err.message : err,
+    );
+  }
+
+  // Optional: vault_skim, registered only when a decision-model provider key is configured.
+  try {
+    registerSkimTool(server);
+  } catch (err) {
+    console.error(
+      "[obsidian-remote-mcp] vault_skim registration failed; continuing with core tools.",
+      err instanceof Error ? err.message : err,
+    );
+  }
+
+  // Optional: vault_semantic_search, registered only when a local QMD server is configured.
+  try {
+    registerQmdTool(server);
+  } catch (err) {
+    console.error(
+      "[obsidian-remote-mcp] vault_semantic_search registration failed; continuing with core tools.",
+      err instanceof Error ? err.message : err,
+    );
+  }
+
+  // Optional: vault_cli and vault_cli_help, registered only when opted in and the Obsidian CLI
+  // reaches this vault.
+  try {
+    await registerCliTools(server);
+  } catch (err) {
+    console.error(
+      "[obsidian-remote-mcp] Obsidian CLI tool registration failed; continuing with core tools.",
+      err instanceof Error ? err.message : err,
+    );
   }
 
   registerVaultTool(server,
