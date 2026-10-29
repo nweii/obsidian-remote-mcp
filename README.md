@@ -70,10 +70,10 @@ The server listens on port `3456`. `MCP_CLIENT_ID` is a name you choose and ente
 
 #### Optional vault features
 
-- [Enable Obsidian CLI tools](docs/setup.md#use-the-obsidian-desktop-apps-cli-tools) to use app features on a computer running Obsidian.
-- [Search by meaning through a local QMD index](docs/tools.md#semantic-search-with-qmd) when QMD runs on the same computer.
-- [Install URL clipping](docs/setup.md#install-optional-url-clipping) to save web pages as notes with your Obsidian Web Clipper templates.
-- [Set a decision-model key](docs/tools.md#skimming-notes) to pull only the passages relevant to a goal from selected notes.
+- [Enable Obsidian CLI tools](docs/setup.md#use-the-obsidian-desktop-apps-cli-tools) to query Bases, work with tasks and use other app features, on a computer running Obsidian.
+- [Connect a local QMD index](docs/tools.md#semantic-search-with-qmd) to search notes by meaning, not only exact words.
+- [Install URL clipping](docs/setup.md#install-optional-url-clipping) to save web pages as notes with your Web Clipper templates.
+- [Add a decision-model key](docs/tools.md#skimming-notes) to skim selected notes for the passages relevant to a goal.
 - [Set up Obsidian Headless sync](docs/setup.md#sync-a-vault-with-obsidian-headless) to keep the server's vault current without the desktop app.
 
 ### 2. Expose it over HTTPS
