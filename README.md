@@ -9,7 +9,7 @@ Run this self-hosted server on a NAS, a cloud server, or an always-on computer w
 - Ask AI to find notes, add to a journal, or update one section of a project note. Tools also support frontmatter and batches of notes.
 - Use your existing daily, weekly, and other periodic note settings. Moving or renaming notes updates the wikilinks pointing to them.
 - Give agents your vault's instructions and a folder map with [`vault_context`](docs/configuration.md#vault-context-note). It reads `AGENTS.md`, `CLAUDE.md`, or a guidance file you choose.
-- Optionally add Obsidian app commands, search by meaning, URL clipping, and skimming. See [Optional features](#optional-features).
+- Optional add-ons: Obsidian app commands, semantic search, URL clipping, and note skimming. See [Optional features](#optional-features).
 - Choose editing and Obsidian app permissions separately for each connection approved through browser sign-in. Use [`.mcpignore`](docs/tools.md#vault-access-and-tool-defaults) to exclude private folders from file tools.
 - [Atomic writes](docs/tools.md#vault-edits) keep Obsidian and sync services from reading partially written notes. Optional version checks reject updates based on an outdated copy.
 
@@ -101,12 +101,12 @@ Once connected, ask the client to read a note you know by title. To use the Obsi
 
 ## Optional features
 
-All are off by default.
+Each one needs setup before use.
 
-- [Enable Obsidian CLI tools](docs/setup.md#use-the-obsidian-desktop-apps-cli-tools) to query Bases, work with tasks, and use other app features. Obsidian must be running on the same computer, and CLI searches aren't filtered by `.mcpignore`.
-- [Connect a local QMD index](docs/tools.md#semantic-search-with-qmd) to search notes by meaning, not only exact words. [QMD](https://github.com/tobi/qmd) must be running on the same computer, and its results are filtered by `.mcpignore`.
+- [Enable Obsidian CLI tools](docs/setup.md#use-the-obsidian-desktop-apps-cli-tools) to query Bases, work with tasks, and use other app features. Obsidian must be running on the same computer. The server doesn't apply `.mcpignore` to CLI searches.
+- [Connect a local QMD index](docs/tools.md#semantic-search-with-qmd) to search notes by meaning, not only by exact words. [QMD](https://github.com/tobi/qmd) must be running on the same computer. The server applies `.mcpignore` to QMD results.
 - [Install URL clipping](docs/setup.md#install-optional-url-clipping) to save web pages as notes with your Web Clipper templates.
-- [Add a decision-model key](docs/tools.md#skimming-notes) to skim selected notes for the passages relevant to a goal. After you approve a plan, the server sends the selected note text to that model provider.
+- [Add a decision-model API key](docs/tools.md#skimming-notes) (TypeSafe, OpenRouter, or OpenAI) to skim selected notes for the passages relevant to what you're looking for. After you approve a plan, the server sends the selected note text to that model provider.
 - [Set up Obsidian Headless sync](docs/setup.md#sync-a-vault-with-obsidian-headless) to keep the server's vault current without the desktop app.
 
 ## Security and scope
