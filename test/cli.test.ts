@@ -112,9 +112,9 @@ describe('running commands', () => {
   });
 
   test('OBSIDIAN_CLI_VAULT names the vault passed to the CLI', async () => {
-    process.env.OBSIDIAN_CLI_VAULT = 'Brain';
+    process.env.OBSIDIAN_CLI_VAULT = 'Notes';
     await cli.runCli({ command: 'search', params: { query: 'x' } });
-    expect((await fakeCalls(logFile))[0]![0]).toBe('vault=Brain');
+    expect((await fakeCalls(logFile))[0]![0]).toBe('vault=Notes');
   });
 
   test('resolves file= through the server and passes the exact path', async () => {

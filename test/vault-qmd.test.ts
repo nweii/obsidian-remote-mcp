@@ -9,7 +9,7 @@ import { McpServer } from '@modelcontextprotocol/server';
 import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
 import { loadQmdConfig, pathInCollection, registerQmdTool, semanticSearch, type Fetcher, type QmdConfig } from '../src/qmd.js';
 
-const config: QmdConfig = { url: 'http://127.0.0.1:8181', collection: 'brain', timeoutMs: 5000 };
+const config: QmdConfig = { url: 'http://127.0.0.1:8181', collection: 'notes', timeoutMs: 5000 };
 
 const docid = (content: string) => `#${createHash('sha256').update(content).digest('hex').slice(0, 6)}`;
 
@@ -25,12 +25,12 @@ function fakeQmd(hits: [file: string, content: string, docidOverride?: string][]
 
 describe('pathInCollection', () => {
   test('reads both the collection/path form and the encoded qmd:// URI form', () => {
-    expect(pathInCollection('brain/Projects/Plan.md', 'brain')).toBe('Projects/Plan.md');
-    expect(pathInCollection('qmd://brain/Projects/Caf%C3%A9%20(draft).md', 'brain')).toBe('Projects/Café (draft).md');
-    expect(pathInCollection('qmd://other/Projects/Plan.md', 'brain')).toBeNull();
-    expect(pathInCollection('brainy/Plan.md', 'brain')).toBeNull();
-    expect(pathInCollection('qmd://brain/%E0%A4%A.md', 'brain')).toBeNull();
-    expect(pathInCollection(undefined, 'brain')).toBeNull();
+    expect(pathInCollection('notes/Projects/Plan.md', 'notes')).toBe('Projects/Plan.md');
+    expect(pathInCollection('qmd://notes/Projects/Caf%C3%A9%20(draft).md', 'notes')).toBe('Projects/Café (draft).md');
+    expect(pathInCollection('qmd://other/Projects/Plan.md', 'notes')).toBeNull();
+    expect(pathInCollection('notesy/Plan.md', 'notes')).toBeNull();
+    expect(pathInCollection('qmd://notes/%E0%A4%A.md', 'notes')).toBeNull();
+    expect(pathInCollection(undefined, 'notes')).toBeNull();
   });
 });
 
@@ -41,12 +41,12 @@ describe('loadQmdConfig', () => {
   });
 
   test('trims the trailing slash and defaults the timeout', () => {
-    expect(loadQmdConfig({ QMD_URL: 'http://127.0.0.1:8181/', QMD_COLLECTION: 'brain' }))
-      .toEqual({ url: 'http://127.0.0.1:8181', collection: 'brain', timeoutMs: 60000 });
+    expect(loadQmdConfig({ QMD_URL: 'http://127.0.0.1:8181/', QMD_COLLECTION: 'notes' }))
+      .toEqual({ url: 'http://127.0.0.1:8181', collection: 'notes', timeoutMs: 60000 });
   });
 });
 
-const PLAN = '# Plan\n\nmove services\n';
+const PLAN = '# Plan\n\nplant tomatoes\n';
 
 describe('semanticSearch', () => {
   let vaultPath: string;
@@ -56,7 +56,7 @@ describe('semanticSearch', () => {
     await mkdir(path.join(vaultPath, 'Projects'), { recursive: true });
     await mkdir(path.join(vaultPath, 'Private'), { recursive: true });
     await mkdir(path.join(vaultPath, '.hidden'), { recursive: true });
-    await writeFile(path.join(vaultPath, 'Projects', 'Mac mini plan.md'), PLAN);
+    await writeFile(path.join(vaultPath, 'Projects', 'Garden plan.md'), PLAN);
     await writeFile(path.join(vaultPath, 'Projects', 'Secret-draft.md'), 'public draft\n');
     await writeFile(path.join(vaultPath, 'Projects', 'Secret (draft).md'), 'private draft\n');
     await writeFile(path.join(vaultPath, 'Private', 'Diary.md'), 'secret\n');
@@ -72,41 +72,41 @@ describe('semanticSearch', () => {
   test('searches only the configured collection and forwards the query', async () => {
     process.env.VAULT_PATH = vaultPath;
     const calls: { url: string; body: any }[] = [];
-    await semanticSearch(config, { searches: [{ type: 'vec', query: 'moving services' }], limit: 5, intent: 'home server' }, fakeQmd([], calls));
+    await semanticSearch(config, { searches: [{ type: 'vec', query: 'planting tomatoes' }], limit: 5, intent: 'vegetable garden' }, fakeQmd([], calls));
     expect(calls).toHaveLength(1);
     expect(calls[0]!.url).toBe('http://127.0.0.1:8181/query');
     expect(calls[0]!.body).toEqual({
-      searches: [{ type: 'vec', query: 'moving services' }],
-      collections: ['brain'],
+      searches: [{ type: 'vec', query: 'planting tomatoes' }],
+      collections: ['notes'],
       limit: 5,
-      intent: 'home server',
+      intent: 'vegetable garden',
     });
   });
 
   test('maps results to vault paths and drops ignored, hidden, foreign, and unknown documents', async () => {
     process.env.VAULT_PATH = vaultPath;
     const hits: [string, string][] = [
-      ['qmd://brain/Projects/Mac%20mini%20plan.md', PLAN],
-      ['brain/Private/Diary.md', 'secret\n'],
-      ['brain/hidden/Note.md', 'hidden\n'],
-      ['other/Projects/Mac mini plan.md', PLAN],
-      ['brain/Gone.md', 'gone\n'],
+      ['qmd://notes/Projects/Garden%20plan.md', PLAN],
+      ['notes/Private/Diary.md', 'secret\n'],
+      ['notes/hidden/Note.md', 'hidden\n'],
+      ['other/Projects/Garden plan.md', PLAN],
+      ['notes/Gone.md', 'gone\n'],
     ];
     const { items: results } = await semanticSearch(config, { searches: [{ type: 'lex', query: 'plan' }], limit: 10 }, fakeQmd(hits));
-    expect(results).toEqual([{ path: 'Projects/Mac mini plan.md', score: 0.9, line: 3, excerpt: '3: move services\n4: ' }]);
+    expect(results).toEqual([{ path: 'Projects/Garden plan.md', score: 0.9, line: 3, excerpt: '3: plant tomatoes\n4: ' }]);
   });
 
   test('drops a note the access policy hides even when QMD reports its exact path and content', async () => {
     process.env.VAULT_PATH = vaultPath;
     const { items: results } = await semanticSearch(config, { searches: [{ type: 'lex', query: 'draft' }], limit: 10 },
-      fakeQmd([['qmd://brain/Projects/Secret%20(draft).md', 'private draft\n'], ['brain/Projects/Secret-draft.md', 'public draft\n']]));
+      fakeQmd([['qmd://notes/Projects/Secret%20(draft).md', 'private draft\n'], ['notes/Projects/Secret-draft.md', 'public draft\n']]));
     expect(results.map(r => r.path)).toEqual(['Projects/Secret-draft.md']);
     expect(JSON.stringify(results)).not.toContain('private');
   });
 
   test('drops a result whose note changed since QMD indexed it', async () => {
     process.env.VAULT_PATH = vaultPath;
-    const { items: results } = await semanticSearch(config, { searches: [{ type: 'lex', query: 'plan' }], limit: 10 }, fakeQmd([['brain/Projects/Mac mini plan.md', 'older text\n']]));
+    const { items: results } = await semanticSearch(config, { searches: [{ type: 'lex', query: 'plan' }], limit: 10 }, fakeQmd([['notes/Projects/Garden plan.md', 'older text\n']]));
     expect(results).toEqual([]);
   });
 
@@ -114,8 +114,8 @@ describe('semanticSearch', () => {
     process.env.VAULT_PATH = vaultPath;
     await writeFile(path.join(vaultPath, 'Plan elsewhere.md'), PLAN);
     const { items } = await semanticSearch(config, { searches: [{ type: 'lex', query: 'plan' }], limit: 10, folder: 'Projects' },
-      fakeQmd([['brain/Plan elsewhere.md', PLAN], ['brain/Projects/Mac mini plan.md', PLAN]]));
-    expect(items.map(r => r.path)).toEqual(['Projects/Mac mini plan.md']);
+      fakeQmd([['notes/Plan elsewhere.md', PLAN], ['notes/Projects/Garden plan.md', PLAN]]));
+    expect(items.map(r => r.path)).toEqual(['Projects/Garden plan.md']);
     await rm(path.join(vaultPath, 'Plan elsewhere.md'));
   });
 
@@ -133,7 +133,7 @@ describe('semanticSearch', () => {
     const off = new McpServer({ name: 'qmd-off', version: '0' });
     registerQmdTool(off, { config: null });
     const on = new McpServer({ name: 'qmd-on', version: '0' });
-    registerQmdTool(on, { config, fetcher: fakeQmd([['brain/Projects/Mac mini plan.md', PLAN], ['brain/Private/Diary.md', 'secret\n'], ['brain/Projects/Mac mini plan.md', 'older text\n']]) });
+    registerQmdTool(on, { config, fetcher: fakeQmd([['notes/Projects/Garden plan.md', PLAN], ['notes/Private/Diary.md', 'secret\n'], ['notes/Projects/Garden plan.md', 'older text\n']]) });
 
     for (const [server, expected] of [[off, false], [on, true]] as const) {
       const client = new Client({ name: 't', version: '0' });
@@ -150,15 +150,15 @@ describe('semanticSearch', () => {
         const plainClient = new Client({ name: 't', version: '0' });
         const [pc, ps] = InMemoryTransport.createLinkedPair();
         await Promise.all([plain.connect(ps), plainClient.connect(pc)]);
-        await plainClient.callTool({ name: 'vault_search_semantic', arguments: { query: 'moving services' } });
-        expect(calls[0]!.body.searches).toEqual([{ type: 'lex', query: 'moving services' }, { type: 'vec', query: 'moving services' }]);
+        await plainClient.callTool({ name: 'vault_search_semantic', arguments: { query: 'planting tomatoes' } });
+        expect(calls[0]!.body.searches).toEqual([{ type: 'lex', query: 'planting tomatoes' }, { type: 'vec', query: 'planting tomatoes' }]);
         await plainClient.close();
         const res = await client.callTool({ name: 'vault_search_semantic', arguments: { searches: [{ type: 'lex', query: 'plan' }] } }) as any;
         expect(res.isError).toBeFalsy();
-        expect(res.content[0].text).toContain('Projects/Mac mini plan.md:3');
+        expect(res.content[0].text).toContain('Projects/Garden plan.md:3');
         expect(res.content[0].text).not.toContain('Diary');
         expect(res.content[0].text).not.toMatch(/withheld|skipped/);
-        expect(res.structuredContent.items.map((i: any) => i.path)).toEqual(['Projects/Mac mini plan.md']);
+        expect(res.structuredContent.items.map((i: any) => i.path)).toEqual(['Projects/Garden plan.md']);
       }
       await client.close();
     }
