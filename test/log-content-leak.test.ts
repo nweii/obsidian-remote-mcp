@@ -200,4 +200,22 @@ describe('registered tool errors never write source text to the audit log', () =
     expect(out.auditText).not.toContain('second private body');
     expect(out.note).toBe(note);
   });
+
+  test('vault_edit pairs and their failure stay out of the log', async () => {
+    const note = `# Notes\n${SECRET_BODY}\n`;
+    const out = await callWithAuditLog(note, 'vault_edit', {
+      path: 'note.md',
+      operation: 'replace',
+      edits: [
+        { find: SECRET_BODY, replace: 'private replacement text' },
+        { find: 'private missing text', replace: 'x' },
+      ],
+    });
+    expect(out.response.result.isError).toBe(true);
+    expect(out.response.result.content[0].text).toContain('Edit 2 of 2');
+    expect(out.auditText).not.toContain(SECRET_BODY);
+    expect(out.auditText).not.toContain('private replacement text');
+    expect(out.auditText).not.toContain('private missing text');
+    expect(out.note).toBe(note);
+  });
 });

@@ -145,6 +145,7 @@ const WRITE_OPS: Record<string, (p: string) => unknown> = {
   appendNote: p => vault.appendNote(p, 'x'),
   prependToNote: p => vault.prependToNote(p, 'x'),
   replaceInNote: p => vault.replaceInNote(p, 'text', 'x'),
+  editNote: p => vault.editNote(p, [{ find: 'text', replace: 'x' }]),
   editNoteSection: p => vault.editNoteSection(p, 'Heading', 'append', 'x'),
   deleteNote: p => vault.deleteNote(p),
   trashNote: p => vault.trashNote(p),

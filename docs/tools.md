@@ -18,7 +18,7 @@
 | `vault_update` | Replace a note's full contents; optional `base_version` rejects stale writes |
 | `vault_set_frontmatter_property` | Set one frontmatter property without rewriting the note body |
 | `vault_batch_frontmatter_update` | Set frontmatter properties on several notes in one call |
-| `vault_edit` | Append, prepend, or replace exact text within a note |
+| `vault_edit` | Append, prepend, or replace text within a note; `edits` applies several find/replace pairs as one all-or-nothing write |
 | `vault_edit_section` | Append, prepend, or replace the body under one heading |
 | `vault_trash` | Move a file or folder to `.trash` |
 | `vault_move` | Move or rename a vault file or validated folder by explicit path and rewrite the wikilinks that point at it; defaults to a dry run that shows the plan and writes nothing |
@@ -86,7 +86,7 @@ A chunk the model couldn't judge (a failed request, a malformed answer) is kept 
 
 ## Semantic search with QMD
 
-`vault_search_semantic` searches the vault through a [QMD](https://github.com/tobi/qmd) index that runs on the same machine as the server. QMD combines keyword (BM25) and vector retrieval and reranks the results with a local model. A call takes a plain `query`, which is searched both as keywords and as a question. For finer control, a call can pass typed sub-queries in `searches` instead: `lex` for keywords, `vec` for a natural-language question, and `hyde` for a short passage that reads like the answer. `folder` limits results to one folder. QMD ranks the whole collection first, so a narrow folder can return fewer results than `limit`. Results are structured: each item has the note's path, the matched line, its score, and an excerpt.
+`vault_search_semantic` searches the vault through a [QMD](https://github.com/tobi/qmd) index that runs on the same machine as the server. QMD combines keyword (BM25) and vector retrieval and reranks the results with a local model. A call takes a plain `query`, which is searched both as keywords and as a question. Balanced double quotes in a plain `query` mark a keyword phrase; an unbalanced quote is dropped from the keyword half so it can't break the search. For finer control, a call can pass typed sub-queries in `searches` instead: `lex` for keywords, `vec` for a natural-language question, and `hyde` for a short passage that reads like the answer. `folder` limits results to one folder. QMD ranks the whole collection first, so a narrow folder can return fewer results than `limit`. Results are structured: each item has the note's path, the matched line, its score, and an excerpt.
 
 To enable it, run QMD 2.6 or newer as an HTTP server (`qmd mcp --http`, on `localhost:8181` by default) and set `QMD_URL` to its address and `QMD_COLLECTION` to the QMD collection that indexes this vault. The server searches only that collection, so other collections on the same QMD index stay out of reach.
 
@@ -141,7 +141,20 @@ If the CLI call fails or returns unparseable output, `vault_links` uses the serv
 The server edits the same files Obsidian and Obsidian Sync are using.
 
 - Each write goes to a temporary file that is renamed into place. Obsidian, Sync, or other tools never read a half-written or empty note, even if the process stops mid-write.
-- Writes to one note run one at a time. `vault_read` returns a version string; passing it to `vault_update` as `base_version` makes the update fail if the note changed since you read it, instead of overwriting the other edit.
+- Writes to one note run one at a time. `vault_read` returns a version string; passing it to `vault_update` or `vault_edit` as `base_version` makes the write fail if the note changed since you read it, instead of overwriting the other edit.
+
+### Several replacements in one call
+
+`vault_edit` with `operation: "replace"` takes `edits`, a list of up to 50 `find`/`replace` pairs. The pairs apply in order, each to the result of the one before, and the note is written once. If any pair can't apply, nothing is written and the error names the pair by its position.
+
+- By default `find` is exact text and must match exactly once. Set `replace_all: true` on a pair to replace every match.
+- Set `regex: true` to treat `find` as a JavaScript regular expression, run with the `g` and `m` flags so `^` and `$` match at line edges. The replacement can use `$1`, `$<name>`, and `$&`. Without `regex`, the replacement is inserted verbatim.
+- A pair is refused when it matches nothing, matches more than once without `replace_all`, matches empty text, or matches more than 1,000 times. Patterns longer than 1,000 characters are refused. JavaScript regexes have no time limit, so a pattern with catastrophic backtracking can still stall the server.
+- The result includes the note's new version, so a follow-up edit can pass it as `base_version`.
+
+The single form, `find` with `content`, replaces the first occurrence of `find` and leaves the note unchanged when there is no match. It also accepts `base_version`.
+
+The audit log redacts every `find` and `replace` value, and edit errors don't quote them.
 
 ## Vault access and tool defaults
 
