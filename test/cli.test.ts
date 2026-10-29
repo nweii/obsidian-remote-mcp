@@ -143,12 +143,21 @@ describe('finding the binary', () => {
     expect(cli.findCliBinary('linux', standardPaths())).toBeNull();
   });
 
-  test('a missing binary is reported with how to set OBSIDIAN_CLI_PATH', async () => {
+  test('nothing is found when PATH and the fallback list both lack the binary', () => {
     delete process.env.OBSIDIAN_CLI_PATH;
     process.env.PATH = path.join(base, 'empty');
-    const result = await cli.cliToolsAvailability();
-    expect(result.ok ? '' : result.reason).toContain('set OBSIDIAN_CLI_PATH');
+    // An empty fallback list keeps this independent of what the host has installed.
+    expect(cli.findCliBinary('darwin', { darwin: [] })).toBeNull();
   });
+
+  // Runs only where the host has no CLI at its standard location, since that install would be found.
+  test.skipIf(cli.findCliBinary() !== null)(
+    'a missing binary is reported with how to set OBSIDIAN_CLI_PATH', async () => {
+      delete process.env.OBSIDIAN_CLI_PATH;
+      process.env.PATH = path.join(base, 'empty');
+      const result = await cli.cliToolsAvailability();
+      expect(result.ok ? '' : result.reason).toContain('set OBSIDIAN_CLI_PATH');
+    });
 });
 
 describe('startup log', () => {
