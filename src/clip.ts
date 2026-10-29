@@ -57,6 +57,7 @@ const CLIPPER_MODULE: string = "web-clipper-headless";
 
 async function tryLoadClipper(): Promise<ClipperLib | null> {
   try {
+    // SAFETY: the next line checks the module's entry point before anything else is used.
     const mod = (await import(CLIPPER_MODULE)) as ClipperLib;
     if (typeof mod.installPolyfills !== "function") return null;
     mod.installPolyfills();

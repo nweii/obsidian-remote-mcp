@@ -2,6 +2,7 @@
 // unrelated paths remain concurrent; multi-path acquisition avoids nested-lock deadlocks.
 import path from 'path';
 import { realpathSync } from 'fs';
+import { errnoCode } from './errno.js';
 
 function canonicalKey(key: string): string {
   if (!path.isAbsolute(key)) return key;
@@ -10,7 +11,7 @@ function canonicalKey(key: string): string {
   for (;;) {
     try { return path.join(realpathSync(parent), ...tail).normalize('NFC').toLowerCase(); }
     catch (error) {
-      if (!['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
+      if (!['ENOENT', 'ENOTDIR'].includes(errnoCode(error) ?? '')) throw error;
       const next = path.dirname(parent);
       if (next === parent) return key;
       tail.unshift(path.basename(parent));
@@ -30,8 +31,8 @@ const pending = new Set<{ keys: string[]; done: Promise<void> }>();
 // not vault files. Callers must not recursively acquire an overlapping lock.
 export function withPathsLock<T>(keys: string[], critical: () => Promise<T>): Promise<T> {
   const normalized = [...new Set(keys.map(canonicalKey))];
-  const dependencies = [...pending].filter(entry =>
-    entry.keys.some(a => normalized.some(b => overlaps(a, b)))).map(entry => entry.done);
+  const dependencies = [...pending].flatMap(entry =>
+    entry.keys.some(a => normalized.some(b => overlaps(a, b))) ? [entry.done] : []);
   const result = Promise.all(dependencies).then(critical);
   const entry = { keys: normalized, done: result.then(() => {}, () => {}) };
   pending.add(entry);

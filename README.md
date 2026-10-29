@@ -136,4 +136,5 @@ Connected clients receive the notes they request. The optional [skim tool](docs/
 ```bash
 bun run test
 bun run typecheck
+bun run lint
 ```

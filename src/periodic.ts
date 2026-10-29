@@ -62,6 +62,7 @@ const TOKENS = [
   'MMMM', 'MMM', 'MM', 'M', 'DD', 'Do', 'D', 'dddd', 'ddd', 'dd',
 ] as const;
 type Token = (typeof TOKENS)[number];
+const isToken = (s: string): s is Token => TOKENS.some(token => token === s);
 type Segment = { literal: string } | { token: Token };
 
 const LOCALE_WEEK_TOKENS: ReadonlySet<Token> = new Set(['gggg', 'gg', 'ww', 'w']);
@@ -116,6 +117,7 @@ function parseTemplate(template: string): Segment[] {
   let last = 0;
   for (const match of template.matchAll(BRACED_TOKEN)) {
     if (match.index > last) segments.push({ literal: template.slice(last, match.index) });
+    // SAFETY: BRACED_TOKEN's only capture group is an alternation of TOKENS.
     segments.push({ token: match[1] as Token });
     last = match.index + match[0].length;
   }
@@ -143,13 +145,13 @@ function parseMomentFormat(format: string, source: string): Segment[] {
       while (format[end] === ch) end++;
       if (ch !== 'o' && format[end] === 'o') end++;
       const run = format.slice(i, end);
-      if (!(TOKENS as readonly string[]).includes(run)) {
+      if (!isToken(run)) {
         throw new PeriodicConfigError(
           `${source}: the format "${format}" uses the moment token "${run}", which this server can't reproduce. ` +
             `Supported tokens: ${TOKENS.join(', ')}. Wrap literal text in [brackets].`,
         );
       }
-      segments.push({ token: run as Token });
+      segments.push({ token: run });
       i = end;
     } else {
       segments.push({ literal: ch });

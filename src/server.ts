@@ -11,7 +11,7 @@ let built: ReturnType<typeof createApp>;
 try {
   built = createApp();
 } catch (err) {
-  console.error(`[auth] ${(err as Error).message}`);
+  console.error(`[auth] ${err instanceof Error ? err.message : String(err)}`);
   process.exit(1);
 }
 
@@ -34,7 +34,7 @@ startServer({
   // know the child server is up. The bind address is appended rather than substituted.
   onListen: () => {
     console.log(`obsidian-remote-mcp listening on port ${PORT} (bind ${HOST ?? '0.0.0.0'})`);
-    void logCliAvailability().catch(err => console.error(`[obsidian-remote-mcp] vault_cli availability check failed: ${(err as Error).message}`));
+    void logCliAvailability().catch(err => console.error(`[obsidian-remote-mcp] vault_cli availability check failed: ${err instanceof Error ? err.message : String(err)}`));
   },
   // Persist tokens on clean shutdown so they survive container restarts.
   onShutdown: () => auth.saveTokens(),

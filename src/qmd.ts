@@ -165,6 +165,8 @@ export async function semanticSearch(
       signal: controller.signal,
     });
     if (!res.ok) throw new QmdError(`QMD returned HTTP ${res.status}${lexHint(request.searches)}`);
+    // SAFETY: QMD is a local server the operator configures. Every result's file is still mapped
+    // back through the vault's access policy below, and dropped unless the policy returns it.
     body = await res.json() as { results?: QmdResult[] };
   } catch (e) {
     if (e instanceof QmdError) throw e;

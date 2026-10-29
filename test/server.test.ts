@@ -89,7 +89,7 @@ afterAll(async () => {
 
 describe('OAuth discovery', () => {
   test('protected resource metadata includes resource and authorization_servers', async () => {
-    const { app, auth } = createApp();
+    const { app } = createApp();
     const { base, close } = await listen(app);
     try {
       const res = await fetch(`${base}/.well-known/oauth-protected-resource`);
@@ -104,7 +104,7 @@ describe('OAuth discovery', () => {
   });
 
   test('authorization server metadata exposes token and authorize endpoints', async () => {
-    const { app, auth } = createApp();
+    const { app } = createApp();
     const { base, close } = await listen(app);
     try {
       const res = await fetch(`${base}/.well-known/oauth-authorization-server`);
@@ -130,7 +130,7 @@ describe('OAuth discovery', () => {
 
 describe('OAuth token endpoint', () => {
   test('requires client_secret when MCP_CLIENT_SECRET is set', async () => {
-    const { app, auth } = createApp();
+    const { app } = createApp();
     const { base, close } = await listen(app);
     try {
       const verifier = 'verifier-without-secret';
@@ -159,7 +159,7 @@ describe('OAuth token endpoint', () => {
   });
 
   test('accepts valid client_secret when provided', async () => {
-    const { app, auth } = createApp();
+    const { app } = createApp();
     const { base, close } = await listen(app);
     try {
       const verifier = 'verifier-with-secret';
@@ -188,7 +188,7 @@ describe('OAuth token endpoint', () => {
   });
 
   test('rejects invalid client_secret when provided', async () => {
-    const { app, auth } = createApp();
+    const { app } = createApp();
     const { base, close } = await listen(app);
     try {
       const verifier = 'verifier-bad-secret';
@@ -220,7 +220,7 @@ describe('OAuth token endpoint', () => {
   test('allows PKCE-only exchange when MCP_CLIENT_SECRET is unset', async () => {
     const prev = process.env.MCP_CLIENT_SECRET;
     delete process.env.MCP_CLIENT_SECRET;
-    const { app, auth } = createApp();
+    const { app } = createApp();
     const { base, close } = await listen(app);
     try {
       const verifier = 'verifier-without-configured-secret';
@@ -351,8 +351,8 @@ describe('Vault-derived defaults', () => {
     expect(frontmatter?.tags).toEqual(['journal', 'personal', 'draft']);
     expect(frontmatter?.date).toBeInstanceOf(Date);
     expect(frontmatter?.time).toBeInstanceOf(Date);
-    expect((frontmatter?.date as Date).toISOString()).toBe('2020-08-21T00:00:00.000Z');
-    expect((frontmatter?.time as Date).toISOString()).toBe('2020-08-21T10:30:00.000Z');
+    expect((frontmatter!.date as Date).toISOString()).toBe('2020-08-21T00:00:00.000Z');
+    expect((frontmatter!.time as Date).toISOString()).toBe('2020-08-21T10:30:00.000Z');
   });
 
   test('parses JSON-style frontmatter blocks', async () => {
@@ -566,7 +566,7 @@ describe('Vault-derived defaults', () => {
 describe('CORS', () => {
   test('allows the configured site origin by default', async () => {
     delete process.env.CORS_ALLOWED_ORIGINS;
-    const { app, auth } = createApp();
+    const { app } = createApp();
     const { base, close } = await listen(app);
     try {
       const res = await fetch(`${base}/mcp`, {
@@ -581,7 +581,7 @@ describe('CORS', () => {
 
   test('reflects configured allowed origins', async () => {
     process.env.CORS_ALLOWED_ORIGINS = 'https://claude.ai,https://app.example.com';
-    const { app, auth } = createApp();
+    const { app } = createApp();
     const { base, close } = await listen(app);
     try {
       // Re-pin (delta: the SDK applies its own cors() to the discovery/OAuth endpoints independent of
@@ -600,7 +600,7 @@ describe('CORS', () => {
 
   test('rejects disallowed preflight origins', async () => {
     process.env.CORS_ALLOWED_ORIGINS = 'https://claude.ai';
-    const { app, auth } = createApp();
+    const { app } = createApp();
     const { base, close } = await listen(app);
     try {
       const res = await fetch(`${base}/mcp`, {
@@ -617,7 +617,7 @@ describe('CORS', () => {
 
 describe('MCP /mcp', () => {
   test('GET without Authorization returns 401', async () => {
-    const { app, auth } = createApp();
+    const { app } = createApp();
     const { base, close } = await listen(app);
     try {
       const res = await fetch(`${base}/mcp`, {
@@ -630,7 +630,7 @@ describe('MCP /mcp', () => {
   });
 
   test('GET with invalid Bearer returns 401', async () => {
-    const { app, auth } = createApp();
+    const { app } = createApp();
     const { base, close } = await listen(app);
     try {
       const res = await fetch(`${base}/mcp`, {
@@ -667,7 +667,7 @@ describe('MCP /mcp', () => {
     const prev = process.env.MCP_STATIC_BEARER_TOKEN;
     process.env.MCP_STATIC_BEARER_TOKEN = 'static-bearer-test-secret';
     try {
-      const { app, auth } = createApp();
+      const { app } = createApp();
       const { base, close } = await listen(app);
       try {
         const res = await fetch(`${base}/mcp`, {
@@ -690,7 +690,7 @@ describe('MCP /mcp', () => {
     const prev = process.env.MCP_STATIC_BEARER_TOKEN;
     process.env.MCP_STATIC_BEARER_TOKEN = 'static-bearer-test-secret';
     try {
-      const { app, auth } = createApp();
+      const { app } = createApp();
       const { base, close } = await listen(app);
       try {
         const res = await fetch(`${base}/mcp`, {
@@ -724,7 +724,7 @@ describe('MCP /mcp', () => {
   });
 
   test('POST without Authorization returns 401', async () => {
-    const { app, auth } = createApp();
+    const { app } = createApp();
     const { base, close } = await listen(app);
     try {
       const res = await fetch(`${base}/mcp`, {
@@ -1258,7 +1258,7 @@ describe('Health /health', () => {
 
   test('returns 404 when HEALTH_TOKEN is unset (default-closed)', async () => {
     await withHealthToken(undefined, async () => {
-      const { app, auth } = createApp();
+      const { app } = createApp();
       const { base, close } = await listen(app);
       try {
         const res = await fetch(`${base}/health`);
@@ -1271,7 +1271,7 @@ describe('Health /health', () => {
 
   test('returns 401 when the token is missing', async () => {
     await withHealthToken('health-test-secret', async () => {
-      const { app, auth } = createApp();
+      const { app } = createApp();
       const { base, close } = await listen(app);
       try {
         const res = await fetch(`${base}/health`);
@@ -1284,7 +1284,7 @@ describe('Health /health', () => {
 
   test('returns 401 when the token is wrong', async () => {
     await withHealthToken('health-test-secret', async () => {
-      const { app, auth } = createApp();
+      const { app } = createApp();
       const { base, close } = await listen(app);
       try {
         const res = await fetch(`${base}/health`, {
@@ -1299,7 +1299,7 @@ describe('Health /health', () => {
 
   test('returns 200 and { ok, version, uptime_seconds } with the correct token', async () => {
     await withHealthToken('health-test-secret', async () => {
-      const { app, auth } = createApp();
+      const { app } = createApp();
       const { base, close } = await listen(app);
       try {
         const res = await fetch(`${base}/health`, {
@@ -1321,7 +1321,7 @@ describe('Health /health', () => {
 
   test('returns 503 with ok: false when the vault root is unreadable', async () => {
     await withHealthToken('health-test-secret', async () => {
-      const { app, auth } = createApp();
+      const { app } = createApp();
       const { base, close } = await listen(app);
       // Remove the vault root so the per-request stat fails, then restore it.
       await rm(vaultPath, { recursive: true, force: true });
