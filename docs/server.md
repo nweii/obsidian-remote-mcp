@@ -120,7 +120,7 @@ The Web Clipper interpreter uses its own settings export. Decision-model setting
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `OBSIDIAN_CLI_ENABLED` | no | `true` offers `vault_cli` and `vault_cli_help` when the `obsidian` CLI reaches this vault, and routes `vault_links` backlinks through Obsidian. Default off. |
-| `OBSIDIAN_CLI_PATH` | no | Path to the `obsidian` binary. Defaults to a lookup on `PATH`. |
+| `OBSIDIAN_CLI_PATH` | no | Path to the `obsidian` binary. Defaults to a lookup on `PATH`, then `/usr/local/bin/obsidian` on macOS. Set it for a background service whose `PATH` leaves out the binary's folder. See [Obsidian CLI tools](tools.md#obsidian-cli-tools). |
 | `OBSIDIAN_CLI_VAULT` | no | The vault name passed to the CLI as `vault=`. Defaults to the vault folder's name. |
 | `OBSIDIAN_CLI_COMMANDS` | no | Comma-separated command-palette IDs `vault_cli` may run through `command`. `*` allows all except destructive-looking IDs, which must be listed by name. Unset, palette execution is off. |
 | `OBSIDIAN_CLI_MCPIGNORE_ACK` | no | `true` keeps the CLI tools on while `.mcpignore` has rules, accepting that CLI output can't be filtered by them. |

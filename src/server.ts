@@ -3,6 +3,7 @@
 // approval page is unguarded, so a misconfigured deployment fails fast here rather than booting.
 import { startServer } from 'mcp-server-kit';
 import { createApp } from './app.js';
+import { logCliAvailability } from './cli.js';
 
 const PORT = parseInt(process.env.PORT ?? '3456', 10);
 
@@ -31,8 +32,10 @@ startServer({
   ...(HOST ? { host: HOST } : {}),
   // Keep the "listening on port N" phrasing — test/token-persistence.test.ts waits on it to
   // know the child server is up. The bind address is appended rather than substituted.
-  onListen: () =>
-    console.log(`obsidian-remote-mcp listening on port ${PORT} (bind ${HOST ?? '0.0.0.0'})`),
+  onListen: () => {
+    console.log(`obsidian-remote-mcp listening on port ${PORT} (bind ${HOST ?? '0.0.0.0'})`);
+    void logCliAvailability().catch(err => console.error(`[obsidian-remote-mcp] vault_cli availability check failed: ${(err as Error).message}`));
+  },
   // Persist tokens on clean shutdown so they survive container restarts.
   onShutdown: () => auth.saveTokens(),
 });
