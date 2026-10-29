@@ -7,8 +7,9 @@ import { createAuditLog } from 'mcp-server-kit';
 // Matched at any depth in the args tree. Always redacted regardless of length, so logs retain shape
 // (which tool, what arg keys) without recording vault content. `fields` is
 // vault_batch_frontmatter_update's per-note property map, whose values are frontmatter content;
-// redacting the whole map keeps the sibling `path` visible while no value reaches disk.
-const REDACTED_FIELDS = ['content', 'value', 'template', 'find', 'fields'];
+// redacting the whole map keeps the sibling `path` visible while no value reaches disk. `find` and
+// `replace` also cover each pair in vault_edit's `edits` list.
+const REDACTED_FIELDS = ['content', 'value', 'template', 'find', 'replace', 'fields'];
 
 function loggingEnabled(): boolean {
   const v = process.env.LOG_ENABLED?.trim().toLowerCase();

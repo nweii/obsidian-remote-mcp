@@ -7,7 +7,7 @@
 | Tool | Description |
 |------|-------------|
 | `vault_context` | Read the vault guidance note configured by `VAULT_CONTEXT_PATH`, or fall back to `AGENTS.md` / `CLAUDE.md`, and return a folder map for orientation |
-| `vault_read` | Full note text (`mode` full, default) with a version for safe updates, or list one folder level (`mode` `list`; `path` `""` = vault root) |
+| `vault_read` | Full note text (`mode` full, default) with a version for safe updates, a `.base` file's YAML by path, or list one folder level (`mode` `list`; `path` `""` = vault root) |
 | `vault_batch_read` | Read several notes in one call by path or title; `include_content: false` returns just frontmatter to inspect metadata before reading note bodies |
 | `vault_outline` | All `#` headings in a note (one per line); use before `vault_read_section` |
 | `vault_read_section` | Body under a single heading (`heading` = text without `#`, case-insensitive) |
@@ -18,7 +18,7 @@
 | `vault_update` | Replace a note's full contents; optional `base_version` rejects stale writes |
 | `vault_set_frontmatter_property` | Set one frontmatter property without rewriting the note body |
 | `vault_batch_frontmatter_update` | Set frontmatter properties on several notes in one call |
-| `vault_edit` | Append, prepend, or replace exact text within a note |
+| `vault_edit` | Append, prepend, or replace text within a note; `edits` applies several find/replace pairs as one all-or-nothing write |
 | `vault_edit_section` | Append, prepend, or replace the body under one heading |
 | `vault_trash` | Move a file or folder to `.trash` |
 | `vault_move` | Move or rename a vault file or validated folder by explicit path and rewrite the wikilinks that point at it; defaults to a dry run that shows the plan and writes nothing |
@@ -139,7 +139,20 @@ If the CLI call fails or returns unparseable output, `vault_links` uses the serv
 The server edits the same files Obsidian and Obsidian Sync are using.
 
 - Each write goes to a temporary file that is renamed into place. Obsidian, Sync, or other tools never read a half-written or empty note, even if the process stops mid-write.
-- Writes to one note run one at a time. `vault_read` returns a version string; passing it to `vault_update` as `base_version` makes the update fail if the note changed since you read it, instead of overwriting the other edit.
+- Writes to one note run one at a time. `vault_read` returns a version string; passing it to `vault_update` or `vault_edit` as `base_version` makes the write fail if the note changed since you read it, instead of overwriting the other edit.
+
+### Several replacements in one call
+
+`vault_edit` with `operation: "replace"` takes `edits`, a list of up to 50 `find`/`replace` pairs. The pairs apply in order, each to the result of the one before, and the note is written once. If any pair can't apply, nothing is written and the error names the pair by its position.
+
+- By default `find` is exact text and must match exactly once. Set `replace_all: true` on a pair to replace every match.
+- Set `regex: true` to treat `find` as a JavaScript regular expression, run with the `g` and `m` flags so `^` and `$` match at line edges. The replacement can use `$1`, `$<name>`, and `$&`. Without `regex`, the replacement is inserted verbatim.
+- A pair is refused when it matches nothing, matches more than once without `replace_all`, matches empty text, or matches more than 1,000 times. Patterns longer than 1,000 characters are refused. JavaScript regexes have no time limit, so a pattern with catastrophic backtracking can still stall the server.
+- The result includes the note's new version, so a follow-up edit can pass it as `base_version`.
+
+The single form, `find` with `content`, replaces the first occurrence of `find` and leaves the note unchanged when there is no match. It also accepts `base_version`.
+
+The audit log redacts every `find` and `replace` value, and edit errors don't quote them.
 
 ## Vault access and tool defaults
 
@@ -148,6 +161,14 @@ The server edits the same files Obsidian and Obsidian Sync are using.
 Vault paths must stay inside the vault and pass access checks both as requested and after resolving filesystem shortcuts (symlinks). Dangling shortcuts are refused. Searches through shortcut folders check the resolved descendants too.
 
 Internal trash destinations must also remain inside the vault. See the [vault access policy](vault-access-policy.md) for implementation details.
+
+### File types the read tools accept
+
+The note tools (`vault_read`, `vault_batch_read`, `vault_outline`, `vault_read_section`, `vault_frontmatter`, `vault_links`, and the search tools) work on Markdown notes (`.md`). A note can be given by path or by bare title.
+
+`vault_read` also returns an Obsidian Base (`.base`) as plain text when given its full path, such as `Views/Reading.base`. Bases follow the same access rules as notes. They aren't resolved by title, aren't parsed for frontmatter, and come back without a version, because the editing tools don't write them.
+
+Other files, such as images and PDFs, are read with `vault_read_attachment`.
 
 ### Exclude paths with .mcpignore
 
