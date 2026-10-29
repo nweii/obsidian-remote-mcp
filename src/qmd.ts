@@ -110,9 +110,10 @@ export interface SemanticSearchHit {
 
 export interface SemanticSearchResult {
   results: SemanticSearchHit[];
-  // Results this server can't vouch for: from notes it can't read (hidden, excluded by .mcpignore, gone),
-  // or from content that no readable note holds any more.
-  withheld: number;
+  // Results for readable notes whose content changed since QMD indexed them. Results for notes the access
+  // policy hides are dropped without a count: QMD indexes those notes too, so counting them would tell a
+  // client whether a hidden note contains the searched words.
+  changed: number;
 }
 
 // QMD's docid is the first 6 hex characters of the SHA-256 of the indexed content.
@@ -121,7 +122,7 @@ function docidOf(content: string): string {
 }
 
 // The readable notes at this QMD path whose current content is what QMD indexed, so stale results are
-// withheld. Six hex characters can collide, so nothing QMD returns about the document's text (title,
+// skipped. Six hex characters can collide, so nothing QMD returns about the document's text (title,
 // snippet) is passed on: an excluded note can share a readable note's QMD path, and its text would leak.
 async function notesHoldingDocid(paths: string[], docid: string | undefined): Promise<{ path: string; content: string }[]> {
   const wanted = docid?.replace(/^#/, "").toLowerCase();
@@ -194,13 +195,14 @@ export async function semanticSearch(
 
   const index = await notesByQmdPath();
   const results: SemanticSearchHit[] = [];
-  let withheld = 0;
+  let changed = 0;
   for (const r of body.results ?? []) {
     const relPath = pathInCollection(r.file, config.collection);
     const candidates = relPath !== null ? index.get(relPath) : undefined;
-    const notes = candidates ? await notesHoldingDocid(candidates, r.docid) : [];
+    if (!candidates) continue;
+    const notes = await notesHoldingDocid(candidates, r.docid);
     if (notes.length === 0) {
-      withheld++;
+      changed++;
       continue;
     }
     const [first, ...rest] = notes as [{ path: string; content: string }, ...{ path: string; content: string }[]];
@@ -212,7 +214,7 @@ export async function semanticSearch(
       excerpt: excerptAt(first.content, r.line),
     });
   }
-  return { results, withheld };
+  return { results, changed };
 }
 
 const EXCERPT_LINES = 3;
@@ -224,14 +226,14 @@ function excerptAt(content: string, line: number | undefined): string {
   return lines.slice(start, start + EXCERPT_LINES).map((text, i) => `${start + i + 1}: ${text}`).join("\n");
 }
 
-function formatResults({ results, withheld }: SemanticSearchResult): string {
+function formatResults({ results, changed }: SemanticSearchResult): string {
   const lines = results.map((r, i) => {
     const head = `${i + 1}. ${r.path}${r.line ? `:${r.line}` : ""}${r.score !== undefined ? ` (score ${r.score})` : ""}`;
     const also = r.also ? `\n   Same content at: ${r.also.join(", ")}` : "";
     const excerpt = r.excerpt ? `\n${r.excerpt.split("\n").map(l => `   ${l}`).join("\n")}` : "";
     return head + also + excerpt;
   });
-  const note = withheld ? `\n\n${withheld} result(s) withheld: from notes this server can't read, or changed since QMD indexed them.` : "";
+  const note = changed ? `\n\n${changed} result(s) skipped because the note changed since QMD indexed it.` : "";
   return (lines.length ? lines.join("\n\n") : "No results.") + note;
 }
 

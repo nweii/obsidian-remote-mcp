@@ -93,7 +93,7 @@ describe('semanticSearch', () => {
     });
   });
 
-  test('maps results to vault paths and withholds ignored, hidden, foreign, and unknown documents', async () => {
+  test('maps results to vault paths and drops ignored, hidden, foreign, and unknown documents without counting them', async () => {
     process.env.VAULT_PATH = vaultPath;
     const hits: [string, string][] = [
       ['qmd://brain/Projects/Mac-mini-plan.md', PLAN],
@@ -102,17 +102,17 @@ describe('semanticSearch', () => {
       ['other/Projects/Mac-mini-plan.md', PLAN],
       ['brain/Gone.md', 'gone\n'],
     ];
-    const { results, withheld } = await semanticSearch(config, { searches: [{ type: 'lex', query: 'plan' }], limit: 10 }, fakeQmd(hits));
+    const { results, changed } = await semanticSearch(config, { searches: [{ type: 'lex', query: 'plan' }], limit: 10 }, fakeQmd(hits));
     expect(results).toEqual([{ path: 'Projects/Mac mini plan.md', score: 0.9, line: 3, excerpt: '3: move services\n4: ' }]);
-    expect(withheld).toBe(4);
+    expect(changed).toBe(0);
   });
 
   test('matches the original vault path that current QMD releases report, percent-encoded', async () => {
     process.env.VAULT_PATH = vaultPath;
-    const { results, withheld } = await semanticSearch(config, { searches: [{ type: 'lex', query: 'plan' }], limit: 10 },
+    const { results, changed } = await semanticSearch(config, { searches: [{ type: 'lex', query: 'plan' }], limit: 10 },
       fakeQmd([['qmd://brain/Projects/Mac%20mini%20plan.md', PLAN], ['qmd://brain/Projects/Secret%20(draft).md', 'private draft\n']]));
     expect(results.map(r => r.path)).toEqual(['Projects/Mac mini plan.md']);
-    expect(withheld).toBe(1);
+    expect(changed).toBe(0);
   });
 
   test('withholds an excluded note that shares a QMD path with a readable one', async () => {
@@ -121,9 +121,9 @@ describe('semanticSearch', () => {
       ['brain/Projects/Secret-draft.md', 'private draft\n'],
       ['brain/Projects/Secret-draft.md', 'public draft\n'],
     ];
-    const { results, withheld } = await semanticSearch(config, { searches: [{ type: 'lex', query: 'draft' }], limit: 10 }, fakeQmd(hits));
+    const { results, changed } = await semanticSearch(config, { searches: [{ type: 'lex', query: 'draft' }], limit: 10 }, fakeQmd(hits));
     expect(results.map(r => r.path)).toEqual(['Projects/Secret-draft.md']);
-    expect(withheld).toBe(1);
+    expect(changed).toBe(1);
   });
 
   test('never passes on QMD text when an excluded note collides on path and docid', async () => {
@@ -134,11 +134,11 @@ describe('semanticSearch', () => {
     expect(JSON.stringify(results)).not.toContain('private');
   });
 
-  test('withholds a result whose note changed since QMD indexed it', async () => {
+  test('skips and counts a result whose note changed since QMD indexed it', async () => {
     process.env.VAULT_PATH = vaultPath;
-    const { results, withheld } = await semanticSearch(config, { searches: [{ type: 'lex', query: 'plan' }], limit: 10 }, fakeQmd([['brain/Projects/Mac-mini-plan.md', 'older text\n']]));
+    const { results, changed } = await semanticSearch(config, { searches: [{ type: 'lex', query: 'plan' }], limit: 10 }, fakeQmd([['brain/Projects/Mac-mini-plan.md', 'older text\n']]));
     expect(results).toEqual([]);
-    expect(withheld).toBe(1);
+    expect(changed).toBe(1);
   });
 
   test('reports a QMD HTTP failure as an error', async () => {
@@ -155,7 +155,7 @@ describe('semanticSearch', () => {
     const off = new McpServer({ name: 'qmd-off', version: '0' });
     registerQmdTool(off, { config: null });
     const on = new McpServer({ name: 'qmd-on', version: '0' });
-    registerQmdTool(on, { config, fetcher: fakeQmd([['brain/Projects/Mac-mini-plan.md', PLAN], ['brain/Private/Diary.md', 'secret\n']]) });
+    registerQmdTool(on, { config, fetcher: fakeQmd([['brain/Projects/Mac-mini-plan.md', PLAN], ['brain/Private/Diary.md', 'secret\n'], ['brain/Projects/Mac-mini-plan.md', 'older text\n']]) });
 
     for (const [server, expected] of [[off, false], [on, true]] as const) {
       const client = new Client({ name: 't', version: '0' });
@@ -167,7 +167,7 @@ describe('semanticSearch', () => {
         const res = await client.callTool({ name: 'vault_semantic_search', arguments: { searches: [{ type: 'lex', query: 'plan' }] } }) as any;
         expect(res.isError).toBeFalsy();
         expect(res.content[0].text).toContain('Projects/Mac mini plan.md:3');
-        expect(res.content[0].text).toContain('1 result(s) withheld');
+        expect(res.content[0].text).toContain('1 result(s) skipped because the note changed');
         expect(res.content[0].text).not.toContain('Diary');
       }
       await client.close();
