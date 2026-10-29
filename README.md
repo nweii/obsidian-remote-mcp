@@ -9,7 +9,7 @@ Run this self-hosted server on a NAS, a cloud server, or an always-on computer w
 - Ask AI to find notes, add to a journal, or update one section of a project note. Tools also support frontmatter and batches of notes.
 - Use your existing daily, weekly, and other periodic note settings. Moving or renaming notes updates the wikilinks pointing to them.
 - Give agents your vault's instructions and a folder map with [`vault_context`](docs/configuration.md#vault-context-note). It reads `AGENTS.md`, `CLAUDE.md`, or a guidance file you choose.
-- Optionally use the [Obsidian desktop app's CLI](docs/tools.md#obsidian-cli-tools) to query Bases, work with tasks, and access other app features.
+- Optionally add Obsidian app commands, search by meaning, URL clipping, and skimming. See [Optional features](#optional-features).
 - Choose editing and Obsidian app permissions separately for each connection approved through browser sign-in. Use [`.mcpignore`](docs/tools.md#vault-access-and-tool-defaults) to exclude private folders from file tools.
 - [Atomic writes](docs/tools.md#vault-edits) keep Obsidian and sync services from reading partially written notes. Optional version checks reject updates based on an outdated copy.
 
@@ -68,14 +68,6 @@ bun run src/server.ts
 
 The server listens on port `3456`. `MCP_CLIENT_ID` is a name you choose and enter in clients that ask for one. If you already use containers, follow the [Docker Compose setup](docs/setup.md#run-with-docker).
 
-#### Optional vault features
-
-- [Enable Obsidian CLI tools](docs/setup.md#use-the-obsidian-desktop-apps-cli-tools) to query Bases, work with tasks and use other app features, on a computer running Obsidian.
-- [Connect a local QMD index](docs/tools.md#semantic-search-with-qmd) to search notes by meaning, not only exact words.
-- [Install URL clipping](docs/setup.md#install-optional-url-clipping) to save web pages as notes with your Web Clipper templates.
-- [Add a decision-model key](docs/tools.md#skimming-notes) to skim selected notes for the passages relevant to a goal.
-- [Set up Obsidian Headless sync](docs/setup.md#sync-a-vault-with-obsidian-headless) to keep the server's vault current without the desktop app.
-
 ### 2. Expose it over HTTPS
 
 Use a reverse proxy or tunneling service to give the server an HTTPS URL. It receives encrypted connections from clients and forwards them to `http://127.0.0.1:3456` on this computer.
@@ -106,6 +98,16 @@ Give your client the HTTPS address with `/mcp` added, such as `https://mcp.examp
 Use [client setup](clients.md) for Claude, ChatGPT, Cursor, Codex, and scripts. Clients can use browser OAuth or an API key, depending on what they support.
 
 Once connected, ask the client to read a note you know by title. To use the Obsidian CLI tools, allow **Control the Obsidian app** when approving the connection.
+
+## Optional features
+
+Each one stays off until you set it up.
+
+- [Enable Obsidian CLI tools](docs/setup.md#use-the-obsidian-desktop-apps-cli-tools) to query Bases, work with tasks, and use other app features. Obsidian must be running on the same computer, and CLI searches don't follow `.mcpignore`.
+- [Connect a local QMD index](docs/tools.md#semantic-search-with-qmd) to search notes by meaning, not only exact words. [QMD](https://github.com/tobi/qmd) runs on the same computer, and results follow `.mcpignore`.
+- [Install URL clipping](docs/setup.md#install-optional-url-clipping) to save web pages as notes with your Web Clipper templates.
+- [Add a decision-model key](docs/tools.md#skimming-notes) to skim selected notes for the passages relevant to a goal. Selected note text goes to that model provider after you approve a plan.
+- [Set up Obsidian Headless sync](docs/setup.md#sync-a-vault-with-obsidian-headless) to keep the server's vault current without the desktop app.
 
 ## Security and scope
 
