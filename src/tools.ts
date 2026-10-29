@@ -773,26 +773,62 @@ export async function registerTools(server: McpServer) {
     {
       annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
       title: "Edit vault note",
-      description: "Partially edit a note: append, prepend, or find-and-replace. Prefer over vault_update for section-level changes.",
+      description:
+        "Partially edit a note: append, prepend, or find-and-replace. Prefer over vault_update for section-level changes. For several changes in one note, pass replace with edits: a list of find/replace pairs applied in order as one write, all or none. Each pair must match exactly once unless replace_all is set; regex is opt-in. Pass the version from vault_read as base_version to refuse the write if the note changed since.",
       inputSchema: z.object({
         path: z.string().describe("Relative path to the note"),
         operation: z.enum(["append", "prepend", "replace"]).describe("append — add to end; prepend — add to start; replace — swap exact text"),
-        content: z.string().describe("Content to add, or replacement text for a replace operation"),
-        find: z.string().optional().describe("Exact text to replace — required for replace operation"),
+        content: z.string().optional().describe("Content to add for append/prepend, or the replacement for a single find"),
+        find: z.string().optional().describe("Exact text to replace with content (first occurrence). Use edits instead for several changes."),
+        edits: z
+          .array(
+            z.object({
+              find: z.string().describe("Exact text to find, or a JavaScript pattern when regex is true"),
+              replace: z.string().describe("Replacement text. With regex, $1 and $<name> insert captured groups."),
+              regex: z.boolean().optional().describe("Treat find as a regular expression (g and m flags; ^ and $ match at line edges). Default false."),
+              replace_all: z.boolean().optional().describe("Replace every match instead of requiring exactly one. Default false."),
+            }),
+          )
+          .min(1)
+          .max(BATCH_MAX)
+          .optional()
+          .describe(`For replace: find/replace pairs applied in order as one write (1–${BATCH_MAX}). If any pair fails, nothing is written.`),
+        base_version: z
+          .string()
+          .optional()
+          .describe("For replace: the version from vault_read. The edit is refused if the note changed since."),
       }),
     },
-    async ({ path, operation, content, find }) => {
-      if (operation === "append") {
-        await vault.appendNote(path, content);
-      } else if (operation === "prepend") {
-        await vault.prependToNote(path, content);
-      } else {
-        if (!find) {
-          return { content: [{ type: "text", text: "Error: find is required for replace operation — pass the exact text to swap. For section-scoped edits, prefer vault_update after vault_read." }], isError: true };
+    async ({ path, operation, content, find, edits, base_version }) => {
+      if (operation !== "replace") {
+        if (content === undefined) {
+          return { content: [{ type: "text", text: `Error: content is required for ${operation}.` }], isError: true };
         }
-        await vault.replaceInNote(path, find, content);
+        if (edits !== undefined || base_version !== undefined) {
+          return { content: [{ type: "text", text: `Error: edits and base_version apply only to the replace operation.` }], isError: true };
+        }
+        if (operation === "append") await vault.appendNote(path, content);
+        else await vault.prependToNote(path, content);
+        return { content: [{ type: "text", text: `Edited ${path} (${operation})` }] };
       }
-      return { content: [{ type: "text", text: `Edited ${path} (${operation})` }] };
+      if (edits !== undefined) {
+        if (find !== undefined || content !== undefined) {
+          return { content: [{ type: "text", text: "Error: pass either edits, or find with content, not both." }], isError: true };
+        }
+        const { version } = await vault.editNote(
+          path,
+          edits.map((e: { find: string; replace: string; regex?: boolean; replace_all?: boolean }) => ({ find: e.find, replace: e.replace, regex: e.regex, replaceAll: e.replace_all })),
+          base_version,
+        );
+        return {
+          content: [{ type: "text", text: `Edited ${path} (${edits.length} edit${edits.length === 1 ? "" : "s"}; version: ${version})` }],
+        };
+      }
+      if (!find || content === undefined) {
+        return { content: [{ type: "text", text: "Error: replace needs find and content, or edits — pass the exact text to swap. For section-scoped edits, prefer vault_update after vault_read." }], isError: true };
+      }
+      const { version } = await vault.replaceInNote(path, find, content, base_version);
+      return { content: [{ type: "text", text: `Edited ${path} (replace; version: ${version})` }] };
     },
   );
 
