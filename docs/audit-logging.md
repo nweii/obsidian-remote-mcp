@@ -26,7 +26,7 @@ The `error` field records the message returned with an `isError` result, includi
 
 ## Redaction and visible metadata
 
-Argument strings longer than 80 characters become `<str:Nchars>`. The `content`, `value`, `template`, and `find` fields always become `<redacted:Nchars>`, regardless of length.
+Argument strings longer than 80 characters become `<str:Nchars>`. The `content`, `value`, `template`, `find`, and `replace` fields always become `<redacted:Nchars>`, regardless of length.
 
 Tool names, paths, titles, search queries, tags, frontmatter field names, and structural arguments remain visible. These metadata can be sensitive even when note-body arguments and frontmatter values are redacted.
 
