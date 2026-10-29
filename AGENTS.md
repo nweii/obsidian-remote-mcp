@@ -87,3 +87,16 @@ There is no shared extension interface. The optional tools detect their dependen
 - Release-age gating covers registry packages only. Git dependencies (`mcp-server-kit`, `web-clipper-headless`, and transitive `obsidian-clipper`) must keep reviewed lockfile commits; updating them requires source review, not just a version bump.
 - `bun install --frozen-lockfile --omit=optional` supports core-only installations. `bun run setup:clipper` builds optional clipping from the root lockfile without nested installs; rebuild after dependency changes. Keep `scripts/bootstrap-clipper.sh` routed through that command.
 - After security dependency updates, run `bun audit`, the full suite, and a clipper build/render smoke test if its dependencies changed. Preserve the release-age gate when deliberately regenerating the lockfile.
+
+## Pull requests
+
+Title a PR in Conventional Commits form, `type(scope): imperative subject`, naming the symbol the change centers on. The squash merge turns the body into the commit message, so keep the body under about 40 lines. Use these sections in order, and drop any that would be empty:
+
+- `## Why`: one to three sentences.
+- `## What changed`: one to three bullets. Add a small `diff` or call-tree sketch when it explains the change better than prose.
+- `## Scope`: what the change covers and what it leaves out on purpose.
+- `## Tradeoffs`: only the alternatives a reviewer would ask about.
+- `## Blast radius`: what the change touches, and a `Door:` line. A two-way door reverts cleanly. A one-way door does not, for example a renamed tool that prompts call by its old name.
+- `## Verification`: one to three commands or live checks and what they showed.
+
+This repository is public. Describe test setups in general terms, such as "a live QMD 2.8 instance against a real vault". Code, fixtures, commits, PRs, and issues never name a machine, hostname, network, IP address, or vault from anyone's own setup.
