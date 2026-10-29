@@ -50,7 +50,7 @@ describe('summarizeArgs', () => {
 
   test('redacts the batch frontmatter fields map but keeps the sibling path', () => {
     const result = summarizeArgs({
-      updates: [{ path: 'a.md', fields: { status: 'private', owner: 'nathan' } }],
+      updates: [{ path: 'a.md', fields: { status: 'private', owner: 'alex' } }],
     }) as { updates: Array<Record<string, string>> };
     expect(result.updates[0].path).toBe('a.md');
     expect(result.updates[0].fields).toBe('<redacted:object>');

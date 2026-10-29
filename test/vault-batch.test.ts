@@ -66,7 +66,7 @@ describe('updateFrontmatterBatch', () => {
     await note('b.md', '---\nstatus: active\n---\nbody\n');
 
     const outcomes = await vault.updateFrontmatterBatch([
-      { path: 'a.md', fields: { status: 'done', owner: 'nathan' } },
+      { path: 'a.md', fields: { status: 'done', owner: 'alex' } },
       { path: 'b.md', fields: { status: 'done' } },
       { path: 'ghost.md', fields: { status: 'done' } },
     ]);
@@ -76,7 +76,7 @@ describe('updateFrontmatterBatch', () => {
     expect(outcomes.find(o => o.path === 'ghost.md')!.updated).toBe(false);
 
     expect(await read('a.md')).toContain('status: done');
-    expect(await read('a.md')).toContain('owner: nathan');
+    expect(await read('a.md')).toContain('owner: alex');
     expect(await read('b.md')).toContain('status: done');
   });
 

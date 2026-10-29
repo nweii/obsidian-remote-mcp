@@ -29,7 +29,7 @@ describe('setFrontmatterKey splice', () => {
     expect(out).toContain('status: done');
   });
   test('appends a key that does not exist', () => {
-    expect(setFrontmatterKey('---\nstatus: draft\n---\nb', 'owner', 'nathan')).toContain('owner: nathan');
+    expect(setFrontmatterKey('---\nstatus: draft\n---\nb', 'owner', 'alex')).toContain('owner: alex');
   });
   test('creates a block when the note has none', () => {
     expect(setFrontmatterKey('# No frontmatter\n', 'status', 'draft').startsWith('---\nstatus: draft\n---\n')).toBe(true);
