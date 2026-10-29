@@ -64,6 +64,18 @@ Endpoints: OAuth discovery `GET /.well-known/oauth-authorization-server`, token 
 - Audit log contents and redaction: [docs/audit-logging.md](docs/audit-logging.md).
 - Reviewing a diff: apply [CODING_STANDARDS.md](CODING_STANDARDS.md).
 
+## Adding an optional tool
+
+An optional tool registers only when its dependency is present: an optional install, an API key, a local service, or the Obsidian app. Each one is a module in `src/` plus one entry in `OPTIONAL_TOOLS` in `tools.ts`, which isolates its registration failures from the other tools.
+
+- **Detect in the module.** Its `register*(server)` function returns without registering when the dependency is missing. `registerTools` runs on every MCP request, so cache detection in the module and log availability once per change, not per request (`clipperOnce` in `clip.ts`, `providerOnce` in `skim.ts`). Recheck on a timer only when the dependency can come and go, as the Obsidian app does (`probeCache` in `cli.ts`).
+- **Reach notes through `vault.ts`.** Select, list and read notes with `resolveNoteReference`, `listNotePaths` and `readNote`, which apply `.mcpignore` and the hidden-folder rules. A tool backed by an outside index maps every result back through those functions and withholds what they don't return (`qmd.ts`). Output the server can't filter, such as Obsidian CLI searches, is documented as such in `docs/tools.md`.
+- **Respect read-only mode.** A tool that only writes registers through `registerWrite`, so read-only mode hides it. A tool that reads or writes depending on its arguments stays registered, and the vault layer refuses its writes.
+- **Log through `registerLogged`.** If an argument can carry note text that `REDACTED_FIELDS` in `log.ts` doesn't cover, log a summary of the arguments instead (`registerCliTool` in `cli.ts`).
+- **Gate per connection in `access.ts`** when a connection's approval should be able to withhold the tool.
+
+There is no shared extension interface. The optional tools differ in how they detect their dependency, and the shared rules above already live in `vault.ts`, `registerWrite`, `log.ts` and `access.ts`. Add one when a new tool would otherwise have to repeat one of those rules, or when tools need shared lifecycle beyond registration, such as startup hooks, routes or vault-write events.
+
 ## Install policy
 
 `bunfig.toml` gates installs. Don't remove it.
