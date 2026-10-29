@@ -426,7 +426,7 @@ export async function registerTools(server: McpServer) {
       annotations: { readOnlyHint: true, openWorldHint: false },
       title: "Read vault note",
       description:
-        'Read full note text (mode full, default) or list one folder level (mode list; path "" = vault root). In full mode, path accepts a vault-relative path (e.g. "Notes/Foo.md") or a bare note title (e.g. "Foo"); ambiguous titles return the first match with a warning. For # headings only use vault_outline; for one section under a heading use vault_read_section after vault_outline.',
+        'Read full note text (mode full, default) or list one folder level (mode list; path "" = vault root). In full mode, path accepts a vault-relative path (e.g. "Notes/Foo.md") or a bare note title (e.g. "Foo"); ambiguous titles return the first match with a warning. An Obsidian Base (.base, YAML) is returned as text when given by its full path (e.g. "Views/Reading.base"). For # headings only use vault_outline; for one section under a heading use vault_read_section after vault_outline.',
       inputSchema: z.object({
         path: z
           .string()
@@ -435,7 +435,7 @@ export async function registerTools(server: McpServer) {
           .enum(["full", "list"])
           .optional()
           .default("full")
-          .describe("full — entire .md file; list — immediate children of path (directory only)"),
+          .describe("full — entire .md note, or a .base file by path; list — immediate children of path (directory only)"),
         list_limit: z
           .number()
           .optional()
@@ -459,6 +459,16 @@ export async function registerTools(server: McpServer) {
             },
           ],
         };
+      }
+      // A .base file is read as plain text: no title resolution, and no version, since the
+      // note-editing tools don't write Bases. When no such file exists, the path may still name a
+      // note (e.g. "Reading.base" for "Reading.base.md"), so note resolution runs as usual.
+      if (vault.isBasePath(path)) {
+        try {
+          return { content: [{ type: "text", text: await vault.readBase(path) }] };
+        } catch (e) {
+          if (!(e instanceof vault.NotFoundError)) throw e;
+        }
       }
       const ref = await vault.resolveNoteReference(path);
       const content = await vault.readNote(ref.path);
