@@ -38,63 +38,63 @@ afterAll(async () => {
 
 describe('searchFrontmatter', () => {
   test('exact match on a scalar property', async () => {
-    const r = await vault.searchFrontmatter('status', { value: 'active' });
+    const r = (await vault.searchFrontmatter('status', { value: 'active' })).items;
     expect(paths(r)).toEqual(['notes/gamma.md', 'projects/alpha.md']);
   });
 
   test('exact match returns nothing when no note has the value', async () => {
-    expect(await vault.searchFrontmatter('status', { value: 'nope' })).toEqual([]);
+    expect((await vault.searchFrontmatter('status', { value: 'nope' })).items).toEqual([]);
   });
 
   test('contains is a case-insensitive substring match', async () => {
-    const r = await vault.searchFrontmatter('status', { value: 'ARCH', matchType: 'contains' });
+    const r = (await vault.searchFrontmatter('status', { value: 'ARCH', matchType: 'contains' })).items;
     expect(paths(r)).toEqual(['projects/beta.md']);
   });
 
   test('exists matches any note carrying the property, ignoring value', async () => {
-    const r = await vault.searchFrontmatter('priority', { matchType: 'exists' });
+    const r = (await vault.searchFrontmatter('priority', { matchType: 'exists' })).items;
     expect(paths(r)).toEqual(['notes/gamma.md']);
   });
 
   test('exact on a list property matches an element, not the stringified list', async () => {
-    const r = await vault.searchFrontmatter('tags', { value: 'draft', matchType: 'exact' });
+    const r = (await vault.searchFrontmatter('tags', { value: 'draft', matchType: 'exact' })).items;
     expect(paths(r)).toEqual(['projects/alpha.md']);
   });
 
   test('contains on a list property matches a substring of an element', async () => {
-    const r = await vault.searchFrontmatter('tags', { value: 'dea', matchType: 'contains' });
+    const r = (await vault.searchFrontmatter('tags', { value: 'dea', matchType: 'contains' })).items;
     expect(paths(r)).toEqual(['projects/alpha.md']);
   });
 
   test('title comes from frontmatter when present, else the filename', async () => {
-    const r = await vault.searchFrontmatter('status', { value: 'active' });
+    const r = (await vault.searchFrontmatter('status', { value: 'active' })).items;
     const byPath = Object.fromEntries(r.map(x => [x.path, x.title]));
     expect(byPath['projects/alpha.md']).toBe('Alpha Project');
     expect(byPath['notes/gamma.md']).toBe('gamma');
   });
 
   test('folder scopes the scan', async () => {
-    const r = await vault.searchFrontmatter('status', { value: 'active', folder: 'notes' });
+    const r = (await vault.searchFrontmatter('status', { value: 'active', folder: 'notes' })).items;
     expect(paths(r)).toEqual(['notes/gamma.md']);
   });
 
   test('limit caps the number of results', async () => {
-    const r = await vault.searchFrontmatter('status', { value: 'active', limit: 1 });
+    const r = (await vault.searchFrontmatter('status', { value: 'active', limit: 1 })).items;
     expect(r.length).toBe(1);
   });
 
   test('matches an ISO date property by its calendar date (timezone-stable)', async () => {
-    const r = await vault.searchFrontmatter('event', { value: '2026-01-15', matchType: 'exact' });
+    const r = (await vault.searchFrontmatter('event', { value: '2026-01-15', matchType: 'exact' })).items;
     expect(paths(r)).toEqual(['events/launch.md']);
   });
 
   test('matches a datetime property by its calendar date', async () => {
-    const r = await vault.searchFrontmatter('start', { value: '2026-01-15', matchType: 'exact' });
+    const r = (await vault.searchFrontmatter('start', { value: '2026-01-15', matchType: 'exact' })).items;
     expect(paths(r)).toEqual(['events/launch.md']);
   });
 
   test('contains matches a substring of the canonical date', async () => {
-    const r = await vault.searchFrontmatter('event', { value: '2026', matchType: 'contains' });
+    const r = (await vault.searchFrontmatter('event', { value: '2026', matchType: 'contains' })).items;
     expect(paths(r)).toEqual(['events/launch.md']);
   });
 });
@@ -111,7 +111,7 @@ describe('searchFrontmatter honours .mcpignore', () => {
       await writeFile(path.join(root, '.mcpignore'), 'private\n', 'utf-8');
       // Fresh import so the module re-resolves VAULT_PATH and loads this .mcpignore.
       const v: typeof import('../src/vault.js') = await import(`../src/vault.js?fm-ignore=${Date.now()}`);
-      const r = await v.searchFrontmatter('status', { value: 'active' });
+      const r = (await v.searchFrontmatter('status', { value: 'active' })).items;
       expect(r.map(x => x.path)).toEqual(['public.md']);
     } finally {
       if (prev === undefined) delete process.env.VAULT_PATH;
