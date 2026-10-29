@@ -223,6 +223,24 @@ const contentSearchOutput = z.object({
   truncated: z.boolean().optional().describe("Present and true when the limit was hit"),
 });
 
+const skippedNotesSchema = z
+  .array(
+    z.object({
+      path: z.string(),
+      reason: z.string().describe("Why the frontmatter could not be parsed"),
+      line: z.number().optional().describe("Note line of the parse problem, when known"),
+    }),
+  )
+  .optional()
+  .describe("Present when some notes were skipped because their frontmatter isn't valid YAML");
+
+// Text footer listing notes a vault-wide scan skipped for malformed frontmatter.
+function skippedNotesText(skipped: vault.SkippedNote[] | undefined): string {
+  if (!skipped || skipped.length === 0) return "";
+  const lines = skipped.map((s) => `  ${s.path}${s.line !== undefined ? ` (line ${s.line})` : ""}: ${s.reason}`);
+  return `\n\nSkipped ${skipped.length} note${skipped.length === 1 ? "" : "s"} with invalid frontmatter:\n${lines.join("\n")}`;
+}
+
 const frontmatterSearchOutput = z.object({
   field: z.string(),
   items: z.array(
@@ -232,6 +250,7 @@ const frontmatterSearchOutput = z.object({
     }),
   ),
   truncated: z.boolean().optional().describe("Present and true when the limit was hit"),
+  skipped: skippedNotesSchema,
 });
 
 const frontmatterOutput = z.object({
@@ -267,6 +286,7 @@ const tagsOutput = z.object({
     .describe("Present in list-all mode: tags with note counts, sorted by count descending"),
   notes: z.array(z.string()).optional().describe("Present in single-tag mode: paths of notes carrying the tag"),
   truncated: z.boolean().optional().describe("Present and true when the tag list was capped by limit"),
+  skipped: skippedNotesSchema,
 });
 
 async function titleSearchToolResult(title: string, exact: boolean, limit: number) {
@@ -949,7 +969,7 @@ export async function registerTools(server: McpServer) {
           isError: true,
         };
       }
-      const results = await vault.searchFrontmatter(field, { value, matchType: match_type, folder, limit });
+      const { items: results, skipped } = await vault.searchFrontmatter(field, { value, matchType: match_type, folder, limit });
       const hitLimit = limit > 0 && results.length === limit;
       return structuredResult(
         frontmatterSearchOutput,
@@ -957,11 +977,13 @@ export async function registerTools(server: McpServer) {
           field,
           items: results.map((r) => ({ path: r.path, value: renderFrontmatterValue(r.frontmatter[field]) })),
           ...(hitLimit ? { truncated: true } : {}),
+          ...(skipped.length > 0 ? { skipped } : {}),
         },
-        ({ items, truncated }) => {
-          if (items.length === 0) return "No matching notes found.";
+        ({ items, truncated, skipped }) => {
+          const footer = skippedNotesText(skipped);
+          if (items.length === 0) return `No matching notes found.${footer}`;
           const text = items.map((r) => `${r.path}\t${field}: ${r.value}`).join("\n");
-          return truncated ? `${text}\n\n(limit of ${limit} reached — increase limit or pass a folder to narrow)` : text;
+          return truncated ? `${text}\n\n(limit of ${limit} reached — increase limit or pass a folder to narrow)${footer}` : `${text}${footer}`;
         },
       );
     },
@@ -983,14 +1005,17 @@ export async function registerTools(server: McpServer) {
     },
     async ({ tag, folder, limit }) => {
       if (tag !== undefined && tag.trim().length > 0) {
-        const paths = await vault.getNotesByTag(tag, { folder });
-        return structuredResult(tagsOutput, { notes: paths }, ({ notes }) =>
-          notes!.length === 0
-            ? `No notes found with tag "${tag.trim().replace(/^#/, "")}".`
-            : notes!.join("\n"),
+        const { paths, skipped } = await vault.getNotesByTag(tag, { folder });
+        return structuredResult(
+          tagsOutput,
+          { notes: paths, ...(skipped.length > 0 ? { skipped } : {}) },
+          ({ notes, skipped }) =>
+            (notes!.length === 0
+              ? `No notes found with tag "${tag.trim().replace(/^#/, "")}".`
+              : notes!.join("\n")) + skippedNotesText(skipped),
         );
       }
-      const tags = await vault.getAllTags({ folder });
+      const { tags, skipped } = await vault.getAllTags({ folder });
       const capped = limit > 0 ? tags.slice(0, limit) : tags;
       const truncated = limit > 0 && tags.length > limit;
       return structuredResult(
@@ -998,13 +1023,15 @@ export async function registerTools(server: McpServer) {
         {
           tags: capped.map((t) => ({ tag: t.tag, noteCount: t.noteCount })),
           ...(truncated ? { truncated: true } : {}),
+          ...(skipped.length > 0 ? { skipped } : {}),
         },
         (parsed) => {
-          if (parsed.tags!.length === 0) return "No tags found.";
+          const footer = skippedNotesText(parsed.skipped);
+          if (parsed.tags!.length === 0) return `No tags found.${footer}`;
           const text = parsed.tags!.map((t) => `${t.tag}\t${t.noteCount}`).join("\n");
           return parsed.truncated
-            ? `${text}\n\n(showing top ${limit} of ${tags.length} tags — increase limit or pass a folder to narrow)`
-            : text;
+            ? `${text}\n\n(showing top ${limit} of ${tags.length} tags — increase limit or pass a folder to narrow)${footer}`
+            : `${text}${footer}`;
         },
       );
     },

@@ -10,6 +10,7 @@ import * as vault from "./vault.js";
 import { chunkText, type Chunk } from "./chunk.js";
 import { judgeChunks, resolveDecisionProvider, type DecisionProvider, type JudgeOptions } from "./decision.js";
 import { compileIgnoreRules } from "./ignore.js";
+import { FrontmatterParseError } from "./frontmatter.js";
 import { registerLogged } from "./log.js";
 
 export const DEFAULT_MAX_NOTES = 20;
@@ -90,6 +91,18 @@ function tagExclusion(tags: string[], rules: ExclusionRules): string | null {
     if (hit) return `tag #${hit} (${rule.origin})`;
   }
   return null;
+}
+
+// A note whose frontmatter isn't valid YAML can't be checked against tag rules, so it is withheld
+// whenever a tag rule applies, and read normally when none does.
+function noteTagExclusion(content: string, rules: ExclusionRules): string | null {
+  if (rules.tags.length === 0) return null;
+  try {
+    return tagExclusion(vault.getNoteTags(content), rules);
+  } catch (e) {
+    if (!(e instanceof FrontmatterParseError)) throw e;
+    return `frontmatter could not be checked for excluded tags (${e.reason})`;
+  }
 }
 
 // --- Planning ---------------------------------------------------------------------
@@ -197,7 +210,7 @@ export async function planSkim(req: SkimRequest, provider: DecisionProvider, env
       continue;
     }
     if (query && !content.split("\n").some(line => query.test(line))) continue;
-    const byTag = tagExclusion(vault.getNoteTags(content), rules);
+    const byTag = noteTagExclusion(content, rules);
     if (byTag) {
       excluded.push({ path: relPath, reason: byTag });
       continue;

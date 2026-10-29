@@ -87,7 +87,7 @@ afterAll(async () => {
 
 describe('getAllTags', () => {
   test('aggregates frontmatter array and comma-string forms', async () => {
-    const tags = await vault.getAllTags();
+    const tags = (await vault.getAllTags()).tags;
     const byName = new Map(tags.map(t => [t.tag, t]));
     // alpha appears in array.md, comma.md, and twice inline in inline.md → 3 notes.
     expect(byName.get('alpha')?.noteCount).toBe(3);
@@ -97,7 +97,7 @@ describe('getAllTags', () => {
   });
 
   test('counts occurrences separately from note presence', async () => {
-    const tags = await vault.getAllTags();
+    const tags = (await vault.getAllTags()).tags;
     const alpha = tags.find(t => t.tag === 'alpha');
     // inline.md carries #alpha twice → 1 note there, 2 occurrences there;
     // total across array.md + comma.md + inline.md(x2) = 4 occurrences, 3 notes.
@@ -106,7 +106,7 @@ describe('getAllTags', () => {
   });
 
   test('excludes headings, URL fragments, inline code, and fenced code blocks', async () => {
-    const tags = await vault.getAllTags();
+    const tags = (await vault.getAllTags()).tags;
     const names = tags.map(t => t.tag);
     expect(names).toContain('parent/child');
     expect(names).not.toContain('frag');
@@ -117,14 +117,14 @@ describe('getAllTags', () => {
   });
 
   test('a purely numeric tag is not counted; a mixed one is', async () => {
-    const tags = await vault.getAllTags();
+    const tags = (await vault.getAllTags()).tags;
     const names = tags.map(t => t.tag);
     expect(names).not.toContain('123');
     expect(names).toContain('v2');
   });
 
   test('aggregates case-insensitively and displays first-seen casing', async () => {
-    const tags = await vault.getAllTags();
+    const tags = (await vault.getAllTags()).tags;
     const project = tags.filter(t => t.tag.toLowerCase() === 'project');
     expect(project.length).toBe(1);
     expect(project[0].tag).toBe('Project');
@@ -132,55 +132,55 @@ describe('getAllTags', () => {
   });
 
   test('sorts by note count descending', async () => {
-    const tags = await vault.getAllTags();
+    const tags = (await vault.getAllTags()).tags;
     for (let i = 1; i < tags.length; i++) {
       expect(tags[i - 1].noteCount).toBeGreaterThanOrEqual(tags[i].noteCount);
     }
   });
 
   test('respects .mcpignore', async () => {
-    const tags = await vault.getAllTags();
+    const tags = (await vault.getAllTags()).tags;
     expect(tags.map(t => t.tag)).not.toContain('secret');
   });
 
   test('folder scope limits the scan', async () => {
-    const tags = await vault.getAllTags({ folder: 'Sub' });
+    const tags = (await vault.getAllTags({ folder: 'Sub' })).tags;
     expect(tags.map(t => t.tag)).toEqual(['scoped']);
   });
 });
 
 describe('getNotesByTag', () => {
   test('returns note paths carrying the tag', async () => {
-    const paths = await vault.getNotesByTag('alpha');
+    const paths = (await vault.getNotesByTag('alpha')).paths;
     expect(paths.sort()).toEqual(['array.md', 'comma.md', 'inline.md']);
   });
 
   test('tolerates a leading # on the query', async () => {
-    const paths = await vault.getNotesByTag('#gamma');
+    const paths = (await vault.getNotesByTag('#gamma')).paths;
     expect(paths).toEqual(['comma.md']);
   });
 
   test('frontmatter entries written with a leading # match the bare form', async () => {
-    const paths = await vault.getNotesByTag('beta');
+    const paths = (await vault.getNotesByTag('beta')).paths;
     expect(paths.sort()).toEqual(['array.md', 'comma.md', 'hashed.md']);
   });
 
   test('matches case-insensitively', async () => {
-    const paths = await vault.getNotesByTag('PROJECT');
+    const paths = (await vault.getNotesByTag('PROJECT')).paths;
     expect(paths.sort()).toEqual(['case-a.md', 'case-b.md']);
   });
 
   test('nested tags are exact — querying parent does not match parent/child', async () => {
-    expect(await vault.getNotesByTag('parent')).toEqual([]);
-    expect(await vault.getNotesByTag('parent/child')).toEqual(['inline.md']);
+    expect((await vault.getNotesByTag('parent')).paths).toEqual([]);
+    expect((await vault.getNotesByTag('parent/child')).paths).toEqual(['inline.md']);
   });
 
   test('returns empty for an unknown tag', async () => {
-    expect(await vault.getNotesByTag('doesnotexist')).toEqual([]);
+    expect((await vault.getNotesByTag('doesnotexist')).paths).toEqual([]);
   });
 
   test('respects folder scope', async () => {
-    expect(await vault.getNotesByTag('scoped', { folder: 'Sub' })).toEqual(['Sub/scoped.md']);
-    expect(await vault.getNotesByTag('alpha', { folder: 'Sub' })).toEqual([]);
+    expect((await vault.getNotesByTag('scoped', { folder: 'Sub' })).paths).toEqual(['Sub/scoped.md']);
+    expect((await vault.getNotesByTag('alpha', { folder: 'Sub' })).paths).toEqual([]);
   });
 });
