@@ -231,8 +231,12 @@ function formatResults({ results, withheld }: SemanticSearchResult): string {
 
 // --- Registration --------------------------------------------------------------------
 
+// The server builds a fresh McpServer per request; reading the config and its log line happen once.
+let configOnce: QmdConfig | null | undefined;
+
 export function registerQmdTool(server: McpServer, options: { config?: QmdConfig | null; fetcher?: Fetcher } = {}) {
-  const config = options.config !== undefined ? options.config : loadQmdConfig();
+  if (options.config === undefined && configOnce === undefined) configOnce = loadQmdConfig();
+  const config = options.config !== undefined ? options.config : configOnce;
   if (!config) return;
 
   registerLogged(server,
