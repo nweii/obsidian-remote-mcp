@@ -111,10 +111,6 @@ const semanticSearchOutput = z.object({
     line: z.number().optional().describe("The best-matching line"),
     excerpt: z.string().describe("That line and the lines after it, numbered, read from the note itself"),
   })),
-  // Results for readable notes whose content changed since QMD indexed them. Results for notes the access
-  // policy hides are dropped without a count: QMD indexes those notes too, so counting them would tell a
-  // client whether a hidden note contains the searched words.
-  changed: z.number().describe("Results skipped because the note changed since QMD indexed it"),
 });
 
 export type SemanticSearchResult = z.infer<typeof semanticSearchOutput>;
@@ -126,7 +122,7 @@ function docidOf(content: string): string {
 }
 
 // The readable notes at this QMD path whose current content is what QMD indexed, so stale results are
-// skipped. Six hex characters can collide, so nothing QMD returns about the document's text (title,
+// dropped. Six hex characters can collide, so nothing QMD returns about the document's text (title,
 // snippet) is passed on: an excluded note can share a readable note's QMD path, and its text would leak.
 async function notesHoldingDocid(paths: string[], docid: string | undefined): Promise<{ path: string; content: string }[]> {
   const wanted = docid?.replace(/^#/, "").toLowerCase();
@@ -199,16 +195,15 @@ export async function semanticSearch(
 
   const index = await notesByQmdPath(request.folder);
   const items: SemanticSearchHit[] = [];
-  let changed = 0;
   for (const r of body.results ?? []) {
     const relPath = pathInCollection(r.file, config.collection);
     const candidates = relPath !== null ? index.get(relPath) : undefined;
+    // Results the server can't vouch for are dropped without a trace. QMD indexes notes the access policy
+    // hides, and a hidden note can share a QMD path with a readable one, so any count or notice of dropped
+    // results would tell a client whether a hidden note contains the searched words.
     if (!candidates) continue;
     const notes = await notesHoldingDocid(candidates, r.docid);
-    if (notes.length === 0) {
-      changed++;
-      continue;
-    }
+    if (notes.length === 0) continue;
     const [first, ...rest] = notes as [{ path: string; content: string }, ...{ path: string; content: string }[]];
     items.push({
       path: first.path,
@@ -218,7 +213,7 @@ export async function semanticSearch(
       excerpt: excerptAt(first.content, r.line),
     });
   }
-  return { items, changed };
+  return { items };
 }
 
 const EXCERPT_LINES = 3;
@@ -230,15 +225,14 @@ function excerptAt(content: string, line: number | undefined): string {
   return lines.slice(start, start + EXCERPT_LINES).map((text, i) => `${start + i + 1}: ${text}`).join("\n");
 }
 
-function formatResults({ items, changed }: SemanticSearchResult): string {
+function formatResults({ items }: SemanticSearchResult): string {
   const lines = items.map((r, i) => {
     const head = `${i + 1}. ${r.path}${r.line ? `:${r.line}` : ""}${r.score !== undefined ? ` (score ${r.score})` : ""}`;
     const also = r.also ? `\n   Same content at: ${r.also.join(", ")}` : "";
     const excerpt = r.excerpt ? `\n${r.excerpt.split("\n").map(l => `   ${l}`).join("\n")}` : "";
     return head + also + excerpt;
   });
-  const note = changed ? `\n\n${changed} result(s) skipped because the note changed since QMD indexed it.` : "";
-  return (lines.length ? lines.join("\n\n") : "No results.") + note;
+  return lines.length ? lines.join("\n\n") : "No results.";
 }
 
 // --- Registration --------------------------------------------------------------------
