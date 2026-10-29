@@ -107,6 +107,14 @@ The Web Clipper interpreter uses its own settings export. Decision-model setting
 | `SKIM_EXCLUDE_TAGS` | no | Comma-separated tags whose notes `vault_skim` never sends. `x` matches `#x` only; `x/*` matches `#x` and nested tags. |
 | `SKIM_EXCLUDE_PATHS` | no | Comma-separated vault-relative path rules whose notes (and everything under them) `vault_skim` never sends. Rules use `.mcpignore` syntax, so `*`, `?` and `**` wildcards work. |
 
+### Semantic search
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `QMD_URL` | no | Base URL of a local QMD HTTP server, such as `http://127.0.0.1:8181`. With `QMD_COLLECTION`, registers `vault_semantic_search`. |
+| `QMD_COLLECTION` | no | The QMD collection that indexes this vault. Searches are limited to it. Required with `QMD_URL`; without it the tool stays off and the server logs why. |
+| `QMD_TIMEOUT_MS` | no | How long a search may take before it fails. Defaults to `60000`, which leaves room for QMD loading its models on the first call. |
+
 ### Obsidian CLI
 
 | Variable | Required | Description |

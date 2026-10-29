@@ -1,10 +1,11 @@
-// ABOUTME: Registers all vault tools on an McpServer - context, read (full/list), outline, read section, read attachment, frontmatter, links, writes, move/rename, title search, content search, tags, periodic note, clip URL, skim, Obsidian CLI, feedback.
+// ABOUTME: Registers all vault tools on an McpServer - context, read (full/list), outline, read section, read attachment, frontmatter, links, writes, move/rename, title search, content search, tags, periodic note, clip URL, skim, semantic search, Obsidian CLI, feedback.
 import type { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import * as vault from "./vault.js";
 import { frontmatterValueToString } from "./frontmatter.js";
 import { registerClipTool } from "./clip.js";
 import { registerSkimTool } from "./skim.js";
+import { registerQmdTool } from "./qmd.js";
 import { registerCliTools, resolveBacklinks } from "./cli.js";
 import { structuredResult } from "mcp-server-kit";
 import { registerLogged, logFeedback, isLoggingEnabled, type ToolResult } from "./log.js";
@@ -335,6 +336,16 @@ export async function registerTools(server: McpServer) {
   } catch (err) {
     console.error(
       "[obsidian-remote-mcp] vault_skim registration failed; continuing with core tools.",
+      err instanceof Error ? err.message : err,
+    );
+  }
+
+  // Optional: vault_semantic_search, registered only when a local QMD server is configured.
+  try {
+    registerQmdTool(server);
+  } catch (err) {
+    console.error(
+      "[obsidian-remote-mcp] vault_semantic_search registration failed; continuing with core tools.",
       err instanceof Error ? err.message : err,
     );
   }
