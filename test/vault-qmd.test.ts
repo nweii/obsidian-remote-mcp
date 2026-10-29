@@ -1,4 +1,4 @@
-// ABOUTME: Tests for vault_search_semantic — QMD path normalization, the request sent to QMD, mapping
+// ABOUTME: Tests for vault_search_semantic — reading QMD's result paths, the request sent to QMD, mapping
 // results back to vault paths, withholding results the access policy hides, and registration over MCP.
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { mkdir, mkdtemp, rm, writeFile } from 'fs/promises';
@@ -7,7 +7,7 @@ import { createHash } from 'crypto';
 import path from 'path';
 import { McpServer } from '@modelcontextprotocol/server';
 import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
-import { loadQmdConfig, pathInCollection, qmdPath, registerQmdTool, semanticSearch, type Fetcher, type QmdConfig } from '../src/qmd.js';
+import { loadQmdConfig, pathInCollection, registerQmdTool, semanticSearch, type Fetcher, type QmdConfig } from '../src/qmd.js';
 
 const config: QmdConfig = { url: 'http://127.0.0.1:8181', collection: 'brain', timeoutMs: 5000 };
 
@@ -23,20 +23,10 @@ function fakeQmd(hits: [file: string, content: string, docidOverride?: string][]
   };
 }
 
-describe('qmdPath', () => {
-  test('matches QMD normalization of folders, spaces, punctuation, and emoji', () => {
-    expect(qmdPath('06-Working/Systems/Log - Mac mini migration 2026-10.md')).toBe('06-Working/Systems/Log-Mac-mini-migration-2026-10.md');
-    expect(qmdPath('01-Days/2026-10-29-Thu.md')).toBe('01-Days/2026-10-29-Thu.md');
-    expect(qmdPath('Notes/Café (draft).md')).toBe('Notes/Café-draft.md');
-    expect(qmdPath('Ideas/🌱 Seeds.md')).toBe('Ideas/1f331-Seeds.md');
-    expect(qmdPath('a___b.md')).toBe('a/b.md');
-  });
-});
-
 describe('pathInCollection', () => {
   test('reads both the collection/path form and the encoded qmd:// URI form', () => {
     expect(pathInCollection('brain/Projects/Plan.md', 'brain')).toBe('Projects/Plan.md');
-    expect(pathInCollection('qmd://brain/Projects/Caf%C3%A9-draft.md', 'brain')).toBe('Projects/Café-draft.md');
+    expect(pathInCollection('qmd://brain/Projects/Caf%C3%A9%20(draft).md', 'brain')).toBe('Projects/Café (draft).md');
     expect(pathInCollection('qmd://other/Projects/Plan.md', 'brain')).toBeNull();
     expect(pathInCollection('brainy/Plan.md', 'brain')).toBeNull();
     expect(pathInCollection('qmd://brain/%E0%A4%A.md', 'brain')).toBeNull();
@@ -96,44 +86,27 @@ describe('semanticSearch', () => {
   test('maps results to vault paths and drops ignored, hidden, foreign, and unknown documents', async () => {
     process.env.VAULT_PATH = vaultPath;
     const hits: [string, string][] = [
-      ['qmd://brain/Projects/Mac-mini-plan.md', PLAN],
+      ['qmd://brain/Projects/Mac%20mini%20plan.md', PLAN],
       ['brain/Private/Diary.md', 'secret\n'],
       ['brain/hidden/Note.md', 'hidden\n'],
-      ['other/Projects/Mac-mini-plan.md', PLAN],
+      ['other/Projects/Mac mini plan.md', PLAN],
       ['brain/Gone.md', 'gone\n'],
     ];
     const { items: results } = await semanticSearch(config, { searches: [{ type: 'lex', query: 'plan' }], limit: 10 }, fakeQmd(hits));
     expect(results).toEqual([{ path: 'Projects/Mac mini plan.md', score: 0.9, line: 3, excerpt: '3: move services\n4: ' }]);
   });
 
-  test('matches the original vault path that current QMD releases report, percent-encoded', async () => {
-    process.env.VAULT_PATH = vaultPath;
-    const { items: results } = await semanticSearch(config, { searches: [{ type: 'lex', query: 'plan' }], limit: 10 },
-      fakeQmd([['qmd://brain/Projects/Mac%20mini%20plan.md', PLAN], ['qmd://brain/Projects/Secret%20(draft).md', 'private draft\n']]));
-    expect(results.map(r => r.path)).toEqual(['Projects/Mac mini plan.md']);
-  });
-
-  test('drops an excluded note that shares a QMD path with a readable one', async () => {
-    process.env.VAULT_PATH = vaultPath;
-    const hits: [string, string][] = [
-      ['brain/Projects/Secret-draft.md', 'private draft\n'],
-      ['brain/Projects/Secret-draft.md', 'public draft\n'],
-    ];
-    const { items: results } = await semanticSearch(config, { searches: [{ type: 'lex', query: 'draft' }], limit: 10 }, fakeQmd(hits));
-    expect(results.map(r => r.path)).toEqual(['Projects/Secret-draft.md']);
-  });
-
-  test('never passes on QMD text when an excluded note collides on path and docid', async () => {
+  test('drops a note the access policy hides even when QMD reports its exact path and content', async () => {
     process.env.VAULT_PATH = vaultPath;
     const { items: results } = await semanticSearch(config, { searches: [{ type: 'lex', query: 'draft' }], limit: 10 },
-      fakeQmd([['brain/Projects/Secret-draft.md', 'private draft\n', docid('public draft\n')]]));
+      fakeQmd([['qmd://brain/Projects/Secret%20(draft).md', 'private draft\n'], ['brain/Projects/Secret-draft.md', 'public draft\n']]));
     expect(results.map(r => r.path)).toEqual(['Projects/Secret-draft.md']);
     expect(JSON.stringify(results)).not.toContain('private');
   });
 
   test('drops a result whose note changed since QMD indexed it', async () => {
     process.env.VAULT_PATH = vaultPath;
-    const { items: results } = await semanticSearch(config, { searches: [{ type: 'lex', query: 'plan' }], limit: 10 }, fakeQmd([['brain/Projects/Mac-mini-plan.md', 'older text\n']]));
+    const { items: results } = await semanticSearch(config, { searches: [{ type: 'lex', query: 'plan' }], limit: 10 }, fakeQmd([['brain/Projects/Mac mini plan.md', 'older text\n']]));
     expect(results).toEqual([]);
   });
 
@@ -141,7 +114,7 @@ describe('semanticSearch', () => {
     process.env.VAULT_PATH = vaultPath;
     await writeFile(path.join(vaultPath, 'Plan elsewhere.md'), PLAN);
     const { items } = await semanticSearch(config, { searches: [{ type: 'lex', query: 'plan' }], limit: 10, folder: 'Projects' },
-      fakeQmd([['brain/Plan-elsewhere.md', PLAN], ['brain/Projects/Mac-mini-plan.md', PLAN]]));
+      fakeQmd([['brain/Plan elsewhere.md', PLAN], ['brain/Projects/Mac mini plan.md', PLAN]]));
     expect(items.map(r => r.path)).toEqual(['Projects/Mac mini plan.md']);
     await rm(path.join(vaultPath, 'Plan elsewhere.md'));
   });
@@ -160,7 +133,7 @@ describe('semanticSearch', () => {
     const off = new McpServer({ name: 'qmd-off', version: '0' });
     registerQmdTool(off, { config: null });
     const on = new McpServer({ name: 'qmd-on', version: '0' });
-    registerQmdTool(on, { config, fetcher: fakeQmd([['brain/Projects/Mac-mini-plan.md', PLAN], ['brain/Private/Diary.md', 'secret\n'], ['brain/Projects/Mac-mini-plan.md', 'older text\n']]) });
+    registerQmdTool(on, { config, fetcher: fakeQmd([['brain/Projects/Mac mini plan.md', PLAN], ['brain/Private/Diary.md', 'secret\n'], ['brain/Projects/Mac mini plan.md', 'older text\n']]) });
 
     for (const [server, expected] of [[off, false], [on, true]] as const) {
       const client = new Client({ name: 't', version: '0' });
