@@ -56,9 +56,9 @@ describe('symlink access policy regressions', () => {
 
   test('a root alias used as a search scope cannot expose ignored descendants', async () => {
     expect(await vault.searchContent('SECRET', { folder: 'AliasRoot' })).toEqual([]);
-    expect(await vault.searchFrontmatter('status', { value: 'secret', folder: 'AliasRoot' })).toEqual([]);
-    expect(await vault.getNotesByTag('secret', { folder: 'AliasRoot' })).toEqual([]);
-    expect((await vault.getAllTags({ folder: 'AliasRoot' })).map(tag => tag.tag)).not.toContain('secret');
+    expect((await vault.searchFrontmatter('status', { value: 'secret', folder: 'AliasRoot' })).items).toEqual([]);
+    expect((await vault.getNotesByTag('secret', { folder: 'AliasRoot' })).paths).toEqual([]);
+    expect(((await vault.getAllTags({ folder: 'AliasRoot' })).tags).map(tag => tag.tag)).not.toContain('secret');
     expect(await vault.searchContent('public body', { folder: 'AliasRoot' })).toHaveLength(1);
     expect((await vault.listVaultFolder('AliasRoot')).map(entry => entry.name)).not.toContain('Private');
   });

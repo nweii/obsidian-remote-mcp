@@ -365,6 +365,22 @@ describe('vault_skim over a temp vault', () => {
     expect(plan.chunkCount).toBeGreaterThan(1);
   });
 
+  test('a note with malformed frontmatter is withheld only while a tag rule applies', async () => {
+    process.env.VAULT_PATH = vaultPath;
+    await seed('Notes/Broken.md', '---\ntags: [private\n---\nneedle behind broken frontmatter\n');
+    try {
+      const guarded = await planSkim({ goal: 'g', paths: ['Notes/Broken.md'] }, typesafe, env);
+      expect(guarded.notes).toEqual([]);
+      expect(guarded.excluded[0].path).toBe('Notes/Broken.md');
+      expect(guarded.excluded[0].reason).toStartWith('frontmatter could not be checked for excluded tags');
+
+      const open = await planSkim({ goal: 'g', paths: ['Notes/Broken.md'] }, typesafe, {});
+      expect(open.notes.map(n => n.path)).toEqual(['Notes/Broken.md']);
+    } finally {
+      await rm(path.join(vaultPath, 'Notes/Broken.md'));
+    }
+  });
+
   test('plan id changes when a planned note changes', async () => {
     process.env.VAULT_PATH = vaultPath;
     const before = await planSkim({ goal: 'g', paths: ['Notes/Draft.md'] }, typesafe, {});
