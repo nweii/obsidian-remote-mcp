@@ -71,6 +71,7 @@ The server listens on port `3456`. `MCP_CLIENT_ID` is a name you choose and ente
 #### Optional vault features
 
 - [Enable Obsidian CLI tools](docs/setup.md#use-the-obsidian-desktop-apps-cli-tools) to use app features on a computer running Obsidian.
+- [Search by meaning through a local QMD index](docs/tools.md#semantic-search-with-qmd) when QMD runs on the same computer.
 - [Set up Obsidian Headless sync](docs/setup.md#sync-a-vault-with-obsidian-headless) to keep the server's vault current without the desktop app.
 
 ### 2. Expose it over HTTPS
