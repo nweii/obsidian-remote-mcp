@@ -1,6 +1,6 @@
 // ABOUTME: Registers vault_search_semantic when a local QMD server is configured: forwards the query to QMD's
-// HTTP search endpoint for this vault's collection, then maps QMD's normalized paths back to vault paths and
-// returns a result only when a note the access policy allows holds the exact content QMD indexed.
+// HTTP search endpoint for this vault's collection, then returns a result only when a note the access policy
+// allows sits at the reported path and still holds the content QMD indexed.
 import type { McpServer } from "@modelcontextprotocol/server";
 import { createHash } from "node:crypto";
 import { z } from "zod";
@@ -36,45 +36,13 @@ export function loadQmdConfig(env: NodeJS.ProcessEnv = process.env): QmdConfig |
   };
 }
 
-// --- QMD's path normalization ------------------------------------------------------
+// --- Readable notes --------------------------------------------------------------
 
-// QMD 2.5 and earlier stored each document under a normalized path ("handelize" in QMD's store.js):
-// emoji become hex code points, runs of anything but letters, numbers and "$" become "-", and "___"
-// becomes a folder separator. Their results carry that form, so vault paths are normalized the same way.
-function emojiToHex(segment: string): string {
-  return segment.replace(/(?:\p{So}\p{Mn}?|\p{Sk})+/gu, run =>
-    [...run].filter(c => /\p{So}|\p{Sk}/u.test(c)).map(c => c.codePointAt(0)!.toString(16)).join("-"));
-}
-
-export function qmdPath(relPath: string): string | null {
-  const segments = relPath.replace(/___/g, "/").split("/");
-  const cleaned = segments.map((raw, i) => {
-    const segment = emojiToHex(raw);
-    const isFile = i === segments.length - 1;
-    const ext = isFile ? (segment.match(/(\.[a-z0-9]+)$/i)?.[1] ?? "") : "";
-    const name = ext ? segment.slice(0, -ext.length) : segment;
-    return name.replace(/[^\p{L}\p{N}$]+/gu, "-").replace(/^-+|-+$/g, "") + ext;
-  }).filter(Boolean).join("/");
-  return cleaned || null;
-}
-
-// Every note the vault access policy lets this server read, keyed by each path QMD may report for it:
-// the vault path itself, which current QMD releases index, and the normalized form older releases
-// indexed. Built per search so a .mcpignore edit applies to the next call. Distinct notes can share a
-// key; all are kept, and content verification picks among them.
-async function notesByQmdPath(folder?: string): Promise<Map<string, string[]>> {
-  const index = new Map<string, string[]>();
-  const add = (key: string, relPath: string) => {
-    const existing = index.get(key);
-    if (!existing) index.set(key, [relPath]);
-    else if (!existing.includes(relPath)) existing.push(relPath);
-  };
-  for (const relPath of await vault.listNotePaths(folder)) {
-    const posix = relPath.split("\\").join("/");
-    add(posix, relPath);
-    const normalized = qmdPath(posix);
-    if (normalized) add(normalized, relPath);
-  }
+// Every note the vault access policy lets this server read, keyed by the path QMD reports for it: the
+// vault path with forward slashes. Built per search so a .mcpignore edit applies to the next call.
+async function readableNotes(folder?: string): Promise<Map<string, string>> {
+  const index = new Map<string, string>();
+  for (const relPath of await vault.listNotePaths(folder)) index.set(relPath.split("\\").join("/"), relPath);
   return index;
 }
 
@@ -106,7 +74,6 @@ interface QmdResult {
 const semanticSearchOutput = z.object({
   items: z.array(z.object({
     path: z.string().describe("Vault-relative path of the matching note"),
-    also: z.array(z.string()).optional().describe("Other readable notes at the same QMD path with identical content"),
     score: z.number().optional(),
     line: z.number().optional().describe("The best-matching line"),
     excerpt: z.string().describe("That line and the lines after it, numbered, read from the note itself"),
@@ -121,24 +88,18 @@ function docidOf(content: string): string {
   return createHash("sha256").update(content).digest("hex").slice(0, 6);
 }
 
-// The readable notes at this QMD path whose current content is what QMD indexed, so stale results are
-// dropped. Six hex characters can collide, so nothing QMD returns about the document's text (title,
-// snippet) is passed on: an excluded note can share a readable note's QMD path, and its text would leak.
-async function notesHoldingDocid(paths: string[], docid: string | undefined): Promise<{ path: string; content: string }[]> {
+// The note's content when it is what QMD indexed, so stale results are dropped; null otherwise.
+async function contentHoldingDocid(relPath: string, docid: string | undefined): Promise<string | null> {
   const wanted = docid?.replace(/^#/, "").toLowerCase();
-  if (!wanted || !/^[0-9a-f]{6}$/.test(wanted)) return [];
-  const matches: { path: string; content: string }[] = [];
-  for (const relPath of paths) {
-    let content: string;
-    try {
-      content = await vault.readNote(relPath);
-    } catch (e) {
-      if (vault.isVaultError(e)) continue;
-      throw e;
-    }
-    if (docidOf(content) === wanted) matches.push({ path: relPath, content });
+  if (!wanted || !/^[0-9a-f]{6}$/.test(wanted)) return null;
+  let content: string;
+  try {
+    content = await vault.readNote(relPath);
+  } catch (e) {
+    if (vault.isVaultError(e)) return null;
+    throw e;
   }
-  return matches;
+  return docidOf(content) === wanted ? content : null;
 }
 
 export type Fetcher = (url: string, init: RequestInit) => Promise<Response>;
@@ -193,24 +154,22 @@ export async function semanticSearch(
     clearTimeout(timer);
   }
 
-  const index = await notesByQmdPath(request.folder);
+  const index = await readableNotes(request.folder);
   const items: SemanticSearchHit[] = [];
   for (const r of body.results ?? []) {
-    const relPath = pathInCollection(r.file, config.collection);
-    const candidates = relPath !== null ? index.get(relPath) : undefined;
+    const qmdPath = pathInCollection(r.file, config.collection);
+    const relPath = qmdPath !== null ? index.get(qmdPath) : undefined;
     // Results the server can't vouch for are dropped without a trace. QMD indexes notes the access policy
-    // hides, and a hidden note can share a QMD path with a readable one, so any count or notice of dropped
-    // results would tell a client whether a hidden note contains the searched words.
-    if (!candidates) continue;
-    const notes = await notesHoldingDocid(candidates, r.docid);
-    if (notes.length === 0) continue;
-    const [first, ...rest] = notes as [{ path: string; content: string }, ...{ path: string; content: string }[]];
+    // hides, so any count or notice of dropped results would tell a client whether a hidden note contains
+    // the searched words.
+    if (relPath === undefined) continue;
+    const content = await contentHoldingDocid(relPath, r.docid);
+    if (content === null) continue;
     items.push({
-      path: first.path,
-      ...(rest.length ? { also: rest.map(n => n.path) } : {}),
+      path: relPath,
       ...(typeof r.score === "number" ? { score: r.score } : {}),
       ...(Number.isInteger(r.line) ? { line: r.line } : {}),
-      excerpt: excerptAt(first.content, r.line),
+      excerpt: excerptAt(content, r.line),
     });
   }
   return { items };
@@ -228,9 +187,8 @@ function excerptAt(content: string, line: number | undefined): string {
 function formatResults({ items }: SemanticSearchResult): string {
   const lines = items.map((r, i) => {
     const head = `${i + 1}. ${r.path}${r.line ? `:${r.line}` : ""}${r.score !== undefined ? ` (score ${r.score})` : ""}`;
-    const also = r.also ? `\n   Same content at: ${r.also.join(", ")}` : "";
     const excerpt = r.excerpt ? `\n${r.excerpt.split("\n").map(l => `   ${l}`).join("\n")}` : "";
-    return head + also + excerpt;
+    return head + excerpt;
   });
   return lines.length ? lines.join("\n\n") : "No results.";
 }
