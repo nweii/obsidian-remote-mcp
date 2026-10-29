@@ -101,12 +101,12 @@ Once connected, ask the client to read a note you know by title. To use the Obsi
 
 ## Optional features
 
-Each one stays off until you set it up.
+All are off by default.
 
-- [Enable Obsidian CLI tools](docs/setup.md#use-the-obsidian-desktop-apps-cli-tools) to query Bases, work with tasks, and use other app features. Obsidian must be running on the same computer, and CLI searches don't follow `.mcpignore`.
-- [Connect a local QMD index](docs/tools.md#semantic-search-with-qmd) to search notes by meaning, not only exact words. [QMD](https://github.com/tobi/qmd) runs on the same computer, and results follow `.mcpignore`.
+- [Enable Obsidian CLI tools](docs/setup.md#use-the-obsidian-desktop-apps-cli-tools) to query Bases, work with tasks, and use other app features. Obsidian must be running on the same computer, and CLI searches aren't filtered by `.mcpignore`.
+- [Connect a local QMD index](docs/tools.md#semantic-search-with-qmd) to search notes by meaning, not only exact words. [QMD](https://github.com/tobi/qmd) must be running on the same computer, and its results are filtered by `.mcpignore`.
 - [Install URL clipping](docs/setup.md#install-optional-url-clipping) to save web pages as notes with your Web Clipper templates.
-- [Add a decision-model key](docs/tools.md#skimming-notes) to skim selected notes for the passages relevant to a goal. Selected note text goes to that model provider after you approve a plan.
+- [Add a decision-model key](docs/tools.md#skimming-notes) to skim selected notes for the passages relevant to a goal. After you approve a plan, the server sends the selected note text to that model provider.
 - [Set up Obsidian Headless sync](docs/setup.md#sync-a-vault-with-obsidian-headless) to keep the server's vault current without the desktop app.
 
 ## Security and scope
