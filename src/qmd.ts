@@ -1,7 +1,8 @@
 // ABOUTME: Registers vault_semantic_search when a local QMD server is configured: forwards the query to QMD's
 // HTTP search endpoint for this vault's collection, then maps QMD's normalized paths back to vault paths and
-// drops every result the vault access policy hides.
+// returns a result only when a note the access policy allows holds the exact content QMD indexed.
 import type { McpServer } from "@modelcontextprotocol/server";
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import * as vault from "./vault.js";
 import { registerLogged } from "./log.js";
@@ -85,6 +86,7 @@ export interface SemanticSearchRequest {
 }
 
 interface QmdResult {
+  docid?: string;
   file: string;
   title?: string;
   score?: number;
@@ -94,7 +96,7 @@ interface QmdResult {
 
 export interface SemanticSearchHit {
   path: string;
-  // Other notes whose paths normalize to the same QMD path; the snippet may belong to any of them.
+  // Other readable notes at the same QMD path with identical content.
   also?: string[];
   title?: string;
   score?: number;
@@ -104,8 +106,34 @@ export interface SemanticSearchHit {
 
 export interface SemanticSearchResult {
   results: SemanticSearchHit[];
-  // Results QMD returned for notes this server can't read: hidden, excluded by .mcpignore, or gone.
+  // Results this server can't vouch for: from notes it can't read (hidden, excluded by .mcpignore, gone),
+  // or from content that no readable note holds any more.
   withheld: number;
+}
+
+// QMD's docid is the first 6 hex characters of the SHA-256 of the indexed content.
+function docidOf(content: string): string {
+  return createHash("sha256").update(content).digest("hex").slice(0, 6);
+}
+
+// The readable notes at this QMD path whose current content is what QMD indexed. A path match alone
+// isn't enough: an excluded note can normalize to the same QMD path as a readable one, and the result's
+// snippet would then come from the excluded note.
+async function notesHoldingDocid(paths: string[], docid: string | undefined): Promise<string[]> {
+  const wanted = docid?.replace(/^#/, "").toLowerCase();
+  if (!wanted || !/^[0-9a-f]{6}$/.test(wanted)) return [];
+  const matches: string[] = [];
+  for (const relPath of paths) {
+    let content: string;
+    try {
+      content = await vault.readNote(relPath);
+    } catch (e) {
+      if (vault.isVaultError(e)) continue;
+      throw e;
+    }
+    if (docidOf(content) === wanted) matches.push(relPath);
+  }
+  return matches;
 }
 
 export type Fetcher = (url: string, init: RequestInit) => Promise<Response>;
@@ -145,8 +173,9 @@ export async function semanticSearch(
   const results: SemanticSearchHit[] = [];
   let withheld = 0;
   for (const r of body.results ?? []) {
-    const paths = typeof r.file === "string" && r.file.startsWith(prefix) ? index.get(r.file.slice(prefix.length)) : undefined;
-    if (!paths) {
+    const candidates = typeof r.file === "string" && r.file.startsWith(prefix) ? index.get(r.file.slice(prefix.length)) : undefined;
+    const paths = candidates ? await notesHoldingDocid(candidates, r.docid) : [];
+    if (paths.length === 0) {
       withheld++;
       continue;
     }
@@ -166,11 +195,11 @@ export async function semanticSearch(
 function formatResults({ results, withheld }: SemanticSearchResult): string {
   const lines = results.map((r, i) => {
     const head = `${i + 1}. ${r.path}${r.line ? `:${r.line}` : ""}${r.score !== undefined ? ` (score ${r.score})` : ""}`;
-    const also = r.also ? `\n   Same QMD path as: ${r.also.join(", ")}` : "";
+    const also = r.also ? `\n   Same content at: ${r.also.join(", ")}` : "";
     const snippet = r.snippet ? `\n${r.snippet.split("\n").map(l => `   ${l}`).join("\n")}` : "";
     return head + also + snippet;
   });
-  const note = withheld ? `\n\n${withheld} result(s) withheld: notes this server can't read.` : "";
+  const note = withheld ? `\n\n${withheld} result(s) withheld: from notes this server can't read, or changed since QMD indexed them.` : "";
   return (lines.length ? lines.join("\n\n") : "No results.") + note;
 }
 

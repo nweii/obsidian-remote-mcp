@@ -3,6 +3,7 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { mkdir, mkdtemp, rm, writeFile } from 'fs/promises';
 import os from 'os';
+import { createHash } from 'crypto';
 import path from 'path';
 import { McpServer } from '@modelcontextprotocol/server';
 import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
@@ -10,10 +11,13 @@ import { loadQmdConfig, qmdPath, registerQmdTool, semanticSearch, type Fetcher, 
 
 const config: QmdConfig = { url: 'http://127.0.0.1:8181', collection: 'brain', timeoutMs: 5000 };
 
-function fakeQmd(files: string[], calls: { url: string; body: any }[] = []): Fetcher {
+const docid = (content: string) => `#${createHash('sha256').update(content).digest('hex').slice(0, 6)}`;
+
+// Each hit is a QMD path plus the content QMD indexed for it, which sets the docid.
+function fakeQmd(hits: [file: string, content: string][], calls: { url: string; body: any }[] = []): Fetcher {
   return async (url, init) => {
     calls.push({ url, body: JSON.parse(String(init.body)) });
-    const results = files.map((file, i) => ({ docid: `#${i}`, file, title: file, score: 0.9 - i / 10, line: 3, snippet: `3: hit ${i}` }));
+    const results = hits.map(([file, content], i) => ({ docid: docid(content), file, title: file, score: 0.9 - i / 10, line: 3, snippet: `3: hit ${i}` }));
     return new Response(JSON.stringify({ results }), { status: 200, headers: { 'Content-Type': 'application/json' } });
   };
 }
@@ -40,6 +44,8 @@ describe('loadQmdConfig', () => {
   });
 });
 
+const PLAN = '# Plan\n\nmove services\n';
+
 describe('semanticSearch', () => {
   let vaultPath: string;
 
@@ -48,10 +54,12 @@ describe('semanticSearch', () => {
     await mkdir(path.join(vaultPath, 'Projects'), { recursive: true });
     await mkdir(path.join(vaultPath, 'Private'), { recursive: true });
     await mkdir(path.join(vaultPath, '.hidden'), { recursive: true });
-    await writeFile(path.join(vaultPath, 'Projects', 'Mac mini plan.md'), '# Plan\n\nmove services\n');
+    await writeFile(path.join(vaultPath, 'Projects', 'Mac mini plan.md'), PLAN);
+    await writeFile(path.join(vaultPath, 'Projects', 'Secret-draft.md'), 'public draft\n');
+    await writeFile(path.join(vaultPath, 'Projects', 'Secret (draft).md'), 'private draft\n');
     await writeFile(path.join(vaultPath, 'Private', 'Diary.md'), 'secret\n');
     await writeFile(path.join(vaultPath, '.hidden', 'Note.md'), 'hidden\n');
-    await writeFile(path.join(vaultPath, '.mcpignore'), 'Private/\n');
+    await writeFile(path.join(vaultPath, '.mcpignore'), 'Private/\nProjects/Secret (draft).md\n');
     process.env.VAULT_PATH = vaultPath;
   });
 
@@ -75,16 +83,35 @@ describe('semanticSearch', () => {
 
   test('maps results to vault paths and withholds ignored, hidden, foreign, and unknown documents', async () => {
     process.env.VAULT_PATH = vaultPath;
-    const files = [
-      'brain/Projects/Mac-mini-plan.md',
-      'brain/Private/Diary.md',
-      'brain/hidden/Note.md',
-      'other/Projects/Mac-mini-plan.md',
-      'brain/Gone.md',
+    const hits: [string, string][] = [
+      ['brain/Projects/Mac-mini-plan.md', PLAN],
+      ['brain/Private/Diary.md', 'secret\n'],
+      ['brain/hidden/Note.md', 'hidden\n'],
+      ['other/Projects/Mac-mini-plan.md', PLAN],
+      ['brain/Gone.md', 'gone\n'],
     ];
-    const { results, withheld } = await semanticSearch(config, { searches: [{ type: 'lex', query: 'plan' }], limit: 10 }, fakeQmd(files));
-    expect(results).toEqual([{ path: 'Projects/Mac mini plan.md', title: files[0], score: 0.9, line: 3, snippet: '3: hit 0' }]);
+    const { results, withheld } = await semanticSearch(config, { searches: [{ type: 'lex', query: 'plan' }], limit: 10 }, fakeQmd(hits));
+    expect(results).toEqual([{ path: 'Projects/Mac mini plan.md', title: hits[0]![0], score: 0.9, line: 3, snippet: '3: hit 0' }]);
     expect(withheld).toBe(4);
+  });
+
+  test('withholds an excluded note that shares a QMD path with a readable one', async () => {
+    process.env.VAULT_PATH = vaultPath;
+    const hits: [string, string][] = [
+      ['brain/Projects/Secret-draft.md', 'private draft\n'],
+      ['brain/Projects/Secret-draft.md', 'public draft\n'],
+    ];
+    const { results, withheld } = await semanticSearch(config, { searches: [{ type: 'lex', query: 'draft' }], limit: 10 }, fakeQmd(hits));
+    expect(results.map(r => r.path)).toEqual(['Projects/Secret-draft.md']);
+    expect(results[0]!.snippet).toBe('3: hit 1');
+    expect(withheld).toBe(1);
+  });
+
+  test('withholds a result whose note changed since QMD indexed it', async () => {
+    process.env.VAULT_PATH = vaultPath;
+    const { results, withheld } = await semanticSearch(config, { searches: [{ type: 'lex', query: 'plan' }], limit: 10 }, fakeQmd([['brain/Projects/Mac-mini-plan.md', 'older text\n']]));
+    expect(results).toEqual([]);
+    expect(withheld).toBe(1);
   });
 
   test('reports a QMD HTTP failure as an error', async () => {
@@ -98,7 +125,7 @@ describe('semanticSearch', () => {
     const off = new McpServer({ name: 'qmd-off', version: '0' });
     registerQmdTool(off, { config: null });
     const on = new McpServer({ name: 'qmd-on', version: '0' });
-    registerQmdTool(on, { config, fetcher: fakeQmd(['brain/Projects/Mac-mini-plan.md', 'brain/Private/Diary.md']) });
+    registerQmdTool(on, { config, fetcher: fakeQmd([['brain/Projects/Mac-mini-plan.md', PLAN], ['brain/Private/Diary.md', 'secret\n']]) });
 
     for (const [server, expected] of [[off, false], [on, true]] as const) {
       const client = new Client({ name: 't', version: '0' });

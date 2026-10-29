@@ -90,7 +90,7 @@ A chunk the model couldn't judge (a failed request, a malformed answer) is kept 
 
 To enable it, run QMD's HTTP server (`qmd mcp --http`, on `localhost:8181` by default) and set `QMD_URL` to its address and `QMD_COLLECTION` to the QMD collection that indexes this vault. The server searches only that collection, so other collections on the same QMD index stay out of reach.
 
-QMD stores each note under a normalized path. The server maps every result back to the note in the vault and returns it only when the vault access policy allows reading that note. Results for hidden files, `.mcpignore` matches, and notes that no longer exist are withheld, and the result reports how many. QMD's own index and server have no access control, so keep QMD bound to localhost.
+QMD stores each note under a normalized path, which several vault paths can share. The server maps every result back to the notes at that path that the vault access policy allows reading, and returns the result only when one of them holds exactly the content QMD indexed (QMD's docid is a prefix of the content's SHA-256). Results from hidden files, `.mcpignore` matches, notes that no longer exist, and notes changed since QMD last indexed them are withheld, and the result reports how many. Keep QMD's index current so recent edits stay searchable. QMD's own index and server have no access control, so keep QMD bound to localhost.
 
 ## Obsidian CLI tools
 
