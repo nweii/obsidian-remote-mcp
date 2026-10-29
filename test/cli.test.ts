@@ -102,6 +102,82 @@ describe('availability', () => {
   });
 });
 
+describe('finding the binary', () => {
+  let onPath: string;
+  let standard: string;
+  const originalPath = process.env.PATH;
+  afterEach(() => { process.env.PATH = originalPath; });
+
+  beforeAll(async () => {
+    onPath = path.join(base, 'path-bin');
+    standard = path.join(base, 'standard-bin');
+    await mkdir(onPath, { recursive: true });
+    await mkdir(standard, { recursive: true });
+    await installFakeObsidian(onPath);
+    await installFakeObsidian(standard);
+  });
+
+  const standardPaths = () => ({ darwin: [path.join(standard, 'obsidian')] });
+
+  test('OBSIDIAN_CLI_PATH wins over PATH and the standard location', () => {
+    process.env.PATH = onPath;
+    expect(cli.findCliBinary('darwin', standardPaths())).toBe(bin);
+  });
+
+  test('a PATH hit wins over the standard location', () => {
+    delete process.env.OBSIDIAN_CLI_PATH;
+    process.env.PATH = onPath;
+    expect(cli.findCliBinary('darwin', standardPaths())).toBe(path.join(onPath, 'obsidian'));
+  });
+
+  test('falls back to the standard macOS location when PATH lacks the binary', () => {
+    delete process.env.OBSIDIAN_CLI_PATH;
+    process.env.PATH = path.join(base, 'empty');
+    expect(cli.findCliBinary('darwin', standardPaths())).toBe(path.join(standard, 'obsidian'));
+    expect(cli.findCliBinary('darwin', { darwin: [path.join(base, 'missing')] })).toBeNull();
+  });
+
+  test('does not try the fallback off macOS', () => {
+    delete process.env.OBSIDIAN_CLI_PATH;
+    process.env.PATH = path.join(base, 'empty');
+    expect(cli.findCliBinary('linux', standardPaths())).toBeNull();
+  });
+
+  test('a missing binary is reported with how to set OBSIDIAN_CLI_PATH', async () => {
+    delete process.env.OBSIDIAN_CLI_PATH;
+    process.env.PATH = path.join(base, 'empty');
+    const result = await cli.cliToolsAvailability();
+    expect(result.ok ? '' : result.reason).toContain('set OBSIDIAN_CLI_PATH');
+  });
+});
+
+describe('startup log', () => {
+  async function logged(run: () => Promise<void>): Promise<string[]> {
+    const lines: string[] = [];
+    const original = console.error;
+    console.error = (...args: unknown[]) => { lines.push(args.join(' ')); };
+    try {
+      await run();
+    } finally {
+      console.error = original;
+    }
+    return lines;
+  }
+
+  test('says once whether the CLI tools are offered, and why not', async () => {
+    process.env.OBSIDIAN_CLI_PATH = path.join(base, 'missing');
+    const first = await logged(() => cli.logCliAvailability());
+    expect(first).toHaveLength(1);
+    expect(first[0]).toContain('vault_cli not offered');
+    expect(await logged(() => cli.logCliAvailability())).toEqual([]);
+  });
+
+  test('stays quiet when the CLI tools are not enabled', async () => {
+    delete process.env.OBSIDIAN_CLI_ENABLED;
+    expect(await logged(() => cli.logCliAvailability())).toEqual([]);
+  });
+});
+
 describe('running commands', () => {
   test('pins the vault, passes params and flags as argv, strips startup noise', async () => {
     const outcome = await cli.runCli({ command: 'search', params: { query: 'two words; rm -rf /' }, flags: ['counts'] });

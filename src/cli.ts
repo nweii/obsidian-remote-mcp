@@ -3,7 +3,7 @@
 // or reaching around the vault access policy. Also answers backlinks from Obsidian when it can.
 import type { McpServer } from "@modelcontextprotocol/server";
 import { execFile } from "node:child_process";
-import { realpathSync, statSync } from "node:fs";
+import { accessSync, constants, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import * as vault from "./vault.js";
@@ -203,10 +203,38 @@ interface CliConfig {
   root: string;
 }
 
+// Where the Obsidian app installs its CLI, per platform. Checked last, for servers started by a
+// service manager whose minimal PATH leaves that folder out (launchd's omits /usr/local/bin).
+const STANDARD_CLI_PATHS: Partial<Record<NodeJS.Platform, string[]>> = {
+  darwin: ["/usr/local/bin/obsidian"],
+};
+
+function isExecutableFile(candidate: string): boolean {
+  try {
+    accessSync(candidate, constants.X_OK);
+    return statSync(candidate).isFile();
+  } catch {
+    return false;
+  }
+}
+
+// The CLI binary to run: OBSIDIAN_CLI_PATH, else `obsidian` on PATH, else the platform's standard
+// install location. The vault probe still decides whether the tools are offered.
+export function findCliBinary(
+  platform: NodeJS.Platform = process.platform,
+  standardPaths: Partial<Record<NodeJS.Platform, string[]>> = STANDARD_CLI_PATHS,
+): string | null {
+  const configured = process.env.OBSIDIAN_CLI_PATH?.trim();
+  if (configured) return configured;
+  const onPath = Bun.which("obsidian", { PATH: process.env.PATH ?? "" });
+  if (onPath) return onPath;
+  return (standardPaths[platform] ?? []).find(isExecutableFile) ?? null;
+}
+
 function cliConfig(): CliConfig {
   const root = vault.getVaultRoot();
   return {
-    binary: process.env.OBSIDIAN_CLI_PATH?.trim() || Bun.which("obsidian", { PATH: process.env.PATH ?? "" }),
+    binary: findCliBinary(),
     vaultName: process.env.OBSIDIAN_CLI_VAULT?.trim() || path.basename(root),
     root,
   };
@@ -229,7 +257,7 @@ type ExecResult = { ok: true; stdout: string } | { ok: false; error: string; out
 function exec(config: CliConfig, args: string[], timeout = TIMEOUT_MS): Promise<ExecResult> {
   return new Promise(resolve => {
     if (!config.binary) {
-      resolve({ ok: false, error: "The obsidian CLI was not found on PATH.", output: "" });
+      resolve({ ok: false, error: "The obsidian CLI was not found.", output: "" });
       return;
     }
     execFile(
@@ -265,7 +293,9 @@ export function resetCliAvailability(): void {
 }
 
 async function probe(config: CliConfig): Promise<Availability> {
-  if (!config.binary) return { ok: false, reason: "the obsidian CLI was not found (set OBSIDIAN_CLI_PATH or add it to PATH)" };
+  if (!config.binary) {
+    return { ok: false, reason: "the obsidian CLI was not found on PATH or at its standard install location (set OBSIDIAN_CLI_PATH to its full path)" };
+  }
   const result = await exec(config, ["vault", "info=path"], PROBE_TIMEOUT_MS);
   if (!result.ok) return { ok: false, reason: `the CLI could not reach Obsidian (${result.error})` };
   let same = false;
@@ -490,6 +520,13 @@ function logAvailability(available: Availability): void {
   if (line === lastLoggedAvailability) return;
   lastLoggedAvailability = line;
   console.error(`[obsidian-remote-mcp] ${line}`);
+}
+
+// Logs availability once at startup, so a missing CLI shows right after a restart instead of on the
+// first signed-in request. Later requests log only when availability changes.
+export async function logCliAvailability(): Promise<void> {
+  if (!cliEnabled()) return;
+  logAvailability(await cliToolsAvailability());
 }
 
 export async function registerCliTools(server: McpServer): Promise<void> {

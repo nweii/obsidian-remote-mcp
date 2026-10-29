@@ -98,13 +98,15 @@ On a computer running Obsidian desktop installer 1.12.7 or later with its comman
 
 `vault_cli_help` lists commands from `obsidian help`. `vault_cli` runs a command with `params` for key-value arguments and `flags` for arguments without values. CLI commands added by Obsidian can work without a server update, subject to the safety guards below.
 
-Set `OBSIDIAN_CLI_ENABLED=true` to enable these tools. They appear only if the server finds the `obsidian` binary on `PATH` or at `OBSIDIAN_CLI_PATH`, and the CLI reports the same vault folder as the server.
+Set `OBSIDIAN_CLI_ENABLED=true` to enable these tools. They appear only if the server finds the `obsidian` binary and the CLI reports the same vault folder as the server. The server looks for the binary at `OBSIDIAN_CLI_PATH`, then on `PATH`, then on macOS at `/usr/local/bin/obsidian`, where the Obsidian app installs it.
+
+A server started as a background service (a macOS LaunchAgent, a systemd unit) runs with a minimal `PATH` that often leaves out the folder holding `obsidian`. If the CLI lives elsewhere, set `OBSIDIAN_CLI_PATH` to its full path in the service's environment: the `EnvironmentVariables` dictionary of a launchd plist, or `Environment=` in a systemd unit. Run `which obsidian` in a terminal to find it.
 
 The server passes the vault folder's name as `vault=`. Set `OBSIDIAN_CLI_VAULT` if Obsidian uses a different name. If the app stops answering, the next failed call rechecks availability and reports the problem.
 
 The CLI tools can create, edit, move, and delete notes, and add or remove notes on your Obsidian Publish site. When you [approve a connection](configuration.md#choosing-what-each-connection-can-do), clear **Control the Obsidian app** to deny CLI access. Clear **Edit notes** to limit the connection to commands that read. `VAULT_READ_ONLY` limits every connection to reading.
 
-The server log reports whether the CLI tools are available. If they are unavailable, the log gives the reason.
+The server log reports whether the CLI tools are available once at startup, and again whenever that changes. If they are unavailable, the log gives the reason.
 
 ### Safety guards
 
