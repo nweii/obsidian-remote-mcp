@@ -86,7 +86,7 @@ A chunk the model couldn't judge (a failed request, a malformed answer) is kept 
 
 ## Semantic search with QMD
 
-`vault_search_semantic` searches the vault through a [QMD](https://github.com/tobi/qmd) index that runs on the same machine as the server. QMD combines keyword (BM25) and vector retrieval and reranks the results with a local model. A call takes a plain `query`, which is searched both as keywords and as a question. For finer control, a call can pass typed sub-queries in `searches` instead: `lex` for keywords, `vec` for a natural-language question, and `hyde` for a short passage that reads like the answer. `folder` limits results to one folder. QMD ranks the whole collection first, so a narrow folder can return fewer results than `limit`. Results are structured: each item has the note's path, the matched line, its score, and an excerpt.
+`vault_search_semantic` searches the vault through a [QMD](https://github.com/tobi/qmd) index that runs on the same machine as the server. QMD combines keyword (BM25) and vector retrieval and reranks the results with a local model. A call takes a plain `query`, which is searched both as keywords and as a question. Balanced double quotes in a plain `query` mark a keyword phrase; an unbalanced quote is dropped from the keyword half so it can't break the search. For finer control, a call can pass typed sub-queries in `searches` instead: `lex` for keywords, `vec` for a natural-language question, and `hyde` for a short passage that reads like the answer. `folder` limits results to one folder. QMD has no path filter, so it ranks the whole collection; with a folder, the server asks QMD for its full candidate pool (about 40 notes: up to 20 per sub-query, reranked together) and keeps the best `limit` inside the folder. A narrow folder can still return fewer results than `limit`, because the pool is drawn from the whole vault. Results are structured: each item has the note's path, the matched line, its score, and an excerpt.
 
 To enable it, run QMD 2.6 or newer as an HTTP server (`qmd mcp --http`, on `localhost:8181` by default) and set `QMD_URL` to its address and `QMD_COLLECTION` to the QMD collection that indexes this vault. The server searches only that collection, so other collections on the same QMD index stay out of reach.
 
@@ -98,13 +98,15 @@ On a computer running Obsidian desktop installer 1.12.7 or later with its comman
 
 `vault_cli_help` lists commands from `obsidian help`. `vault_cli` runs a command with `params` for key-value arguments and `flags` for arguments without values. CLI commands added by Obsidian can work without a server update, subject to the safety guards below.
 
-Set `OBSIDIAN_CLI_ENABLED=true` to enable these tools. They appear only if the server finds the `obsidian` binary on `PATH` or at `OBSIDIAN_CLI_PATH`, and the CLI reports the same vault folder as the server.
+Set `OBSIDIAN_CLI_ENABLED=true` to enable these tools. They appear only if the server finds the `obsidian` binary and the CLI reports the same vault folder as the server. The server looks for the binary at `OBSIDIAN_CLI_PATH`, then on `PATH`, then on macOS at `/usr/local/bin/obsidian`, where the Obsidian app installs it.
+
+A server started as a background service (a macOS LaunchAgent, a systemd unit) runs with a minimal `PATH` that often leaves out the folder holding `obsidian`. If the CLI lives elsewhere, set `OBSIDIAN_CLI_PATH` to its full path in the service's environment: the `EnvironmentVariables` dictionary of a launchd plist, or `Environment=` in a systemd unit. Run `which obsidian` in a terminal to find it.
 
 The server passes the vault folder's name as `vault=`. Set `OBSIDIAN_CLI_VAULT` if Obsidian uses a different name. If the app stops answering, the next failed call rechecks availability and reports the problem.
 
 The CLI tools can create, edit, move, and delete notes, and add or remove notes on your Obsidian Publish site. When you [approve a connection](configuration.md#choosing-what-each-connection-can-do), clear **Control the Obsidian app** to deny CLI access. Clear **Edit notes** to limit the connection to commands that read. `VAULT_READ_ONLY` limits every connection to reading.
 
-The server log reports whether the CLI tools are available. If they are unavailable, the log gives the reason.
+The server log reports whether the CLI tools are available once at startup, and again whenever that changes. If they are unavailable, the log gives the reason.
 
 ### Safety guards
 

@@ -7,7 +7,7 @@ import { createHash } from 'crypto';
 import path from 'path';
 import { McpServer } from '@modelcontextprotocol/server';
 import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
-import { loadQmdConfig, pathInCollection, registerQmdTool, semanticSearch, type Fetcher, type QmdConfig } from '../src/qmd.js';
+import { loadQmdConfig, pathInCollection, plainQuerySearches, registerQmdTool, semanticSearch, type Fetcher, type QmdConfig } from '../src/qmd.js';
 
 const config: QmdConfig = { url: 'http://127.0.0.1:8181', collection: 'notes', timeoutMs: 5000 };
 
@@ -31,6 +31,23 @@ describe('pathInCollection', () => {
     expect(pathInCollection('notesy/Plan.md', 'notes')).toBeNull();
     expect(pathInCollection('qmd://notes/%E0%A4%A.md', 'notes')).toBeNull();
     expect(pathInCollection(undefined, 'notes')).toBeNull();
+  });
+});
+
+describe('plainQuerySearches', () => {
+  test('keeps balanced quotes in the keyword half', () => {
+    expect(plainQuerySearches('"power cut" recovery')).toEqual([
+      { type: 'lex', query: '"power cut" recovery' },
+      { type: 'vec', query: '"power cut" recovery' },
+    ]);
+  });
+
+  test('drops an unbalanced quote from the keyword half only', () => {
+    expect(plainQuerySearches('"unclosed quote')).toEqual([
+      { type: 'lex', query: 'unclosed quote' },
+      { type: 'vec', query: '"unclosed quote' },
+    ]);
+    expect(plainQuerySearches('say "this" and "that')[0]).toEqual({ type: 'lex', query: 'say this and that' });
   });
 });
 
@@ -119,10 +136,36 @@ describe('semanticSearch', () => {
     await rm(path.join(vaultPath, 'Plan elsewhere.md'));
   });
 
+  test('asks QMD for its full candidate pool when a folder is set, and trims to limit', async () => {
+    process.env.VAULT_PATH = vaultPath;
+    const notes = ['A', 'B', 'C', 'D'].map(n => `Projects/Batch ${n}.md`);
+    for (const n of notes) await writeFile(path.join(vaultPath, n), `${n}\n`);
+    try {
+      const calls: { url: string; body: any }[] = [];
+      const hits = notes.map(n => [`notes/${n}`, `${n}\n`] as [string, string]);
+      const { items } = await semanticSearch(config, { searches: [{ type: 'lex', query: 'batch' }], limit: 2, folder: 'Projects' }, fakeQmd(hits, calls));
+      expect(calls[0]!.body.limit).toBe(40);
+      expect(items.map(r => r.path)).toEqual(notes.slice(0, 2));
+
+      await semanticSearch(config, { searches: [{ type: 'lex', query: 'batch' }], limit: 50, folder: 'Projects' }, fakeQmd([], calls));
+      expect(calls[1]!.body.limit).toBe(50);
+      await semanticSearch(config, { searches: [{ type: 'lex', query: 'batch' }], limit: 2 }, fakeQmd([], calls));
+      expect(calls[2]!.body.limit).toBe(2);
+    } finally {
+      for (const n of notes) await rm(path.join(vaultPath, n));
+    }
+  });
+
   test('reports a QMD HTTP failure as an error', async () => {
     process.env.VAULT_PATH = vaultPath;
     const failing: Fetcher = async () => new Response('nope', { status: 500 });
     await expect(semanticSearch(config, { searches: [{ type: 'lex', query: 'x' }], limit: 1 }, failing)).rejects.toThrow('HTTP 500');
+    const leaky: Fetcher = async () => new Response('Error at /srv/host/index.sqlite: secret note text', { status: 500 });
+    const error = await semanticSearch(config, { searches: [{ type: 'lex', query: '"x' }], limit: 1 }, leaky).catch(e => e);
+    expect(error.message).toContain('unclosed "');
+    expect(error.message).not.toContain('/srv/host');
+    expect(error.message).not.toContain('secret note text');
+    await expect(semanticSearch(config, { searches: [{ type: 'vec', query: 'x' }], limit: 1 }, leaky)).rejects.toThrow(/^QMD returned HTTP 500$/);
     const unreachable: Fetcher = async () => { throw new Error('connect ECONNREFUSED /some/host/path'); };
     await expect(semanticSearch(config, { searches: [{ type: 'lex', query: 'x' }], limit: 1 }, unreachable))
       .rejects.toThrow('QMD search failed: could not reach http://127.0.0.1:8181 or read its response');
@@ -153,12 +196,19 @@ describe('semanticSearch', () => {
         const blankQuery = await plainClient.callTool({ name: 'vault_search_semantic', arguments: { query: '   ' } }) as any;
         expect(blankQuery.isError).toBe(true);
         expect(blankQuery.content[0].text).toBe('Error: pass query or searches.');
+        const quotesOnly = await plainClient.callTool({ name: 'vault_search_semantic', arguments: { query: ' " ' } }) as any;
+        expect(quotesOnly.isError).toBe(true);
+        expect(quotesOnly.content[0].text).toBe('Error: pass query or searches.');
         const blankSearch = await plainClient.callTool({ name: 'vault_search_semantic', arguments: { searches: [{ type: 'lex', query: 'tomato' }, { type: 'vec', query: ' \t ' }] } }) as any;
         expect(blankSearch.isError).toBe(true);
         expect(blankSearch.content[0].text).toContain('searches[1].query is blank');
         expect(calls).toEqual([]);
         await plainClient.callTool({ name: 'vault_search_semantic', arguments: { query: '  planting tomatoes ' } });
         expect(calls[0]!.body.searches).toEqual([{ type: 'lex', query: 'planting tomatoes' }, { type: 'vec', query: 'planting tomatoes' }]);
+        await plainClient.callTool({ name: 'vault_search_semantic', arguments: { query: '"tomato stakes' } });
+        expect(calls[1]!.body.searches).toEqual([{ type: 'lex', query: 'tomato stakes' }, { type: 'vec', query: '"tomato stakes' }]);
+        await plainClient.callTool({ name: 'vault_search_semantic', arguments: { searches: [{ type: 'lex', query: '"tomato' }] } });
+        expect(calls[2]!.body.searches).toEqual([{ type: 'lex', query: '"tomato' }]);
         await plainClient.close();
         const res = await client.callTool({ name: 'vault_search_semantic', arguments: { searches: [{ type: 'lex', query: 'plan' }] } }) as any;
         expect(res.isError).toBeFalsy();

@@ -11,6 +11,10 @@ import { registerLogged } from "./log.js";
 const DEFAULT_TIMEOUT_MS = 60_000;
 const DEFAULT_LIMIT = 10;
 const MAX_LIMIT = 50;
+// QMD reranks at most this many candidates by default (its RERANK_CANDIDATE_LIMIT), drawn from 20 hits per
+// sub-query, so no request returns more. With a folder, QMD ranks the whole collection before the server
+// filters, so the server asks for the full pool and keeps the best `limit` inside the folder.
+const QMD_CANDIDATE_POOL = 40;
 
 export interface QmdConfig {
   url: string;
@@ -102,6 +106,22 @@ async function contentHoldingDocid(relPath: string, docid: string | undefined): 
   return docidOf(content) === wanted ? content : null;
 }
 
+// A plain query searched as keywords and as a question. QMD's lex syntax reads `"` as a phrase and
+// rejects one left open, so an unbalanced quote is dropped from the keyword half; the question half
+// keeps the text as written.
+export function plainQuerySearches(query: string): QmdSearch[] {
+  const quotes = query.split('"').length - 1;
+  const lex = quotes % 2 === 0 ? query : query.replaceAll('"', " ").replace(/\s+/g, " ").trim();
+  return [{ type: "lex", query: lex }, { type: "vec", query }];
+}
+
+// QMD's error body isn't passed on: it can carry host paths or indexed text, and this message reaches
+// the client and the audit log. A typed lex query is the usual cause, so the message names that.
+function lexHint(searches: QmdSearch[]): string {
+  if (!searches.some(s => s.type === "lex")) return "";
+  return '. A lex sub-query with an unclosed " or other invalid keyword syntax can cause this; check the typed searches';
+}
+
 export type Fetcher = (url: string, init: RequestInit) => Promise<Response>;
 
 // A failure talking to QMD. Its message is written here, never copied from the filesystem.
@@ -138,13 +158,13 @@ export async function semanticSearch(
       body: JSON.stringify({
         searches: request.searches,
         collections: [config.collection],
-        limit: request.limit,
+        limit: request.folder ? Math.max(request.limit, QMD_CANDIDATE_POOL) : request.limit,
         intent: request.intent,
         rerank: request.rerank,
       }),
       signal: controller.signal,
     });
-    if (!res.ok) throw new QmdError(`QMD returned HTTP ${res.status}`);
+    if (!res.ok) throw new QmdError(`QMD returned HTTP ${res.status}${lexHint(request.searches)}`);
     body = await res.json() as { results?: QmdResult[] };
   } catch (e) {
     if (e instanceof QmdError) throw e;
@@ -157,6 +177,7 @@ export async function semanticSearch(
   const index = await readableNotes(request.folder);
   const items: SemanticSearchHit[] = [];
   for (const r of body.results ?? []) {
+    if (items.length >= request.limit) break;
     const qmdPath = pathInCollection(r.file, config.collection);
     const relPath = qmdPath !== null ? index.get(qmdPath) : undefined;
     // Results the server can't vouch for are dropped without a trace. QMD indexes notes the access policy
@@ -219,7 +240,7 @@ export function registerQmdTool(server: McpServer, options: { config?: QmdConfig
           type: z.enum(["lex", "vec", "hyde"]),
           query: z.string().min(1),
         })).min(1).max(10).optional().describe("Typed sub-queries, used instead of query. The first gets twice the weight."),
-        folder: z.string().optional().describe('Only return notes in this folder (e.g. "02-Notes"). Applied after QMD ranks, so a narrow folder can return fewer results than limit.'),
+        folder: z.string().optional().describe('Only return notes in this folder (e.g. "02-Notes"). QMD ranks the whole collection and the server keeps the matches inside the folder from the full QMD candidate pool (about 40 notes), so a narrow folder can still return fewer results than limit.'),
         limit: z.number().int().min(1).max(MAX_LIMIT).optional().default(DEFAULT_LIMIT).describe(`Max results (default ${DEFAULT_LIMIT}, up to ${MAX_LIMIT}).`),
         intent: z.string().optional().describe("Background that disambiguates the query without being searched itself."),
         rerank: z.boolean().optional().describe("Rerank with QMD's model (QMD's default: on). Off is faster."),
@@ -234,7 +255,9 @@ export function registerQmdTool(server: McpServer, options: { config?: QmdConfig
       if (blank !== -1) {
         return { content: [{ type: "text" as const, text: `Error: searches[${blank}].query is blank. Give each sub-query some words.` }], isError: true };
       }
-      const typed = trimmed ?? (plain ? [{ type: "lex" as const, query: plain }, { type: "vec" as const, query: plain }] : undefined);
+      // Quotes alone hold no words: stripped from the keyword half, they would leave it blank.
+      const hasWords = plain !== undefined && plain.replaceAll('"', "").trim() !== "";
+      const typed = trimmed ?? (hasWords ? plainQuerySearches(plain) : undefined);
       if (!typed) return { content: [{ type: "text" as const, text: "Error: pass query or searches." }], isError: true };
       try {
         const result = await semanticSearch(config, { searches: typed, limit, intent, rerank, folder }, options.fetcher);
