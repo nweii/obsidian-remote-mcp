@@ -11,6 +11,10 @@ import { registerLogged } from "./log.js";
 const DEFAULT_TIMEOUT_MS = 60_000;
 const DEFAULT_LIMIT = 10;
 const MAX_LIMIT = 50;
+// QMD reranks at most this many candidates by default (its RERANK_CANDIDATE_LIMIT), drawn from 20 hits per
+// sub-query, so no request returns more. With a folder, QMD ranks the whole collection before the server
+// filters, so the server asks for the full pool and keeps the best `limit` inside the folder.
+const QMD_CANDIDATE_POOL = 40;
 
 export interface QmdConfig {
   url: string;
@@ -154,7 +158,7 @@ export async function semanticSearch(
       body: JSON.stringify({
         searches: request.searches,
         collections: [config.collection],
-        limit: request.limit,
+        limit: request.folder ? Math.max(request.limit, QMD_CANDIDATE_POOL) : request.limit,
         intent: request.intent,
         rerank: request.rerank,
       }),
@@ -173,6 +177,7 @@ export async function semanticSearch(
   const index = await readableNotes(request.folder);
   const items: SemanticSearchHit[] = [];
   for (const r of body.results ?? []) {
+    if (items.length >= request.limit) break;
     const qmdPath = pathInCollection(r.file, config.collection);
     const relPath = qmdPath !== null ? index.get(qmdPath) : undefined;
     // Results the server can't vouch for are dropped without a trace. QMD indexes notes the access policy
@@ -235,7 +240,7 @@ export function registerQmdTool(server: McpServer, options: { config?: QmdConfig
           type: z.enum(["lex", "vec", "hyde"]),
           query: z.string().min(1),
         })).min(1).max(10).optional().describe("Typed sub-queries, used instead of query. The first gets twice the weight."),
-        folder: z.string().optional().describe('Only return notes in this folder (e.g. "02-Notes"). Applied after QMD ranks, so a narrow folder can return fewer results than limit.'),
+        folder: z.string().optional().describe('Only return notes in this folder (e.g. "02-Notes"). QMD ranks the whole collection and the server keeps the matches inside the folder from the full QMD candidate pool (about 40 notes), so a narrow folder can still return fewer results than limit.'),
         limit: z.number().int().min(1).max(MAX_LIMIT).optional().default(DEFAULT_LIMIT).describe(`Max results (default ${DEFAULT_LIMIT}, up to ${MAX_LIMIT}).`),
         intent: z.string().optional().describe("Background that disambiguates the query without being searched itself."),
         rerank: z.boolean().optional().describe("Rerank with QMD's model (QMD's default: on). Off is faster."),
