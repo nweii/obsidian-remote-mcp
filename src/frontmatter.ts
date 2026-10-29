@@ -1,7 +1,7 @@
 // ABOUTME: Pure frontmatter text operations — split/parse/serialize a YAML (or JSON) frontmatter
 // block, splice a single property while preserving on-disk byte form, and match/stringify values.
 // No filesystem or vault-root dependency; vault.ts wraps these with I/O, locking, and atomic writes.
-import { load as parseYaml, dump as stringifyYaml } from 'js-yaml';
+import { load as parseYaml, dump as stringifyYaml, YAMLException } from 'js-yaml';
 
 export function splitFrontmatter(content: string): { frontmatter: string | null; body: string } {
   if (!content.startsWith('---\n')) {
@@ -126,15 +126,16 @@ export function parseFrontmatter(content: string): Record<string, unknown> | nul
     // sanitizes reason too: js-yaml includes source-derived names in some diagnostics.
     // js-yaml's line is zero-based within the block, which starts after the opening `---`
     // (note line 1), so +2 gives the note's own one-based line.
-    const ex = e as { reason?: string; mark?: { line?: number } };
+    const ex = e instanceof YAMLException ? e : undefined;
     throw new FrontmatterParseError(
-      ex.reason ?? 'could not be parsed',
-      ex.mark?.line !== undefined ? ex.mark.line + 2 : undefined,
+      ex?.reason ?? 'could not be parsed',
+      ex?.mark?.line !== undefined ? ex.mark.line + 2 : undefined,
     );
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     return {};
   }
+  // SAFETY: parsed is a non-null, non-array object, which is all a YAML mapping can load as.
   return parsed as Record<string, unknown>;
 }
 

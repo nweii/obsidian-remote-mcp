@@ -26,6 +26,7 @@ src/
   frontmatter.ts  — Frontmatter parsing and the textual key splice
   ignore.ts       — Compiles .mcpignore literal/glob rules with case and Unicode normalization
   lock.ts         — Per-path async mutex for read-modify-write
+  errno.ts        — Reads the errno code from a caught error without a type assertion
   access.ts       — Per-connection access: the approval page's scopes (edit notes, Obsidian CLI) and whether the current request's connection holds one
   clip.ts         — Registers vault_clip_url when the optional web-clipper-headless is installed
   cli.ts          — Registers vault_cli / vault_cli_help when the obsidian CLI is opted in and reaches this vault: guards, probe, help parsing; backlinks via Obsidian
@@ -35,6 +36,7 @@ src/
   decision.ts     — Decision-model client (TypeSafe, OpenRouter, OpenAI): provider resolution, request shapes, batching, retries
   log.ts          — Configures the kit's audit logger and its redaction
   date.ts         — Local-timezone date helpers for periodic notes (parsing, ISO weeks, period buckets)
+tools/oxlint/     — Vendored anti-slop lint rules; UPSTREAM.md records the source and local changes
 scripts/          — setup-clipper.ts builds the optional clipper from the root lockfile
 test/             — One file per area; vault-policy-matrix.test.ts covers every vault export and the CLI tool against hostile input; fake-obsidian.ts stands in for the CLI
 docs/             — Design notes, reached through the pointers below
@@ -48,10 +50,11 @@ bun run setup:clipper       # build the optional clipper after install
 MCP_CLIENT_ID=dev bun run src/server.ts
 bun run test
 bun run typecheck
+bun run lint
 bun run audit
 ```
 
-CI (`.github/workflows/ci.yml`) runs install, `setup:clipper`, typecheck, tests and audit on every pull request, with `REQUIRE_CLIPPER=1` so missing clipper sources fail instead of skipping their tests.
+CI (`.github/workflows/ci.yml`) runs install, `setup:clipper`, typecheck, lint, tests and audit on every pull request, with `REQUIRE_CLIPPER=1` so missing clipper sources fail instead of skipping their tests.
 
 Endpoints: OAuth discovery `GET /.well-known/oauth-authorization-server`, token `POST /token`, MCP `POST /mcp` (Bearer token; `GET /mcp` returns 405).
 

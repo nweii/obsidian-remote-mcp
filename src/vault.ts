@@ -7,6 +7,7 @@ import { fileURLToPath } from 'url';
 import { withPathLock, withPathsLock } from './lock.js';
 import { compileIgnoreRules, parseIgnoreRules } from './ignore.js';
 import { readOnlyReason } from './access.js';
+import { errnoCode } from './errno.js';
 import {
   splitFrontmatter,
   parseFrontmatter,
@@ -347,7 +348,7 @@ function getIgnoreRules(): IgnoreMatcher {
   try {
     text = readFileSync(file, 'utf-8');
   } catch (e) {
-    const code = (e as NodeJS.ErrnoException).code;
+    const code = errnoCode(e);
     if (code !== 'ENOENT' && code !== 'ENOTDIR') throw e;
     // A dangling policy link is a broken configuration, not an intentionally absent policy.
     try {
@@ -355,7 +356,7 @@ function getIgnoreRules(): IgnoreMatcher {
         throw new VaultUnavailableError('The .mcpignore policy target is unavailable. Restore it before accessing the vault.');
       }
     } catch (linkError) {
-      const linkCode = (linkError as NodeJS.ErrnoException).code;
+      const linkCode = errnoCode(linkError);
       if (linkCode !== 'ENOENT' && linkCode !== 'ENOTDIR') throw linkError;
     }
     assertVaultRootReadable(root);
@@ -441,7 +442,7 @@ function realpathOrNearestExisting(absPath: string): string {
       const real = realpathSync(current);
       return pending.length === 0 ? real : path.join(real, ...pending.slice().reverse());
     } catch (e) {
-      const code = (e as NodeJS.ErrnoException).code;
+      const code = errnoCode(e);
       if (code !== 'ENOENT' && code !== 'ENOTDIR') throw e;
       // A dangling link exists even though realpath reports ENOENT. Do not treat it as an
       // ordinary new filename: append/mkdir would follow it and create its missing target.
@@ -450,7 +451,7 @@ function realpathOrNearestExisting(absPath: string): string {
           throw new VaultPolicyError('escape', 'Path contains a dangling symlink; repair or remove the shortcut before accessing it.');
         }
       } catch (statError) {
-        const statCode = (statError as NodeJS.ErrnoException).code;
+        const statCode = errnoCode(statError);
         if (statCode !== 'ENOENT' && statCode !== 'ENOTDIR') throw statError;
       }
       const parent = path.dirname(current);
@@ -496,7 +497,7 @@ function policySnapshot(): PolicySnapshot {
     try {
       stat = statSync(policy);
     } catch (e) {
-      const code = (e as NodeJS.ErrnoException).code;
+      const code = errnoCode(e);
       if (code !== 'ENOENT' && code !== 'ENOTDIR') throw e;
     }
     policyTarget = { real: realpathOrNearestExisting(policy), stat };
@@ -546,7 +547,7 @@ function resolveVaultPath(relativePath: string, opts: { ignore: boolean; write: 
     try {
       stat = statSync(resolved);
     } catch (e) {
-      const code = (e as NodeJS.ErrnoException).code;
+      const code = errnoCode(e);
       if (code !== 'ENOENT' && code !== 'ENOTDIR') throw e;
     }
   }
@@ -586,7 +587,7 @@ async function statExisting(absPath: string, notFoundMessage: string): Promise<S
   try {
     return await fs.stat(absPath);
   } catch (e) {
-    const code = (e as NodeJS.ErrnoException).code;
+    const code = errnoCode(e);
     if (code === 'ENOENT' || code === 'ENOTDIR') throw new NotFoundError(notFoundMessage);
     throw e;
   }
@@ -711,7 +712,7 @@ async function fileModeOrNull(absPath: string): Promise<number | null> {
     const stat = await fs.stat(absPath);
     return stat.mode & 0o777;
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    if (errnoCode(e) === 'ENOENT') return null;
     throw e;
   }
 }
@@ -824,7 +825,7 @@ export async function updateNote(
     try {
       current = await fs.readFile(absPath, 'utf-8');
     } catch (e) {
-      if ((e as NodeJS.ErrnoException).code === 'ENOENT') current = null;
+      if (errnoCode(e) === 'ENOENT') current = null;
       else throw e;
     }
 
@@ -1015,7 +1016,7 @@ async function rewriteNote(
     try {
       current = await fs.readFile(absPath, 'utf-8');
     } catch (e) {
-      const code = (e as NodeJS.ErrnoException).code;
+      const code = errnoCode(e);
       if (code === 'ENOENT' || code === 'ENOTDIR') throw new NotFoundError(`Note not found: ${relativePath}`);
       throw e;
     }
@@ -1121,7 +1122,7 @@ function assertMovableFile(absPath: string, relativePath: string, allowFileSymli
   try {
     st = lstatSync(absPath);
   } catch (e) {
-    const code = (e as NodeJS.ErrnoException).code;
+    const code = errnoCode(e);
     if (code === 'ENOENT' || code === 'ENOTDIR') throw new NotFoundError(`No file found at "${relativePath}".`);
     throw e;
   }
@@ -1152,7 +1153,7 @@ function pathEntryExists(absPath: string): boolean {
     lstatSync(absPath);
     return true;
   } catch (e) {
-    const code = (e as NodeJS.ErrnoException).code;
+    const code = errnoCode(e);
     if (code === 'ENOENT' || code === 'ENOTDIR') return false;
     throw e;
   }
@@ -1233,8 +1234,8 @@ function checkFileMove(source: string, destination: string, allowIgnoredDestinat
 // Pure preflight shared by dry-run link plans and real moves. An empty folder has no file
 // mappings; every directory is nevertheless checked against source and destination policy.
 export function planFileMove(source: string, destination: string): FileMovePlan {
-  const { fromAbs, toAbs, ...plan } = checkFileMove(source, destination);
-  return plan;
+  const { from, to, isDirectory, files } = checkFileMove(source, destination);
+  return { from, to, isDirectory, files };
 }
 
 export async function trashNote(relativePath: string): Promise<void> {
@@ -1373,7 +1374,7 @@ async function* walkVaultFiles(options: WalkVaultOptions = {}): AsyncGenerator<W
     try {
       canonical = realpathSync(fullPath);
     } catch (e) {
-      const code = (e as NodeJS.ErrnoException).code;
+      const code = errnoCode(e);
       if (code === 'ENOENT' || code === 'ENOTDIR') return false; // Removed mid-walk, or now dangling.
       throw e;
     }
@@ -1836,8 +1837,8 @@ async function statOrNull(relativePath: string): Promise<import('fs').Stats | nu
     return await fs.stat(abs);
   } catch (e) {
     if (e instanceof VaultPolicyError) throw e;
-    const err = e as NodeJS.ErrnoException;
-    if (err?.code === 'ENOENT' || err?.code === 'ENOTDIR') return null;
+    const code = errnoCode(e);
+    if (code === 'ENOENT' || code === 'ENOTDIR') return null;
     throw e;
   }
 }
@@ -2242,7 +2243,7 @@ function rewriteWikilinksInText(
   const ranges = opts.skipCode ? codeRanges(text) : [];
   const rewrites: LinkRewrite[] = [];
   const skipped: string[] = [];
-  const wikilink = /(!?)\[\[([^\[\]\n]+?)\]\]/g;
+  const wikilink = /(!?)\[\[([^[\]\n]+?)\]\]/g;
 
   const next = text.replace(wikilink, (whole, bang: string, inner: string, offset: number) => {
     if (opts.skipCode && isInsideCode(offset, ranges)) return whole;
@@ -2339,12 +2340,11 @@ function planCanvasRewrites(
       return;
     }
     if (!node || typeof node !== 'object') return;
-    const obj = node as Record<string, unknown>;
-    if (typeof obj.file === 'string' && obj.file.toLowerCase() === oldLower) {
-      rewrites.push({ before: obj.file, after: newPath });
-      obj.file = newPath;
+    if ('file' in node && typeof node.file === 'string' && node.file.toLowerCase() === oldLower) {
+      rewrites.push({ before: node.file, after: newPath });
+      node.file = newPath;
     }
-    for (const value of Object.values(obj)) visit(value);
+    for (const value of Object.values(node)) visit(value);
   };
   visit(data);
 
@@ -2424,15 +2424,14 @@ function planFolderRewrites(
       if (Array.isArray(node)) {
         node.forEach(visit);
       } else if (node && typeof node === 'object') {
-        const obj = node as Record<string, unknown>;
-        if (typeof obj.file === 'string') {
-          const replacement = targets.canvas.get(obj.file.toLowerCase());
-          if (replacement !== undefined && replacement !== obj.file) {
-            rewrites.push({ before: obj.file, after: replacement });
-            obj.file = replacement;
+        if ('file' in node && typeof node.file === 'string') {
+          const replacement = targets.canvas.get(node.file.toLowerCase());
+          if (replacement !== undefined && replacement !== node.file) {
+            rewrites.push({ before: node.file, after: replacement });
+            node.file = replacement;
           }
         }
-        Object.values(obj).forEach(visit);
+        Object.values(node).forEach(visit);
       }
     };
     visit(data);
@@ -2446,7 +2445,7 @@ function planFolderRewrites(
 
   const rewrite = (text: string, skipCode: boolean): string => {
     const ranges = skipCode ? codeRanges(text) : [];
-    return text.replace(/(!?)\[\[([^\[\]\n]+?)\]\]/g, (whole, bang: string, inner: string, offset: number) => {
+    return text.replace(/(!?)\[\[([^[\]\n]+?)\]\]/g, (whole, bang: string, inner: string, offset: number) => {
       if (skipCode && isInsideCode(offset, ranges)) return whole;
       const { target, rest } = parseWikilinkParts(inner);
       const original = target.trim();

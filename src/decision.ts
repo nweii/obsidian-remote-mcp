@@ -17,6 +17,8 @@ const PROVIDERS: Record<ProviderName, Omit<DecisionProvider, 'apiKey' | 'model'>
   openai: { name: 'openai', label: 'OpenAI', endpoint: 'https://api.openai.com/v1/decisions', keyVar: 'OPENAI_API_KEY', defaultModel: 'gpt-6-luna' },
 };
 
+const isProviderName = (name: string): name is ProviderName => Object.hasOwn(PROVIDERS, name);
+
 export function providerKeyVar(name: ProviderName): string {
   return PROVIDERS[name].keyVar;
 }
@@ -42,10 +44,10 @@ function decisionSetting(env: NodeJS.ProcessEnv, setting: 'PROVIDER' | 'MODEL'):
 // throws so a typo fails loudly, including when a valid alias is set.
 export function resolveDecisionProvider(env: NodeJS.ProcessEnv = process.env): DecisionProvider | null {
   const raw = decisionSetting(env, 'PROVIDER') || 'typesafe';
-  if (!Object.hasOwn(PROVIDERS, raw)) {
+  if (!isProviderName(raw)) {
     throw new Error(`DECISION_PROVIDER (or legacy SKIM_PROVIDER) must be one of ${Object.keys(PROVIDERS).join(', ')} (got "${raw}").`);
   }
-  const spec = PROVIDERS[raw as ProviderName];
+  const spec = PROVIDERS[raw];
   const apiKey = env[spec.keyVar]?.trim();
   if (!apiKey) return null;
   const { keyVar: _keyVar, defaultModel, ...identity } = spec;

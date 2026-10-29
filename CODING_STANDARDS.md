@@ -1,6 +1,6 @@
 # Coding standards
 
-Judgement rules for reviewing a diff. Mechanical rules live in the typecheck and the test suite (notably `test/vault-policy-matrix.test.ts`); these are the ones no check can enforce.
+Judgement rules for reviewing a diff. Mechanical rules live in the typecheck, the lint (`.oxlintrc.json`) and the test suite (notably `test/vault-policy-matrix.test.ts`); these are the ones no check can enforce.
 
 ## Vault access
 

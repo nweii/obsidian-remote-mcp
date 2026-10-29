@@ -1,5 +1,5 @@
 # ABOUTME: Runs the same checks a contributor runs locally: frozen install with the optional
-# clipper, typecheck, the full test suite with no skipped clipper tests, and the dependency audit.
+# clipper, typecheck, lint, the full test suite with no skipped clipper tests, and the dependency audit.
 name: CI
 
 on:
@@ -23,5 +23,6 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run setup:clipper
       - run: bun run typecheck
+      - run: bun run lint
       - run: bun run test
       - run: bun run audit

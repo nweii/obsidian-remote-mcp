@@ -270,12 +270,11 @@ function exec(config: CliConfig, args: string[], timeout = TIMEOUT_MS): Promise<
           return;
         }
         const output = stripStartupNoise([stdout, stderr].filter(Boolean).join("\n"));
-        const err = error as NodeJS.ErrnoException & { killed?: boolean };
         let message: string;
-        if (err.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") message = `output exceeded ${MAX_OUTPUT_BYTES} bytes`;
-        else if (err.killed) message = `timed out after ${timeout} ms`;
-        else if (typeof err.code === "number") message = `exited with code ${err.code}`;
-        else message = `could not start (${err.code ?? "unknown error"})`;
+        if (error.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") message = `output exceeded ${MAX_OUTPUT_BYTES} bytes`;
+        else if (error.killed) message = `timed out after ${timeout} ms`;
+        else if (typeof error.code === "number") message = `exited with code ${error.code}`;
+        else message = `could not start (${error.code ?? "unknown error"})`;
         resolve({ ok: false, error: `obsidian ${args[0]} ${message}.`, output });
       },
     );
@@ -427,6 +426,7 @@ function backlinkPaths(output: string): string[] {
   if (!Array.isArray(parsed)) throw new Error("backlinks output is not a list");
   return parsed.map(item => {
     if (typeof item === "string") return item;
+    // SAFETY: item is a non-null object, so a missing key reads as undefined; the result is checked next.
     const candidate = item && typeof item === "object" ? ((item as Record<string, unknown>).path ?? (item as Record<string, unknown>).file) : undefined;
     if (typeof candidate !== "string") throw new Error("backlinks entry has no path");
     return candidate;
@@ -480,7 +480,8 @@ function registerCliTool<T>(
   summarize: (args: T) => Record<string, unknown>,
   handler: (args: T) => Promise<ToolResult>,
 ): void {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // SAFETY: def is the same config object registerLogged passes; the SDK's overloads can't be
+  // matched against a caller-supplied generic T, which only the handler below consumes.
   (server.registerTool as any)(name, def, async (args: T) => {
     const start = Date.now();
     let result: ToolResult | undefined;
