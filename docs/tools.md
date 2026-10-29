@@ -86,7 +86,7 @@ A chunk the model couldn't judge (a failed request, a malformed answer) is kept 
 
 ## Semantic search with QMD
 
-`vault_semantic_search` searches the vault through a [QMD](https://github.com/tobi/qmd) index that runs on the same machine as the server. QMD combines keyword (BM25) and vector retrieval and reranks the results with a local model. Each call takes typed sub-queries: `lex` for keywords, `vec` for a natural-language question, and `hyde` for a short passage that reads like the answer.
+`vault_semantic_search` searches the vault through a [QMD](https://github.com/tobi/qmd) index that runs on the same machine as the server. QMD combines keyword (BM25) and vector retrieval and reranks the results with a local model. A call takes a plain `query`, which is searched both as keywords and as a question. For finer control, a call can pass typed sub-queries in `searches` instead: `lex` for keywords, `vec` for a natural-language question, and `hyde` for a short passage that reads like the answer. `folder` limits results to one folder. QMD ranks the whole collection first, so a narrow folder can return fewer results than `limit`. Results are structured: each item has the note's path, the matched line, its score, and an excerpt.
 
 To enable it, run QMD's HTTP server (`qmd mcp --http`, on `localhost:8181` by default) and set `QMD_URL` to its address and `QMD_COLLECTION` to the QMD collection that indexes this vault. The server searches only that collection, so other collections on the same QMD index stay out of reach.
 
