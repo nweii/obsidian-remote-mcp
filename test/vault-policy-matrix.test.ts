@@ -161,6 +161,7 @@ const READ_OPS: Record<string, (p: string) => unknown> = {
   resolveSafePath: p => vault.resolveSafePath(p),
   readNote: p => vault.readNote(p),
   readAttachment: p => vault.readAttachment(p),
+  readBase: p => vault.readBase(p),
   getFrontmatter: p => vault.getFrontmatter(p),
   getFrontmatterProperty: p => vault.getFrontmatterProperty(p, 'secret'),
   getNoteOutline: p => vault.getNoteOutline(p),
@@ -218,6 +219,7 @@ const FOLDER_OPS: Record<string, () => unknown> = {
 const NO_PATH_EXPORTS = [
   'getVaultRoot', 'getVaultDisplayName', 'getContextNotePath', 'isReadOnly', 'versionOf',
   'invalidateResolverCache', 'getNoteTags', 'compileSearchPattern', 'isVaultError', 'hasIgnoreRules',
+  'isBasePath',
 ];
 
 function leaks(value: unknown, tokens: string[]): boolean {

@@ -7,7 +7,7 @@
 | Tool | Description |
 |------|-------------|
 | `vault_context` | Read the vault guidance note configured by `VAULT_CONTEXT_PATH`, or fall back to `AGENTS.md` / `CLAUDE.md`, and return a folder map for orientation |
-| `vault_read` | Full note text (`mode` full, default) with a version for safe updates, or list one folder level (`mode` `list`; `path` `""` = vault root) |
+| `vault_read` | Full note text (`mode` full, default) with a version for safe updates, a `.base` file's YAML by path, or list one folder level (`mode` `list`; `path` `""` = vault root) |
 | `vault_batch_read` | Read several notes in one call by path or title; `include_content: false` returns just frontmatter to inspect metadata before reading note bodies |
 | `vault_outline` | All `#` headings in a note (one per line); use before `vault_read_section` |
 | `vault_read_section` | Body under a single heading (`heading` = text without `#`, case-insensitive) |
@@ -161,6 +161,14 @@ The audit log redacts every `find` and `replace` value, and edit errors don't qu
 Vault paths must stay inside the vault and pass access checks both as requested and after resolving filesystem shortcuts (symlinks). Dangling shortcuts are refused. Searches through shortcut folders check the resolved descendants too.
 
 Internal trash destinations must also remain inside the vault. See the [vault access policy](vault-access-policy.md) for implementation details.
+
+### File types the read tools accept
+
+The note tools (`vault_read`, `vault_batch_read`, `vault_outline`, `vault_read_section`, `vault_frontmatter`, `vault_links`, and the search tools) work on Markdown notes (`.md`). A note can be given by path or by bare title.
+
+`vault_read` also returns an Obsidian Base (`.base`) as plain text when given its full path, such as `Views/Reading.base`. Bases follow the same access rules as notes. They aren't resolved by title, aren't parsed for frontmatter, and come back without a version, because the editing tools don't write them.
+
+Other files, such as images and PDFs, are read with `vault_read_attachment`.
 
 ### Exclude paths with .mcpignore
 
