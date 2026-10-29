@@ -119,6 +119,26 @@ describe('semanticSearch', () => {
     await rm(path.join(vaultPath, 'Plan elsewhere.md'));
   });
 
+  test('asks QMD for its full candidate pool when a folder is set, and trims to limit', async () => {
+    process.env.VAULT_PATH = vaultPath;
+    const notes = ['A', 'B', 'C', 'D'].map(n => `Projects/Batch ${n}.md`);
+    for (const n of notes) await writeFile(path.join(vaultPath, n), `${n}\n`);
+    try {
+      const calls: { url: string; body: any }[] = [];
+      const hits = notes.map(n => [`notes/${n}`, `${n}\n`] as [string, string]);
+      const { items } = await semanticSearch(config, { searches: [{ type: 'lex', query: 'batch' }], limit: 2, folder: 'Projects' }, fakeQmd(hits, calls));
+      expect(calls[0]!.body.limit).toBe(40);
+      expect(items.map(r => r.path)).toEqual(notes.slice(0, 2));
+
+      await semanticSearch(config, { searches: [{ type: 'lex', query: 'batch' }], limit: 50, folder: 'Projects' }, fakeQmd([], calls));
+      expect(calls[1]!.body.limit).toBe(50);
+      await semanticSearch(config, { searches: [{ type: 'lex', query: 'batch' }], limit: 2 }, fakeQmd([], calls));
+      expect(calls[2]!.body.limit).toBe(2);
+    } finally {
+      for (const n of notes) await rm(path.join(vaultPath, n));
+    }
+  });
+
   test('reports a QMD HTTP failure as an error', async () => {
     process.env.VAULT_PATH = vaultPath;
     const failing: Fetcher = async () => new Response('nope', { status: 500 });
