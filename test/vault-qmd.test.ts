@@ -193,7 +193,17 @@ describe('semanticSearch', () => {
         const plainClient = new Client({ name: 't', version: '0' });
         const [pc, ps] = InMemoryTransport.createLinkedPair();
         await Promise.all([plain.connect(ps), plainClient.connect(pc)]);
-        await plainClient.callTool({ name: 'vault_search_semantic', arguments: { query: 'planting tomatoes' } });
+        const blankQuery = await plainClient.callTool({ name: 'vault_search_semantic', arguments: { query: '   ' } }) as any;
+        expect(blankQuery.isError).toBe(true);
+        expect(blankQuery.content[0].text).toBe('Error: pass query or searches.');
+        const quotesOnly = await plainClient.callTool({ name: 'vault_search_semantic', arguments: { query: ' " ' } }) as any;
+        expect(quotesOnly.isError).toBe(true);
+        expect(quotesOnly.content[0].text).toBe('Error: pass query or searches.');
+        const blankSearch = await plainClient.callTool({ name: 'vault_search_semantic', arguments: { searches: [{ type: 'lex', query: 'tomato' }, { type: 'vec', query: ' \t ' }] } }) as any;
+        expect(blankSearch.isError).toBe(true);
+        expect(blankSearch.content[0].text).toContain('searches[1].query is blank');
+        expect(calls).toEqual([]);
+        await plainClient.callTool({ name: 'vault_search_semantic', arguments: { query: '  planting tomatoes ' } });
         expect(calls[0]!.body.searches).toEqual([{ type: 'lex', query: 'planting tomatoes' }, { type: 'vec', query: 'planting tomatoes' }]);
         await plainClient.callTool({ name: 'vault_search_semantic', arguments: { query: '"tomato stakes' } });
         expect(calls[1]!.body.searches).toEqual([{ type: 'lex', query: 'tomato stakes' }, { type: 'vec', query: '"tomato stakes' }]);
