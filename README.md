@@ -105,7 +105,7 @@ Each one needs setup before use.
 
 - [Enable Obsidian CLI tools](docs/setup.md#use-the-obsidian-desktop-apps-cli-tools) to query Bases, work with tasks, and use other app features. Obsidian must be running on the same computer. The server doesn't apply `.mcpignore` to CLI searches.
 - [Connect a local QMD index](docs/tools.md#semantic-search-with-qmd) to search notes by meaning, not only by exact words. [QMD](https://github.com/tobi/qmd) must be running on the same computer. The server applies `.mcpignore` to QMD results.
-- [Install URL clipping](docs/setup.md#install-optional-url-clipping) to save web pages as notes with your Web Clipper templates.
+- [Install URL clipping](docs/setup.md#install-optional-url-clipping) to save web pages as notes with your Web Clipper templates. The server reads them from an exported Web Clipper settings file.
 - [Add a decision-model API key](docs/tools.md#skimming-notes) (TypeSafe, OpenRouter, or OpenAI) to skim selected notes for the passages relevant to what you're looking for. After you approve a plan, the server sends the selected note text to that model provider.
 - [Set up Obsidian Headless sync](docs/setup.md#sync-a-vault-with-obsidian-headless) to keep the server's vault current without the desktop app.
 
