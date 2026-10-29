@@ -138,6 +138,25 @@ async function notesHoldingDocid(paths: string[], docid: string | undefined): Pr
 
 export type Fetcher = (url: string, init: RequestInit) => Promise<Response>;
 
+// A failure talking to QMD. Its message is written here, never copied from the filesystem.
+export class QmdError extends Error {}
+
+// QMD reports a result's file as "collection/path", or, in newer releases, as a qmd:// URI with each
+// segment percent-encoded. Returns the path within the collection, or null for another collection.
+export function pathInCollection(file: unknown, collection: string): string | null {
+  if (typeof file !== "string") return null;
+  let display = file;
+  if (display.startsWith("qmd://")) {
+    try {
+      display = display.slice("qmd://".length).split("/").map(decodeURIComponent).join("/");
+    } catch {
+      return null;
+    }
+  }
+  const prefix = `${collection}/`;
+  return display.startsWith(prefix) ? display.slice(prefix.length) : null;
+}
+
 export async function semanticSearch(
   config: QmdConfig,
   request: SemanticSearchRequest,
@@ -159,21 +178,22 @@ export async function semanticSearch(
       }),
       signal: controller.signal,
     });
-    if (!res.ok) throw new Error(`QMD returned HTTP ${res.status}`);
+    if (!res.ok) throw new QmdError(`QMD returned HTTP ${res.status}`);
     body = await res.json() as { results?: QmdResult[] };
   } catch (e) {
-    if (controller.signal.aborted) throw new Error(`QMD did not answer within ${config.timeoutMs} ms`);
-    throw new Error(`QMD search failed: ${e instanceof Error ? e.message : String(e)}`);
+    if (e instanceof QmdError) throw e;
+    if (controller.signal.aborted) throw new QmdError(`QMD did not answer within ${config.timeoutMs} ms`);
+    throw new QmdError(`QMD search failed: could not reach ${config.url} or read its response`);
   } finally {
     clearTimeout(timer);
   }
 
-  const prefix = `${config.collection}/`;
   const index = await notesByQmdPath();
   const results: SemanticSearchHit[] = [];
   let withheld = 0;
   for (const r of body.results ?? []) {
-    const candidates = typeof r.file === "string" && r.file.startsWith(prefix) ? index.get(r.file.slice(prefix.length)) : undefined;
+    const relPath = pathInCollection(r.file, config.collection);
+    const candidates = relPath !== null ? index.get(relPath) : undefined;
     const paths = candidates ? await notesHoldingDocid(candidates, r.docid) : [];
     if (paths.length === 0) {
       withheld++;
@@ -235,8 +255,11 @@ export function registerQmdTool(server: McpServer, options: { config?: QmdConfig
         const result = await semanticSearch(config, { searches, limit, intent, rerank }, options.fetcher);
         return { content: [{ type: "text" as const, text: formatResults(result) }] };
       } catch (e) {
-        if (vault.isVaultError(e)) return { content: [{ type: "text" as const, text: `Error: ${e.message}` }], isError: true };
-        return { content: [{ type: "text" as const, text: `Error: ${e instanceof Error ? e.message : String(e)}` }], isError: true };
+        // QMD failures and vault errors carry messages written for the caller; anything else propagates.
+        if (e instanceof QmdError || vault.isVaultError(e)) {
+          return { content: [{ type: "text" as const, text: `Error: ${e.message}` }], isError: true };
+        }
+        throw e;
       }
     },
   );

@@ -7,7 +7,7 @@ import { createHash } from 'crypto';
 import path from 'path';
 import { McpServer } from '@modelcontextprotocol/server';
 import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
-import { loadQmdConfig, qmdPath, registerQmdTool, semanticSearch, type Fetcher, type QmdConfig } from '../src/qmd.js';
+import { loadQmdConfig, pathInCollection, qmdPath, registerQmdTool, semanticSearch, type Fetcher, type QmdConfig } from '../src/qmd.js';
 
 const config: QmdConfig = { url: 'http://127.0.0.1:8181', collection: 'brain', timeoutMs: 5000 };
 
@@ -29,6 +29,17 @@ describe('qmdPath', () => {
     expect(qmdPath('Notes/Café (draft).md')).toBe('Notes/Café-draft.md');
     expect(qmdPath('Ideas/🌱 Seeds.md')).toBe('Ideas/1f331-Seeds.md');
     expect(qmdPath('a___b.md')).toBe('a/b.md');
+  });
+});
+
+describe('pathInCollection', () => {
+  test('reads both the collection/path form and the encoded qmd:// URI form', () => {
+    expect(pathInCollection('brain/Projects/Plan.md', 'brain')).toBe('Projects/Plan.md');
+    expect(pathInCollection('qmd://brain/Projects/Caf%C3%A9-draft.md', 'brain')).toBe('Projects/Café-draft.md');
+    expect(pathInCollection('qmd://other/Projects/Plan.md', 'brain')).toBeNull();
+    expect(pathInCollection('brainy/Plan.md', 'brain')).toBeNull();
+    expect(pathInCollection('qmd://brain/%E0%A4%A.md', 'brain')).toBeNull();
+    expect(pathInCollection(undefined, 'brain')).toBeNull();
   });
 });
 
@@ -84,7 +95,7 @@ describe('semanticSearch', () => {
   test('maps results to vault paths and withholds ignored, hidden, foreign, and unknown documents', async () => {
     process.env.VAULT_PATH = vaultPath;
     const hits: [string, string][] = [
-      ['brain/Projects/Mac-mini-plan.md', PLAN],
+      ['qmd://brain/Projects/Mac-mini-plan.md', PLAN],
       ['brain/Private/Diary.md', 'secret\n'],
       ['brain/hidden/Note.md', 'hidden\n'],
       ['other/Projects/Mac-mini-plan.md', PLAN],
@@ -118,6 +129,9 @@ describe('semanticSearch', () => {
     process.env.VAULT_PATH = vaultPath;
     const failing: Fetcher = async () => new Response('nope', { status: 500 });
     await expect(semanticSearch(config, { searches: [{ type: 'lex', query: 'x' }], limit: 1 }, failing)).rejects.toThrow('HTTP 500');
+    const unreachable: Fetcher = async () => { throw new Error('connect ECONNREFUSED /some/host/path'); };
+    await expect(semanticSearch(config, { searches: [{ type: 'lex', query: 'x' }], limit: 1 }, unreachable))
+      .rejects.toThrow('QMD search failed: could not reach http://127.0.0.1:8181 or read its response');
   });
 
   test('registers vault_semantic_search only when configured, and returns readable results', async () => {
