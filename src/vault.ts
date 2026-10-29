@@ -602,6 +602,21 @@ export async function readNote(relativePath: string): Promise<string> {
   return fs.readFile(resolveSafePath(relativePath), 'utf-8');
 }
 
+// An Obsidian Base (`.base`) is a YAML view definition, not a note. It is readable as text when
+// addressed by its exact path, under the same access policy as notes, but never resolved by
+// title, parsed for frontmatter, or offered to the note-editing tools.
+export function isBasePath(relativePath: string): boolean {
+  return /\.base$/i.test(relativePath.trim());
+}
+
+export async function readBase(relativePath: string): Promise<string> {
+  const trimmed = relativePath.trim();
+  const absPath = resolveSafePath(trimmed);
+  const st = await statExisting(absPath, `Base not found: ${trimmed}`);
+  if (st.isDirectory()) throw new IsDirectoryError(`"${trimmed}" is a directory, not a file.`);
+  return fs.readFile(absPath, 'utf-8');
+}
+
 // Resolve a note's actual vault-relative location without reading its body. Both the requested
 // path and the canonical target must satisfy vault containment and .mcpignore.
 export async function canonicalNotePath(relativePath: string): Promise<string> {
