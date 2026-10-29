@@ -1,10 +1,11 @@
-// ABOUTME: Registers all vault tools on an McpServer - context, read (full/list), outline, read section, read attachment, frontmatter, links, writes, move/rename, title search, content search, tags, periodic note, clip URL, skim, Obsidian CLI, feedback.
+// ABOUTME: Registers all vault tools on an McpServer - context, read (full/list), outline, read section, read attachment, frontmatter, links, writes, move/rename, title search, content search, tags, periodic note, clip URL, skim, semantic search, Obsidian CLI, feedback.
 import type { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import * as vault from "./vault.js";
 import { frontmatterValueToString } from "./frontmatter.js";
 import { registerClipTool } from "./clip.js";
 import { registerSkimTool } from "./skim.js";
+import { registerQmdTool } from "./qmd.js";
 import { registerCliTools, resolveBacklinks } from "./cli.js";
 import { structuredResult } from "mcp-server-kit";
 import { registerLogged, logFeedback, isLoggingEnabled, type ToolResult } from "./log.js";
@@ -311,6 +312,39 @@ function renderFrontmatterBlock(fm: Record<string, unknown> | null): string {
   return Object.entries(fm).map(([k, v]) => `${k}: ${renderFrontmatterValue(v)}`).join("\n");
 }
 
+// Tools that register only when their dependency is present. Each module detects its own
+// dependency and returns without registering when it's missing.
+interface OptionalTool {
+  label: string;
+  register: (server: McpServer) => void | Promise<void>;
+}
+
+const OPTIONAL_TOOLS: OptionalTool[] = [
+  // Registered only when the optional web-clipper-headless is installed.
+  { label: "vault_clip_url", register: server => registerClipTool(server, vault.getVaultRoot()) },
+  // Registered only when a decision-model provider key is configured.
+  { label: "vault_skim", register: server => registerSkimTool(server) },
+  // Registered only when a local QMD server is configured.
+  { label: "vault_search_semantic", register: server => registerQmdTool(server) },
+  // Registered only when opted in and the Obsidian CLI reaches this vault.
+  { label: "Obsidian CLI tool", register: registerCliTools },
+];
+
+// A failure in one optional tool can never break registration of the others or of the core
+// vault tools.
+export async function registerOptionalTools(server: McpServer, tools: OptionalTool[]): Promise<void> {
+  for (const { label, register } of tools) {
+    try {
+      await register(server);
+    } catch (err) {
+      console.error(
+        `[obsidian-remote-mcp] ${label} registration failed; continuing with core tools.`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+}
+
 export async function registerTools(server: McpServer) {
   // Tools whose only job is writing the vault. In read-only mode they are not registered, so agents
   // never see a tool that can only fail. Tools that read or write depending on their arguments
@@ -318,37 +352,7 @@ export async function registerTools(server: McpServer) {
   // registered; the vault layer refuses their writes.
   const registerWrite: typeof registerLogged = vault.isReadOnly() ? () => {} : registerVaultTool;
 
-  // Optional: vault_clip_url. Wrapped in try/catch so a failure in the optional clip layer
-  // can never break registration of the core vault tools.
-  try {
-    await registerClipTool(server, vault.getVaultRoot());
-  } catch (err) {
-    console.error(
-      "[obsidian-remote-mcp] vault_clip_url registration failed; continuing with core tools.",
-      err instanceof Error ? err.message : err,
-    );
-  }
-
-  // Optional: vault_skim, registered only when a decision-model provider key is configured.
-  try {
-    registerSkimTool(server);
-  } catch (err) {
-    console.error(
-      "[obsidian-remote-mcp] vault_skim registration failed; continuing with core tools.",
-      err instanceof Error ? err.message : err,
-    );
-  }
-
-  // Optional: vault_cli and vault_cli_help, registered only when opted in and the Obsidian CLI
-  // reaches this vault.
-  try {
-    await registerCliTools(server);
-  } catch (err) {
-    console.error(
-      "[obsidian-remote-mcp] Obsidian CLI tool registration failed; continuing with core tools.",
-      err instanceof Error ? err.message : err,
-    );
-  }
+  await registerOptionalTools(server, OPTIONAL_TOOLS);
 
   registerVaultTool(server,
     "vault_context",

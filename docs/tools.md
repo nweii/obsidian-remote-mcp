@@ -29,6 +29,7 @@
 | `vault_periodic_note` | Read or create a daily, weekly, monthly, quarterly, or yearly note at the path the vault's Obsidian config or an env template sets |
 | `vault_clip_url` | Save a web page to the vault as a markdown note |
 | `vault_skim` | Return only the parts of selected notes relevant to a goal, judged chunk by chunk by an external decision model; plans first and sends nothing until confirmed. Listed only when a decision-model key is set (see [Skimming notes](tools.md#skimming-notes)) |
+| `vault_search_semantic` | Search notes by meaning through a local [QMD](https://github.com/tobi/qmd) index, combining keyword and vector retrieval. Listed only when `QMD_URL` and `QMD_COLLECTION` are set (see [Semantic search with QMD](tools.md#semantic-search-with-qmd)) |
 | `vault_cli_help` / `vault_cli` | List and run Obsidian CLI commands against this vault. Opt-in, and listed only when the CLI reaches this vault (see [Obsidian CLI tools](tools.md#obsidian-cli-tools)) |
 | `vault_feedback` | Log a structured note when an agent gets stuck or wants a tool that doesn't exist |
 
@@ -82,6 +83,14 @@ Path rules use [`.mcpignore` syntax](#exclude-paths-with-mcpignore) and cover ea
 Path exclusions are checked against normalized requested paths and resolved file locations before note text is read, including during query selection. Equivalent spellings and symlinks cannot bypass an excluded folder. Plans list allowed aliases once, using the resolved vault-relative path. A path-excluded note in a query's scope is reported as withheld without reading it to test the query.
 
 A chunk the model couldn't judge (a failed request, a malformed answer) is kept and marked `unjudged`, so a provider failure can return more text than expected but never silently drops any.
+
+## Semantic search with QMD
+
+`vault_search_semantic` searches the vault through a [QMD](https://github.com/tobi/qmd) index that runs on the same machine as the server. QMD combines keyword (BM25) and vector retrieval and reranks the results with a local model. A call takes a plain `query`, which is searched both as keywords and as a question. For finer control, a call can pass typed sub-queries in `searches` instead: `lex` for keywords, `vec` for a natural-language question, and `hyde` for a short passage that reads like the answer. `folder` limits results to one folder. QMD ranks the whole collection first, so a narrow folder can return fewer results than `limit`. Results are structured: each item has the note's path, the matched line, its score, and an excerpt.
+
+To enable it, run QMD's HTTP server (`qmd mcp --http`, on `localhost:8181` by default) and set `QMD_URL` to its address and `QMD_COLLECTION` to the QMD collection that indexes this vault. The server searches only that collection, so other collections on the same QMD index stay out of reach.
+
+QMD reports each result by its path in the collection: the note's own path in current releases, or a normalized form, which several vault paths can share, in QMD 2.5 and earlier. The server maps every result back to the notes at that path that the vault access policy allows reading, and returns the result only when one of them holds the content QMD indexed (QMD's docid is a prefix of the content's SHA-256). The lines shown with each result are read from that note, never taken from QMD's snippet or title, so a note the policy hides can't surface through a shared path and docid. Results from hidden files, `.mcpignore` matches, notes that no longer exist, and notes changed since QMD last indexed them are dropped without a count or notice. QMD indexes hidden notes too, and a hidden note can share a QMD path with a readable one, so any trace of dropped results would tell a client whether a hidden note contains the searched words. Dropped results still use up part of `limit`, so a search can return fewer results than asked for. Keep QMD's index current so recent edits stay searchable. QMD's own index and server have no access control, so keep QMD bound to localhost.
 
 ## Obsidian CLI tools
 

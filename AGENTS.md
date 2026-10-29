@@ -29,6 +29,7 @@ src/
   access.ts       — Per-connection access: the approval page's scopes (edit notes, Obsidian CLI) and whether the current request's connection holds one
   clip.ts         — Registers vault_clip_url when the optional web-clipper-headless is installed
   cli.ts          — Registers vault_cli / vault_cli_help when the obsidian CLI is opted in and reaches this vault: guards, probe, help parsing; backlinks via Obsidian
+  qmd.ts          — Registers vault_search_semantic when a local QMD server is configured: forwards queries, maps QMD paths back to vault paths, withholds what the access policy hides
   skim.ts         — Registers vault_skim when a decision-model key is set: note selection, exclusions, plan ids, rendering
   chunk.ts        — Line-aware chunker with overlap used by vault_skim
   decision.ts     — Decision-model client (TypeSafe, OpenRouter, OpenAI): provider resolution, request shapes, batching, retries
@@ -62,6 +63,18 @@ Endpoints: OAuth discovery `GET /.well-known/oauth-authorization-server`, token 
 - Server setup, OAuth, origins, environment variables: [docs/server.md](docs/server.md).
 - Audit log contents and redaction: [docs/audit-logging.md](docs/audit-logging.md).
 - Reviewing a diff: apply [CODING_STANDARDS.md](CODING_STANDARDS.md).
+
+## Adding an optional tool
+
+An optional tool registers only when its dependency is present. Each optional tool is a module in `src/` and an entry in `OPTIONAL_TOOLS` in `tools.ts`. If one optional tool fails to register, the other tools still register.
+
+- **Detect in the module.** If the dependency is missing, the module's `register*(server)` function won't register anything. The server registers tools on every request, so check for the dependency once, keep the result, and log it once (`clipperOnce` in `clip.ts`, `providerOnce` in `skim.ts`). If the dependency can disappear and come back, as the Obsidian app can, check again on a timer (`probeCache` in `cli.ts`).
+- **Reach notes through `vault.ts`.** Select, list, and read notes with `resolveNoteReference`, `listNotePaths`, and `readNote`. These functions apply `.mcpignore` and the hidden-folder rules. If a tool gets results from an outside index, map each result back through these functions and withhold any result they don't return (`qmd.ts`). If the server can't filter a tool's output, as with Obsidian CLI searches, say so in `docs/tools.md`.
+- **Respect read-only mode.** Register a tool that only writes through `registerWrite`, so read-only mode hides it. Register a tool that reads or writes depending on its arguments as usual. In read-only mode, the vault layer refuses its writes.
+- **Log through `registerLogged`.** If an argument can carry note text that `REDACTED_FIELDS` in `log.ts` doesn't cover, log a summary of the arguments instead (`registerCliTool` in `cli.ts`).
+- **Gate per connection.** To let a connection's approval withhold the tool, check that connection's access in `access.ts`.
+
+There is no shared extension interface. The optional tools detect their dependencies in different ways, and `vault.ts`, `registerWrite`, `log.ts`, and `access.ts` already hold the shared rules. Add an interface if a new tool would otherwise repeat one of those rules, or if tools need a shared lifecycle beyond registration, such as startup hooks, routes, or vault-write events.
 
 ## Install policy
 
