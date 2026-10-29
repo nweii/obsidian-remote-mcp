@@ -1000,19 +1000,107 @@ export async function prependToNote(relativePath: string, content: string): Prom
   invalidateResolverCache();
 }
 
+// Locked read-modify-write of an existing note: `transform` gets the current text and returns the
+// new text, or throws to leave the note untouched. With `baseVersion`, the write is rejected when
+// the note changed since the caller read it, as in updateNote.
+async function rewriteNote(
+  relativePath: string,
+  baseVersion: string | undefined,
+  transform: (current: string) => string,
+): Promise<UpdateResult> {
+  assertWritable();
+  const absPath = resolveWritePath(relativePath);
+  const result = await withPathLock(absPath, async () => {
+    let current: string;
+    try {
+      current = await fs.readFile(absPath, 'utf-8');
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT' || code === 'ENOTDIR') throw new NotFoundError(`Note not found: ${relativePath}`);
+      throw e;
+    }
+    if (baseVersion !== undefined && versionOf(current) !== baseVersion) {
+      throw new ConcurrentEditError(
+        `"${relativePath}" changed since you last read it, so nothing was written. Re-read the note and reapply your edits to the current text.`,
+      );
+    }
+    const next = transform(current);
+    await atomicWriteFile(absPath, next);
+    return { version: versionOf(next) };
+  });
+  invalidateResolverCache();
+  return result;
+}
+
 // Replace the first occurrence of `find` with `content`. Locked so the read and write are
 // atomic; because it reads the current file at write time, concurrent changes elsewhere in
 // the note are preserved. If `find` is absent the note is rewritten unchanged.
-export async function replaceInNote(relativePath: string, find: string, content: string): Promise<void> {
-  assertWritable();
-  const absPath = resolveWritePath(relativePath);
-  await withPathLock(absPath, async () => {
-    const existing = await fs.readFile(absPath, 'utf-8');
-    // Function replacer keeps `content` literal — a plain string replacement would interpret
-    // $&, $1, $$ etc. in the agent's content as special replacement patterns.
-    await atomicWriteFile(absPath, existing.replace(find, () => content));
-  });
-  invalidateResolverCache();
+export async function replaceInNote(
+  relativePath: string,
+  find: string,
+  content: string,
+  baseVersion?: string,
+): Promise<UpdateResult> {
+  // Function replacer keeps `content` literal — a plain string replacement would interpret
+  // $&, $1, $$ etc. in the agent's content as special replacement patterns.
+  return rewriteNote(relativePath, baseVersion, existing => existing.replace(find, () => content));
+}
+
+// One find/replace pair for editNote. Literal by default: `replace` is inserted verbatim. With
+// `regex`, `find` is a JavaScript pattern run with the g and m flags, and `replace` may use $1,
+// $<name> and $& references.
+export interface NoteEdit {
+  find: string;
+  replace: string;
+  regex?: boolean;
+  replaceAll?: boolean;
+}
+
+// Matches one edit may touch. Far more than any hand-made edit needs, and low enough that a
+// pattern which catches nearly every character is refused instead of rewriting the note.
+const MAX_EDIT_MATCHES = 1000;
+
+// Names an edit by position only. Its find text is often note text, and an error message reaches
+// the audit log, where `find` is otherwise redacted.
+function describeEdit(index: number, total: number): string {
+  return `Edit ${index + 1} of ${total}`;
+}
+
+// Apply one edit to `text`, or throw InvalidRequestError naming the edit when it can't apply as
+// asked: no match, several matches without replaceAll, an empty match, or too many matches.
+function applyEdit(text: string, edit: NoteEdit, label: string): string {
+  if (edit.find === '') throw new InvalidRequestError(`${label}: find is empty. Nothing was written.`);
+  const pattern = edit.regex
+    ? compileSearchPattern(edit.find, 'gm')
+    : new RegExp(edit.find.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g');
+  let count = 0;
+  for (const match of text.matchAll(pattern)) {
+    if (match[0] === '') {
+      throw new InvalidRequestError(`${label}: the pattern matches empty text, so it would apply everywhere. Nothing was written.`);
+    }
+    if (++count > MAX_EDIT_MATCHES) {
+      throw new InvalidRequestError(`${label}: matches more than ${MAX_EDIT_MATCHES} times. Narrow the pattern. Nothing was written.`);
+    }
+  }
+  if (count === 0) throw new InvalidRequestError(`${label}: no match in the note. Nothing was written.`);
+  if (count > 1 && !edit.replaceAll) {
+    throw new InvalidRequestError(
+      `${label}: matches ${count} times. Pass replace_all, or make find unique. Nothing was written.`,
+    );
+  }
+  if (edit.regex) {
+    return edit.replaceAll ? text.replace(pattern, edit.replace) : text.replace(new RegExp(pattern.source, 'm'), edit.replace);
+  }
+  return edit.replaceAll ? text.split(edit.find).join(edit.replace) : text.replace(edit.find, () => edit.replace);
+}
+
+// Apply several find/replace edits to one note as a single write. Each edit runs on the result of
+// the one before it. If any edit fails to apply, or `baseVersion` is stale, nothing is written.
+export async function editNote(relativePath: string, edits: NoteEdit[], baseVersion?: string): Promise<UpdateResult> {
+  if (edits.length === 0) throw new InvalidRequestError('edits is empty. Pass at least one find/replace pair.');
+  return rewriteNote(relativePath, baseVersion, current =>
+    edits.reduce((text, edit, i) => applyEdit(text, edit, describeEdit(i, edits.length)), current),
+  );
 }
 
 export async function deleteNote(relativePath: string): Promise<void> {
