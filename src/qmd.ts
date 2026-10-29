@@ -229,7 +229,7 @@ export function registerQmdTool(server: McpServer, options: { config?: QmdConfig
     async ({ query, searches, folder, limit, intent, rerank }) => {
       // Blank text would match arbitrary notes, so it is refused before QMD is asked.
       const plain = query?.trim();
-      const trimmed = searches?.map(s => ({ type: s.type, query: s.query.trim() }));
+      const trimmed: QmdSearch[] | undefined = searches?.map((s: QmdSearch) => ({ type: s.type, query: s.query.trim() }));
       const blank = trimmed?.findIndex(s => s.query === "") ?? -1;
       if (blank !== -1) {
         return { content: [{ type: "text" as const, text: `Error: searches[${blank}].query is blank. Give each sub-query some words.` }], isError: true };
