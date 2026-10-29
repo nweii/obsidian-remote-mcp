@@ -441,9 +441,14 @@ export async function registerTools(server: McpServer) {
         };
       }
       // A .base file is read as plain text: no title resolution, and no version, since the
-      // note-editing tools don't write Bases.
+      // note-editing tools don't write Bases. When no such file exists, the path may still name a
+      // note (e.g. "Reading.base" for "Reading.base.md"), so note resolution runs as usual.
       if (vault.isBasePath(path)) {
-        return { content: [{ type: "text", text: await vault.readBase(path) }] };
+        try {
+          return { content: [{ type: "text", text: await vault.readBase(path) }] };
+        } catch (e) {
+          if (!(e instanceof vault.NotFoundError)) throw e;
+        }
       }
       const ref = await vault.resolveNoteReference(path);
       const content = await vault.readNote(ref.path);

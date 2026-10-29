@@ -89,6 +89,19 @@ describe('reading .base files', () => {
     expect(result.content[0].text).not.toContain(vaultPath);
   });
 
+  test('a .base path with no Base file still resolves a note named like it', async () => {
+    await write('Notes/Knowledge.base.md', '# Knowledge note\n');
+    try {
+      const byPath = await callTool('vault_read', { path: 'Notes/Knowledge.base' });
+      expect(byPath.isError).toBeFalsy();
+      expect(byPath.content[0].text).toBe('# Knowledge note\n');
+      const byTitle = await callTool('vault_read', { path: 'Knowledge.base' });
+      expect(byTitle.content[0].text).toBe('# Knowledge note\n');
+    } finally {
+      await rm(path.join(vaultPath, 'Notes/Knowledge.base.md'));
+    }
+  });
+
   test('note-only resolution and frontmatter tools do not treat a Base as a note', async () => {
     await expect(vault.resolveNoteReference('Shelf')).rejects.toBeInstanceOf(vault.NotFoundError);
     await expect(vault.resolveNoteReference('Views/Shelf.base')).rejects.toBeInstanceOf(vault.NotFoundError);
