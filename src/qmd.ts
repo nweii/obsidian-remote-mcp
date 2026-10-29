@@ -37,9 +37,9 @@ export function loadQmdConfig(env: NodeJS.ProcessEnv = process.env): QmdConfig |
 
 // --- QMD's path normalization ------------------------------------------------------
 
-// QMD stores each document under a normalized path ("handelize" in QMD's store.js): emoji become hex
-// code points, runs of anything but letters, numbers and "$" become "-", and "___" becomes a folder
-// separator. Results carry that form, so the vault's real paths are normalized the same way to match.
+// QMD releases before 2.6 stored each document under a normalized path ("handelize" in QMD's store.js):
+// emoji become hex code points, runs of anything but letters, numbers and "$" become "-", and "___"
+// becomes a folder separator. Their results carry that form, so vault paths are normalized the same way.
 function emojiToHex(segment: string): string {
   return segment.replace(/(?:\p{So}\p{Mn}?|\p{Sk})+/gu, run =>
     [...run].filter(c => /\p{So}|\p{Sk}/u.test(c)).map(c => c.codePointAt(0)!.toString(16)).join("-"));
@@ -57,16 +57,22 @@ export function qmdPath(relPath: string): string | null {
   return cleaned || null;
 }
 
-// Every note the vault access policy lets this server read, keyed by its QMD path. Built per search
-// so a .mcpignore edit applies to the next call. Distinct notes can share a QMD path; all are kept.
+// Every note the vault access policy lets this server read, keyed by each path QMD may report for it:
+// the vault path itself, which current QMD releases index, and the normalized form older releases
+// indexed. Built per search so a .mcpignore edit applies to the next call. Distinct notes can share a
+// key; all are kept, and content verification picks among them.
 async function notesByQmdPath(): Promise<Map<string, string[]>> {
   const index = new Map<string, string[]>();
-  for (const relPath of await vault.listNotePaths()) {
-    const key = qmdPath(relPath.split("\\").join("/"));
-    if (!key) continue;
+  const add = (key: string, relPath: string) => {
     const existing = index.get(key);
-    if (existing) existing.push(relPath);
-    else index.set(key, [relPath]);
+    if (!existing) index.set(key, [relPath]);
+    else if (!existing.includes(relPath)) existing.push(relPath);
+  };
+  for (const relPath of await vault.listNotePaths()) {
+    const posix = relPath.split("\\").join("/");
+    add(posix, relPath);
+    const normalized = qmdPath(posix);
+    if (normalized) add(normalized, relPath);
   }
   return index;
 }

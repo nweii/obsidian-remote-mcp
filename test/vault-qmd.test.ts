@@ -106,6 +106,14 @@ describe('semanticSearch', () => {
     expect(withheld).toBe(4);
   });
 
+  test('matches the original vault path that current QMD releases report, percent-encoded', async () => {
+    process.env.VAULT_PATH = vaultPath;
+    const { results, withheld } = await semanticSearch(config, { searches: [{ type: 'lex', query: 'plan' }], limit: 10 },
+      fakeQmd([['qmd://brain/Projects/Mac%20mini%20plan.md', PLAN], ['qmd://brain/Projects/Secret%20(draft).md', 'private draft\n']]));
+    expect(results.map(r => r.path)).toEqual(['Projects/Mac mini plan.md']);
+    expect(withheld).toBe(1);
+  });
+
   test('withholds an excluded note that shares a QMD path with a readable one', async () => {
     process.env.VAULT_PATH = vaultPath;
     const hits: [string, string][] = [
