@@ -1,4 +1,4 @@
-// ABOUTME: Tests for vault_semantic_search — QMD path normalization, the request sent to QMD, mapping
+// ABOUTME: Tests for vault_search_semantic — QMD path normalization, the request sent to QMD, mapping
 // results back to vault paths, withholding results the access policy hides, and registration over MCP.
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { mkdir, mkdtemp, rm, writeFile } from 'fs/promises';
@@ -155,7 +155,7 @@ describe('semanticSearch', () => {
       .rejects.toThrow('QMD search failed: could not reach http://127.0.0.1:8181 or read its response');
   });
 
-  test('registers vault_semantic_search only when configured, and returns readable results', async () => {
+  test('registers vault_search_semantic only when configured, and returns readable results', async () => {
     process.env.VAULT_PATH = vaultPath;
     const off = new McpServer({ name: 'qmd-off', version: '0' });
     registerQmdTool(off, { config: null });
@@ -167,9 +167,9 @@ describe('semanticSearch', () => {
       const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
       await Promise.all([server.connect(serverSide), client.connect(clientSide)]);
       const { tools } = await client.listTools();
-      expect(tools.some(t => t.name === 'vault_semantic_search')).toBe(expected);
+      expect(tools.some(t => t.name === 'vault_search_semantic')).toBe(expected);
       if (expected) {
-        const missing = await client.callTool({ name: 'vault_semantic_search', arguments: {} }) as any;
+        const missing = await client.callTool({ name: 'vault_search_semantic', arguments: {} }) as any;
         expect(missing.isError).toBe(true);
         const calls: { url: string; body: any }[] = [];
         const plain = new McpServer({ name: 'qmd-plain', version: '0' });
@@ -177,10 +177,10 @@ describe('semanticSearch', () => {
         const plainClient = new Client({ name: 't', version: '0' });
         const [pc, ps] = InMemoryTransport.createLinkedPair();
         await Promise.all([plain.connect(ps), plainClient.connect(pc)]);
-        await plainClient.callTool({ name: 'vault_semantic_search', arguments: { query: 'moving services' } });
+        await plainClient.callTool({ name: 'vault_search_semantic', arguments: { query: 'moving services' } });
         expect(calls[0]!.body.searches).toEqual([{ type: 'lex', query: 'moving services' }, { type: 'vec', query: 'moving services' }]);
         await plainClient.close();
-        const res = await client.callTool({ name: 'vault_semantic_search', arguments: { searches: [{ type: 'lex', query: 'plan' }] } }) as any;
+        const res = await client.callTool({ name: 'vault_search_semantic', arguments: { searches: [{ type: 'lex', query: 'plan' }] } }) as any;
         expect(res.isError).toBeFalsy();
         expect(res.content[0].text).toContain('Projects/Mac mini plan.md:3');
         expect(res.content[0].text).not.toContain('Diary');

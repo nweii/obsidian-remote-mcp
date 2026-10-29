@@ -1,4 +1,4 @@
-// ABOUTME: Registers vault_semantic_search when a local QMD server is configured: forwards the query to QMD's
+// ABOUTME: Registers vault_search_semantic when a local QMD server is configured: forwards the query to QMD's
 // HTTP search endpoint for this vault's collection, then maps QMD's normalized paths back to vault paths and
 // returns a result only when a note the access policy allows holds the exact content QMD indexed.
 import type { McpServer } from "@modelcontextprotocol/server";
@@ -25,7 +25,7 @@ export function loadQmdConfig(env: NodeJS.ProcessEnv = process.env): QmdConfig |
   if (!url) return null;
   const collection = env.QMD_COLLECTION?.trim();
   if (!collection) {
-    console.error("[obsidian-remote-mcp] QMD_URL is set but QMD_COLLECTION is not; vault_semantic_search is disabled.");
+    console.error("[obsidian-remote-mcp] QMD_URL is set but QMD_COLLECTION is not; vault_search_semantic is disabled.");
     return null;
   }
   const timeout = Number(env.QMD_TIMEOUT_MS);
@@ -246,7 +246,7 @@ export function registerQmdTool(server: McpServer, options: { config?: QmdConfig
   if (!config) return;
 
   registerLogged(server,
-    "vault_semantic_search",
+    "vault_search_semantic",
     {
       annotations: { readOnlyHint: true, openWorldHint: false },
       title: "Search notes by meaning",

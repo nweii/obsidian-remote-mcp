@@ -325,7 +325,7 @@ const OPTIONAL_TOOLS: OptionalTool[] = [
   // Registered only when a decision-model provider key is configured.
   { label: "vault_skim", register: server => registerSkimTool(server) },
   // Registered only when a local QMD server is configured.
-  { label: "vault_semantic_search", register: server => registerQmdTool(server) },
+  { label: "vault_search_semantic", register: server => registerQmdTool(server) },
   // Registered only when opted in and the Obsidian CLI reaches this vault.
   { label: "Obsidian CLI tool", register: registerCliTools },
 ];

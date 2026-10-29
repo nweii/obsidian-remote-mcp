@@ -29,7 +29,7 @@
 | `vault_periodic_note` | Read or create a daily, weekly, monthly, quarterly, or yearly note at the path the vault's Obsidian config or an env template sets |
 | `vault_clip_url` | Save a web page to the vault as a markdown note |
 | `vault_skim` | Return only the parts of selected notes relevant to a goal, judged chunk by chunk by an external decision model; plans first and sends nothing until confirmed. Listed only when a decision-model key is set (see [Skimming notes](tools.md#skimming-notes)) |
-| `vault_semantic_search` | Search notes by meaning through a local [QMD](https://github.com/tobi/qmd) index, combining keyword and vector retrieval. Listed only when `QMD_URL` and `QMD_COLLECTION` are set (see [Semantic search with QMD](tools.md#semantic-search-with-qmd)) |
+| `vault_search_semantic` | Search notes by meaning through a local [QMD](https://github.com/tobi/qmd) index, combining keyword and vector retrieval. Listed only when `QMD_URL` and `QMD_COLLECTION` are set (see [Semantic search with QMD](tools.md#semantic-search-with-qmd)) |
 | `vault_cli_help` / `vault_cli` | List and run Obsidian CLI commands against this vault. Opt-in, and listed only when the CLI reaches this vault (see [Obsidian CLI tools](tools.md#obsidian-cli-tools)) |
 | `vault_feedback` | Log a structured note when an agent gets stuck or wants a tool that doesn't exist |
 
@@ -86,7 +86,7 @@ A chunk the model couldn't judge (a failed request, a malformed answer) is kept 
 
 ## Semantic search with QMD
 
-`vault_semantic_search` searches the vault through a [QMD](https://github.com/tobi/qmd) index that runs on the same machine as the server. QMD combines keyword (BM25) and vector retrieval and reranks the results with a local model. A call takes a plain `query`, which is searched both as keywords and as a question. For finer control, a call can pass typed sub-queries in `searches` instead: `lex` for keywords, `vec` for a natural-language question, and `hyde` for a short passage that reads like the answer. `folder` limits results to one folder. QMD ranks the whole collection first, so a narrow folder can return fewer results than `limit`. Results are structured: each item has the note's path, the matched line, its score, and an excerpt.
+`vault_search_semantic` searches the vault through a [QMD](https://github.com/tobi/qmd) index that runs on the same machine as the server. QMD combines keyword (BM25) and vector retrieval and reranks the results with a local model. A call takes a plain `query`, which is searched both as keywords and as a question. For finer control, a call can pass typed sub-queries in `searches` instead: `lex` for keywords, `vec` for a natural-language question, and `hyde` for a short passage that reads like the answer. `folder` limits results to one folder. QMD ranks the whole collection first, so a narrow folder can return fewer results than `limit`. Results are structured: each item has the note's path, the matched line, its score, and an excerpt.
 
 To enable it, run QMD's HTTP server (`qmd mcp --http`, on `localhost:8181` by default) and set `QMD_URL` to its address and `QMD_COLLECTION` to the QMD collection that indexes this vault. The server searches only that collection, so other collections on the same QMD index stay out of reach.
 
