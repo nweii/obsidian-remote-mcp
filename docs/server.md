@@ -56,7 +56,7 @@ The [quick start](../README.md#1-run-the-server) shows the startup settings. Set
 | `MCP_CLIENT_ALLOWED_REDIRECT_URIS` | no | Comma-separated OAuth callback URLs for the configured client. Replaces the built-in callbacks listed in [OAuth setup](configuration.md#oauth-browser-sign-in). |
 | `MCP_DCR_ENABLED` | no | `true` opens `/register` so clients that can't be pre-configured (e.g. ChatGPT) register themselves. The approval password stays the gate, so requires `APPROVAL_PASSWORD`. Default off. |
 | `MCP_DCR_ALLOWED_REDIRECT_URIS` | no | Allowed callbacks for self-registering clients. Accepts exact URLs or host-scoped patterns such as `https://host/*`. Setting it also enables DCR. |
-| `TOKEN_STORE_PATH` | no | Path to the persisted bearer token store. Defaults to `./tokens.json`. |
+| `TOKEN_STORE_PATH` | no | Path to the persisted bearer token store. Defaults to `./tokens.json`, relative to the working directory. See [keeping state across upgrades](#keeping-state-across-upgrades). |
 | `MCP_STATIC_BEARER_TOKEN` | no | API key sent as `Authorization: Bearer <value>`. Use a long random string over HTTPS. Works alongside OAuth. Calls are logged as `static-bearer`. |
 | `MCP_STATIC_BEARER_SCOPES` | no | Narrows `MCP_STATIC_BEARER_TOKEN`: a comma-separated list of the scopes it keeps (`vault:write`, `vault:cli`), or `none` for reading only. Unset gives full access. An unknown scope stops the server at startup. |
 
@@ -130,8 +130,19 @@ The Web Clipper interpreter uses its own settings export. Decision-model setting
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `LOG_ENABLED` | no | Set to `false` to disable tool-call logging and skip registering `vault_feedback`. Defaults to `true`. |
-| `LOG_DIR` | no | Directory for JSONL logs (`tool-calls.jsonl`, `feedback.jsonl`). Defaults to `./logs`. Created on first write. Skipped when `VAULT_MCP_TEST=1` or `LOG_ENABLED=false`. |
+| `LOG_DIR` | no | Directory for JSONL logs (`tool-calls.jsonl`, `feedback.jsonl`). Defaults to `./logs`, relative to the working directory. Created on first write. Skipped when `VAULT_MCP_TEST=1` or `LOG_ENABLED=false`. See [keeping state across upgrades](#keeping-state-across-upgrades). |
 | `HEALTH_TOKEN` | no | Token for `GET /health`, sent as `Authorization: Bearer YOUR_HEALTH_TOKEN`. Unset returns `404`. Separate from client credentials. See [health monitoring](#health-endpoint). |
+
+### Keeping state across upgrades
+
+If you run the server from a folder you replace on upgrade, set `LOG_DIR` and `TOKEN_STORE_PATH` to paths outside it, or each upgrade loses its logs and every OAuth sign-in.
+
+The defaults suit a git checkout updated in place (both paths are gitignored) and the Docker setup, where the repo is mounted at a fixed path. A deployment that unpacks each version into its own release folder and switches a link to the current one needs explicit paths, for example:
+
+```bash
+export LOG_DIR=/srv/obsidian-remote-mcp/state/logs
+export TOKEN_STORE_PATH=/srv/obsidian-remote-mcp/state/tokens.json
+```
 
 ## Request handling
 
