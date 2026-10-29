@@ -102,6 +102,22 @@ async function contentHoldingDocid(relPath: string, docid: string | undefined): 
   return docidOf(content) === wanted ? content : null;
 }
 
+// A plain query searched as keywords and as a question. QMD's lex syntax reads `"` as a phrase and
+// rejects one left open, so an unbalanced quote is dropped from the keyword half; the question half
+// keeps the text as written.
+export function plainQuerySearches(query: string): QmdSearch[] {
+  const quotes = query.split('"').length - 1;
+  const lex = quotes % 2 === 0 ? query : query.replaceAll('"', " ").replace(/\s+/g, " ").trim();
+  return [{ type: "lex", query: lex }, { type: "vec", query }];
+}
+
+// QMD's error body isn't passed on: it can carry host paths or indexed text, and this message reaches
+// the client and the audit log. A typed lex query is the usual cause, so the message names that.
+function lexHint(searches: QmdSearch[]): string {
+  if (!searches.some(s => s.type === "lex")) return "";
+  return '. A lex sub-query with an unclosed " or other invalid keyword syntax can cause this; check the typed searches';
+}
+
 export type Fetcher = (url: string, init: RequestInit) => Promise<Response>;
 
 // A failure talking to QMD. Its message is written here, never copied from the filesystem.
@@ -144,7 +160,7 @@ export async function semanticSearch(
       }),
       signal: controller.signal,
     });
-    if (!res.ok) throw new QmdError(`QMD returned HTTP ${res.status}`);
+    if (!res.ok) throw new QmdError(`QMD returned HTTP ${res.status}${lexHint(request.searches)}`);
     body = await res.json() as { results?: QmdResult[] };
   } catch (e) {
     if (e instanceof QmdError) throw e;
@@ -227,7 +243,7 @@ export function registerQmdTool(server: McpServer, options: { config?: QmdConfig
       outputSchema: semanticSearchOutput,
     },
     async ({ query, searches, folder, limit, intent, rerank }) => {
-      const typed = searches ?? (query ? [{ type: "lex" as const, query }, { type: "vec" as const, query }] : undefined);
+      const typed = searches ?? (query ? plainQuerySearches(query) : undefined);
       if (!typed) return { content: [{ type: "text" as const, text: "Error: pass query or searches." }], isError: true };
       try {
         const result = await semanticSearch(config, { searches: typed, limit, intent, rerank, folder }, options.fetcher);
