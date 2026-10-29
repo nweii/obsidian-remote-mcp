@@ -37,7 +37,7 @@ export function loadQmdConfig(env: NodeJS.ProcessEnv = process.env): QmdConfig |
 
 // --- QMD's path normalization ------------------------------------------------------
 
-// QMD releases before 2.6 stored each document under a normalized path ("handelize" in QMD's store.js):
+// QMD 2.5 and earlier stored each document under a normalized path ("handelize" in QMD's store.js):
 // emoji become hex code points, runs of anything but letters, numbers and "$" become "-", and "___"
 // becomes a folder separator. Their results carry that form, so vault paths are normalized the same way.
 function emojiToHex(segment: string): string {
