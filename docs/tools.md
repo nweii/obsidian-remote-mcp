@@ -76,7 +76,7 @@ Exclusions apply together. A call can add exclusions but cannot override the ser
 - `SKIM_EXCLUDE_TAGS` and `SKIM_EXCLUDE_PATHS` apply to every skim call.
 - `exclude_tags` and `exclude_paths` add exclusions for one call.
 
-Use comma-separated tags and paths for the server settings. `private` matches only `#private`. `work/*` matches `#work` and all nested tags. Tags are read from frontmatter and inline `#tag`.
+Use comma-separated tags and paths for the server settings. `private` matches only `#private`. `work/*` matches `#work` and all nested tags. Tags are read from frontmatter and inline `#tag`. When a tag rule applies and a note's frontmatter isn't valid YAML, its tags can't be checked, so the note is withheld with that reason.
 
 Path rules use [`.mcpignore` syntax](#exclude-paths-with-mcpignore) and cover each matching path and its contents. For example, `**/Private` excludes every `Private` folder.
 
@@ -251,9 +251,11 @@ An unquoted ISO date parsed by js-yaml as a `Date` is matched by its UTC `YYYY-M
 
 The search walks notes and parses frontmatter for each request. Searches and indices share `walkVaultFiles`, which applies the [vault access policy](vault-access-policy.md) and reads `.md` files by default.
 
+A note whose frontmatter isn't valid YAML doesn't stop the search. The note is skipped, and the response lists it under `skipped` with its path, the parse reason, and the line when known; the text output ends with the same list. The reason never quotes the note's text. `vault_tags` skips such notes the same way, counting none of their tags. Only notes the access policy allows are scanned, so a hidden or ignored note never appears in `skipped`.
+
 ### Batch operations
 
-`vault_batch_read` resolves paths and titles like `vault_read`. Unresolved entries appear under `missing` without failing the other reads. Set `include_content: false` to return only frontmatter.
+`vault_batch_read` resolves paths and titles like `vault_read`. Unresolved entries, and notes whose frontmatter can't be parsed, appear under `missing` without failing the other reads. Set `include_content: false` to return only frontmatter.
 
 `vault_batch_frontmatter_update` applies each note's fields in one locked read-modify-write through `setFrontmatterProperties`. `setFrontmatterProperty` delegates to the same function.
 

@@ -1434,6 +1434,35 @@ export interface FrontmatterSearchOptions {
   limit?: number;                    // max matching notes; default 20, 0 = no limit
 }
 
+// A note a vault-wide scan passed over because its frontmatter isn't valid YAML. Carries the
+// sanitized reason and line from FrontmatterParseError, never the note's text. Scans only reach
+// notes the access policy allows, so a hidden or ignored note never appears here.
+export interface SkippedNote {
+  path: string;
+  reason: string;
+  line?: number;
+}
+
+function skippedNote(relPath: string, error: FrontmatterParseError): SkippedNote {
+  return { path: relPath, reason: error.reason, ...(error.line !== undefined ? { line: error.line } : {}) };
+}
+
+// Parse a scanned note's frontmatter, recording it in `skipped` instead of throwing when the YAML
+// is malformed, so one bad note never ends a vault-wide scan. Returns undefined for a skipped note.
+function scanFrontmatter(
+  content: string,
+  relPath: string,
+  skipped: SkippedNote[],
+): Record<string, unknown> | null | undefined {
+  try {
+    return parseFrontmatter(content);
+  } catch (e) {
+    if (!(e instanceof FrontmatterParseError)) throw e;
+    skipped.push(skippedNote(relPath, e));
+    return undefined;
+  }
+}
+
 export interface FrontmatterSearchResult {
   path: string;                          // vault-relative path
   title: string;                         // frontmatter title, else filename without .md
@@ -1444,14 +1473,15 @@ export interface FrontmatterSearchResult {
 // vault (or a folder) once, parsing each note's frontmatter — stateless, no persistent index, so
 // it stays consistent with the per-request server. Uses the shared walkVaultFiles traversal (skips
 // dotfiles, honours .mcpignore, reads only .md). Notes without frontmatter, or without `field`, are
-// skipped before the predicate runs.
+// skipped before the predicate runs; notes with malformed frontmatter are listed in `skipped`.
 export async function searchFrontmatter(
   field: string,
   options: FrontmatterSearchOptions = {},
-): Promise<FrontmatterSearchResult[]> {
+): Promise<{ items: FrontmatterSearchResult[]; skipped: SkippedNote[] }> {
   const { value, matchType = 'exact', folder, limit = 20 } = options;
   const maxResults = limit > 0 ? limit : Number.POSITIVE_INFINITY;
   const results: FrontmatterSearchResult[] = [];
+  const skipped: SkippedNote[] = [];
 
   for await (const { fullPath, relPath } of walkVaultFiles({ folder })) {
     if (results.length >= maxResults) break;
@@ -1461,7 +1491,7 @@ export async function searchFrontmatter(
     } catch {
       continue; // skip unreadable files (e.g. permission denied)
     }
-    const frontmatter = parseFrontmatter(content);
+    const frontmatter = scanFrontmatter(content, relPath, skipped);
     if (!frontmatter || !(field in frontmatter)) continue;
     if (!frontmatterValueMatches(frontmatter[field], matchType, value)) continue;
     const titleValue = frontmatter.title;
@@ -1471,7 +1501,7 @@ export async function searchFrontmatter(
         : path.basename(relPath, '.md');
     results.push({ path: relPath, title, frontmatter });
   }
-  return results;
+  return { items: results, skipped };
 }
 
 export interface FindResult {
@@ -1962,8 +1992,7 @@ function extractInlineTags(body: string): string[] {
 // tag (case-insensitive) is counted once for note-presence and once per raw
 // occurrence. Returns the raw (display-cased) tag strings so the caller can
 // aggregate first-seen casing across notes.
-function collectNoteTags(content: string): string[] {
-  const frontmatter = parseFrontmatter(content);
+function collectNoteTags(content: string, frontmatter = parseFrontmatter(content)): string[] {
   const { body } = splitFrontmatter(content);
   return [...extractFrontmatterTags(frontmatter), ...extractInlineTags(body)];
 }
@@ -1993,10 +2022,13 @@ interface TagAggregate {
 
 // Single pass over the vault (or a folder) via the shared walkVaultFiles traversal, reading each
 // note once and aggregating tag counts in memory. Returns the per-tag aggregate keyed by lowercased
-// tag.
-async function scanTags(options: TagScanOptions = {}): Promise<Map<string, TagAggregate>> {
+// tag, and the notes skipped for malformed frontmatter (none of their tags, inline or not, count).
+async function scanTags(
+  options: TagScanOptions = {},
+): Promise<{ aggregates: Map<string, TagAggregate>; skipped: SkippedNote[] }> {
   const { folder } = options;
   const aggregates = new Map<string, TagAggregate>();
+  const skipped: SkippedNote[] = [];
 
   for await (const { fullPath, relPath } of walkVaultFiles({ folder })) {
     let content: string;
@@ -2005,10 +2037,12 @@ async function scanTags(options: TagScanOptions = {}): Promise<Map<string, TagAg
     } catch {
       continue; // skip unreadable files (e.g. permission denied)
     }
+    const frontmatter = scanFrontmatter(content, relPath, skipped);
+    if (frontmatter === undefined) continue;
     // Per-note dedupe so one note carrying `#a` twice counts as one note for
     // noteCount but two for occurrences. Keyed by lowercased tag.
     const seenInNote = new Set<string>();
-    for (const tag of collectNoteTags(content)) {
+    for (const tag of collectNoteTags(content, frontmatter)) {
       const key = tag.toLowerCase();
       let agg = aggregates.get(key);
       if (!agg) {
@@ -2022,14 +2056,16 @@ async function scanTags(options: TagScanOptions = {}): Promise<Map<string, TagAg
       }
     }
   }
-  return aggregates;
+  return { aggregates, skipped };
 }
 
 // All tags in the vault (or a folder), sorted by note count descending then
 // tag name. Counts are case-insensitive; the displayed tag is the first-seen
 // casing.
-export async function getAllTags(options: TagScanOptions = {}): Promise<TagCount[]> {
-  const aggregates = await scanTags(options);
+export async function getAllTags(
+  options: TagScanOptions = {},
+): Promise<{ tags: TagCount[]; skipped: SkippedNote[] }> {
+  const { aggregates, skipped } = await scanTags(options);
   const counts: TagCount[] = [];
   for (const agg of aggregates.values()) {
     counts.push({ tag: agg.display, noteCount: agg.notePaths.length, occurrences: agg.occurrences });
@@ -2038,16 +2074,19 @@ export async function getAllTags(options: TagScanOptions = {}): Promise<TagCount
     if (b.noteCount !== a.noteCount) return b.noteCount - a.noteCount;
     return a.tag.localeCompare(b.tag, undefined, { sensitivity: 'base' });
   });
-  return counts;
+  return { tags: counts, skipped };
 }
 
 // Note paths carrying a specific tag (case-insensitive, exact match — querying
 // `parent` does not match `parent/child`). A leading `#` on the query is
 // ignored. Paths are returned in walk order (sorted by directory read).
-export async function getNotesByTag(tag: string, options: TagScanOptions = {}): Promise<string[]> {
+export async function getNotesByTag(
+  tag: string,
+  options: TagScanOptions = {},
+): Promise<{ paths: string[]; skipped: SkippedNote[] }> {
   const key = tag.trim().replace(/^#/, '').toLowerCase();
-  const aggregates = await scanTags(options);
-  return aggregates.get(key)?.notePaths ?? [];
+  const { aggregates, skipped } = await scanTags(options);
+  return { paths: aggregates.get(key)?.notePaths ?? [], skipped };
 }
 
 // --- Reference rewriting on move/rename --------------------------------------
