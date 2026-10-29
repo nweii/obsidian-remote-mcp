@@ -51,7 +51,7 @@ test('all discovery paths exclude glob matches', async () => {
   expect((await vault.searchContent('keyword')).map(hit => hit.path)).toEqual(['Notes/Open.md']);
   expect(await vault.searchFilename('\\.md$')).toEqual(['Notes/Open.md']);
   expect((await vault.findByTitle('Secret')).map(hit => hit.path)).toEqual([]);
-  expect(await vault.getNotesByTag('topic')).toEqual(['Notes/Open.md']);
+  expect((await vault.getNotesByTag('topic')).paths).toEqual(['Notes/Open.md']);
   expect((await vault.listVaultFolder('Notes')).map(entry => entry.path)).toEqual(['Notes/Open.md']);
   expect(await vault.getFolderTree(3)).toEqual(['- Notes/']);
   await expect(vault.resolveNoteReference('Secret')).rejects.toThrow(/Could not resolve/);

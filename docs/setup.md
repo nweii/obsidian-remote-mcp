@@ -55,6 +55,20 @@ docker compose up -d      # start in background
 docker compose logs -f    # watch output
 ```
 
+## Upgrade
+
+For a git checkout, pull the new version, reinstall from the lockfile, and restart the server.
+
+```bash
+git pull
+bun install --frozen-lockfile
+bun run src/server.ts
+```
+
+If you use URL clipping, run `bun run setup:clipper` again before restarting. With Docker, run the install through `docker compose run` as above, then `docker compose restart obsidian-remote-mcp`.
+
+If you run the server from a folder you replace on upgrade, set `LOG_DIR` and `TOKEN_STORE_PATH` to paths outside it, or each upgrade loses its logs and every OAuth sign-in. See [keeping state across upgrades](server.md#keeping-state-across-upgrades).
+
 ## Install optional URL clipping
 
 Install from the committed lockfile with `bun install --frozen-lockfile`. If you do not use URL clipping, omit its dependencies on a fresh installation.

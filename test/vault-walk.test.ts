@@ -47,7 +47,7 @@ describe('.mcpignore is honoured uniformly across the shared walk', () => {
   test('getNotesByTag (tag scan) excludes ignored notes', async () => {
     await writeFile(path.join(vaultPath, 'public.md'), '---\n---\n#topic body\n', 'utf-8');
     await writeFile(path.join(vaultPath, 'private', 'secret.md'), '---\n---\n#topic body\n', 'utf-8');
-    const notes = await vault.getNotesByTag('topic');
+    const notes = (await vault.getNotesByTag('topic')).paths;
     expect(notes).toEqual(['public.md']);
   });
 });
