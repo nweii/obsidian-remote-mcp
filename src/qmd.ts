@@ -227,7 +227,14 @@ export function registerQmdTool(server: McpServer, options: { config?: QmdConfig
       outputSchema: semanticSearchOutput,
     },
     async ({ query, searches, folder, limit, intent, rerank }) => {
-      const typed = searches ?? (query ? [{ type: "lex" as const, query }, { type: "vec" as const, query }] : undefined);
+      // Blank text would match arbitrary notes, so it is refused before QMD is asked.
+      const plain = query?.trim();
+      const trimmed = searches?.map(s => ({ type: s.type, query: s.query.trim() }));
+      const blank = trimmed?.findIndex(s => s.query === "") ?? -1;
+      if (blank !== -1) {
+        return { content: [{ type: "text" as const, text: `Error: searches[${blank}].query is blank. Give each sub-query some words.` }], isError: true };
+      }
+      const typed = trimmed ?? (plain ? [{ type: "lex" as const, query: plain }, { type: "vec" as const, query: plain }] : undefined);
       if (!typed) return { content: [{ type: "text" as const, text: "Error: pass query or searches." }], isError: true };
       try {
         const result = await semanticSearch(config, { searches: typed, limit, intent, rerank, folder }, options.fetcher);
