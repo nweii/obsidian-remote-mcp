@@ -94,20 +94,18 @@ export interface SemanticSearchRequest {
 interface QmdResult {
   docid?: string;
   file: string;
-  title?: string;
   score?: number;
   line?: number;
-  snippet?: string;
 }
 
 export interface SemanticSearchHit {
   path: string;
   // Other readable notes at the same QMD path with identical content.
   also?: string[];
-  title?: string;
   score?: number;
   line?: number;
-  snippet?: string;
+  // Lines around the best match, taken from the readable note itself.
+  excerpt: string;
 }
 
 export interface SemanticSearchResult {
@@ -122,13 +120,13 @@ function docidOf(content: string): string {
   return createHash("sha256").update(content).digest("hex").slice(0, 6);
 }
 
-// The readable notes at this QMD path whose current content is what QMD indexed. A path match alone
-// isn't enough: an excluded note can normalize to the same QMD path as a readable one, and the result's
-// snippet would then come from the excluded note.
-async function notesHoldingDocid(paths: string[], docid: string | undefined): Promise<string[]> {
+// The readable notes at this QMD path whose current content is what QMD indexed, so stale results are
+// withheld. Six hex characters can collide, so nothing QMD returns about the document's text (title,
+// snippet) is passed on: an excluded note can share a readable note's QMD path, and its text would leak.
+async function notesHoldingDocid(paths: string[], docid: string | undefined): Promise<{ path: string; content: string }[]> {
   const wanted = docid?.replace(/^#/, "").toLowerCase();
   if (!wanted || !/^[0-9a-f]{6}$/.test(wanted)) return [];
-  const matches: string[] = [];
+  const matches: { path: string; content: string }[] = [];
   for (const relPath of paths) {
     let content: string;
     try {
@@ -137,7 +135,7 @@ async function notesHoldingDocid(paths: string[], docid: string | undefined): Pr
       if (vault.isVaultError(e)) continue;
       throw e;
     }
-    if (docidOf(content) === wanted) matches.push(relPath);
+    if (docidOf(content) === wanted) matches.push({ path: relPath, content });
   }
   return matches;
 }
@@ -200,30 +198,38 @@ export async function semanticSearch(
   for (const r of body.results ?? []) {
     const relPath = pathInCollection(r.file, config.collection);
     const candidates = relPath !== null ? index.get(relPath) : undefined;
-    const paths = candidates ? await notesHoldingDocid(candidates, r.docid) : [];
-    if (paths.length === 0) {
+    const notes = candidates ? await notesHoldingDocid(candidates, r.docid) : [];
+    if (notes.length === 0) {
       withheld++;
       continue;
     }
-    const [first, ...rest] = paths as [string, ...string[]];
+    const [first, ...rest] = notes as [{ path: string; content: string }, ...{ path: string; content: string }[]];
     results.push({
-      path: first,
-      ...(rest.length ? { also: rest } : {}),
-      title: r.title,
+      path: first.path,
+      ...(rest.length ? { also: rest.map(n => n.path) } : {}),
       score: r.score,
       line: r.line,
-      snippet: r.snippet,
+      excerpt: excerptAt(first.content, r.line),
     });
   }
   return { results, withheld };
+}
+
+const EXCERPT_LINES = 3;
+
+// The line QMD matched and the two after it, numbered, from content this server read itself.
+function excerptAt(content: string, line: number | undefined): string {
+  const lines = content.split("\n");
+  const start = Number.isInteger(line) && line! >= 1 && line! <= lines.length ? line! - 1 : 0;
+  return lines.slice(start, start + EXCERPT_LINES).map((text, i) => `${start + i + 1}: ${text}`).join("\n");
 }
 
 function formatResults({ results, withheld }: SemanticSearchResult): string {
   const lines = results.map((r, i) => {
     const head = `${i + 1}. ${r.path}${r.line ? `:${r.line}` : ""}${r.score !== undefined ? ` (score ${r.score})` : ""}`;
     const also = r.also ? `\n   Same content at: ${r.also.join(", ")}` : "";
-    const snippet = r.snippet ? `\n${r.snippet.split("\n").map(l => `   ${l}`).join("\n")}` : "";
-    return head + also + snippet;
+    const excerpt = r.excerpt ? `\n${r.excerpt.split("\n").map(l => `   ${l}`).join("\n")}` : "";
+    return head + also + excerpt;
   });
   const note = withheld ? `\n\n${withheld} result(s) withheld: from notes this server can't read, or changed since QMD indexed them.` : "";
   return (lines.length ? lines.join("\n\n") : "No results.") + note;
@@ -249,7 +255,7 @@ export function registerQmdTool(server: McpServer, options: { config?: QmdConfig
         "Use it when the wording in the notes is unknown or a concept matters more than exact terms; use vault_search_content for exact text or regex. " +
         "Each search is a typed sub-query: lex = keywords (supports \"quoted phrases\" and -negation), vec = a natural-language question, hyde = a 50-100 word passage that reads like the answer. " +
         "The first sub-query weighs double. lex + vec gives the best recall. " +
-        "Results are vault paths with the best-matching line and a snippet; read more with vault_read or vault_read_section.",
+        "Results are vault paths with the best-matching line and the lines after it; read more with vault_read or vault_read_section.",
       inputSchema: z.object({
         searches: z.array(z.object({
           type: z.enum(["lex", "vec", "hyde"]),

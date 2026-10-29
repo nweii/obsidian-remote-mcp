@@ -13,11 +13,12 @@ const config: QmdConfig = { url: 'http://127.0.0.1:8181', collection: 'brain', t
 
 const docid = (content: string) => `#${createHash('sha256').update(content).digest('hex').slice(0, 6)}`;
 
-// Each hit is a QMD path plus the content QMD indexed for it, which sets the docid.
-function fakeQmd(hits: [file: string, content: string][], calls: { url: string; body: any }[] = []): Fetcher {
+// Each hit is a QMD path plus the content QMD indexed for it, which sets the docid. QMD's title and
+// snippet carry the indexed content, so a test can check that none of it is passed on.
+function fakeQmd(hits: [file: string, content: string, docidOverride?: string][], calls: { url: string; body: any }[] = []): Fetcher {
   return async (url, init) => {
     calls.push({ url, body: JSON.parse(String(init.body)) });
-    const results = hits.map(([file, content], i) => ({ docid: docid(content), file, title: file, score: 0.9 - i / 10, line: 3, snippet: `3: hit ${i}` }));
+    const results = hits.map(([file, content, override], i) => ({ docid: override ?? docid(content), file, title: content, score: 0.9 - i / 10, line: 3, snippet: `3: ${content}` }));
     return new Response(JSON.stringify({ results }), { status: 200, headers: { 'Content-Type': 'application/json' } });
   };
 }
@@ -102,7 +103,7 @@ describe('semanticSearch', () => {
       ['brain/Gone.md', 'gone\n'],
     ];
     const { results, withheld } = await semanticSearch(config, { searches: [{ type: 'lex', query: 'plan' }], limit: 10 }, fakeQmd(hits));
-    expect(results).toEqual([{ path: 'Projects/Mac mini plan.md', title: hits[0]![0], score: 0.9, line: 3, snippet: '3: hit 0' }]);
+    expect(results).toEqual([{ path: 'Projects/Mac mini plan.md', score: 0.9, line: 3, excerpt: '3: move services\n4: ' }]);
     expect(withheld).toBe(4);
   });
 
@@ -122,8 +123,15 @@ describe('semanticSearch', () => {
     ];
     const { results, withheld } = await semanticSearch(config, { searches: [{ type: 'lex', query: 'draft' }], limit: 10 }, fakeQmd(hits));
     expect(results.map(r => r.path)).toEqual(['Projects/Secret-draft.md']);
-    expect(results[0]!.snippet).toBe('3: hit 1');
     expect(withheld).toBe(1);
+  });
+
+  test('never passes on QMD text when an excluded note collides on path and docid', async () => {
+    process.env.VAULT_PATH = vaultPath;
+    const { results } = await semanticSearch(config, { searches: [{ type: 'lex', query: 'draft' }], limit: 10 },
+      fakeQmd([['brain/Projects/Secret-draft.md', 'private draft\n', docid('public draft\n')]]));
+    expect(results.map(r => r.path)).toEqual(['Projects/Secret-draft.md']);
+    expect(JSON.stringify(results)).not.toContain('private');
   });
 
   test('withholds a result whose note changed since QMD indexed it', async () => {
