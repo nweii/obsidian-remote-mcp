@@ -74,7 +74,11 @@ beforeAll(async () => {
 
   const appMod = await import('../src/app.js');
   vault = await import('../src/vault.js');
-  createApp = appMod.createApp;
+  // These tests run the server's own OAuth, which always builds an auth instance.
+  createApp = () => {
+    const built = appMod.createApp();
+    return { app: built.app, auth: built.auth! };
+  };
 });
 
 afterAll(async () => {

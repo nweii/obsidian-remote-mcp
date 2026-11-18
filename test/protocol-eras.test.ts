@@ -55,7 +55,7 @@ beforeAll(async () => {
   process.env.MCP_BASE_URL = base;
   const { createApp } = await import('../src/app.ts');
   const built = createApp();
-  auth = built.auth;
+  auth = built.auth!;
   await new Promise<void>((resolve) => {
     server = built.app.listen(port, '127.0.0.1', () => resolve());
   });

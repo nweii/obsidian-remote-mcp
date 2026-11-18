@@ -8,7 +8,7 @@ import path from "node:path";
 import { z } from "zod";
 import * as vault from "./vault.js";
 import { logToolCall, type ToolResult } from "./log.js";
-import { CLI_LABEL, CLI_SCOPE, connectionGranted, readOnlyReason, serverReadOnly } from "./access.js";
+import { accessModeEnabled, CLI_LABEL, CLI_SCOPE, connectionGranted, grantAdvice, readOnlyReason, serverReadOnly } from "./access.js";
 
 const TIMEOUT_MS = 30_000;
 const PROBE_TIMEOUT_MS = 10_000;
@@ -77,7 +77,7 @@ function paletteAllowlist(): string[] {
 function connectionRefusal(): string | null {
   return connectionGranted(CLI_SCOPE)
     ? null
-    : `This connection was approved without "${CLI_LABEL}". To use Obsidian CLI commands, reconnect and tick "${CLI_LABEL}".`;
+    : `This connection ${accessModeEnabled() ? 'has no vault:cli in ACCESS_SCOPES' : `was approved without "${CLI_LABEL}"`}. ${grantAdvice(CLI_SCOPE, CLI_LABEL, 'use Obsidian CLI commands')}`;
 }
 
 // Whether a command may run under the current mode, ignoring its arguments. Shared by the help

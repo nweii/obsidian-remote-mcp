@@ -38,7 +38,7 @@ The [quick start](../README.md#1-run-the-server) shows the startup settings. Set
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `MCP_CLIENT_ID` | yes | OAuth client ID |
+| `MCP_CLIENT_ID` | yes* | OAuth client ID. Not used with `MCP_AUTH=access`. |
 | `MCP_BASE_URL` | yes (prod) | Public **site** URL (scheme + host, no `/mcp`). Used in OAuth discovery as the protected `resource` |
 | `VAULT_PATH` | no | Absolute vault root; overrides Obsidian config when set |
 | `OBSIDIAN_VAULT_ID` | when multiple vaults | Which `vaults` entry in `obsidian.json` to use (matches id case-insensitively) |
@@ -59,6 +59,15 @@ The [quick start](../README.md#1-run-the-server) shows the startup settings. Set
 | `TOKEN_STORE_PATH` | no | Path to the persisted bearer token store. Defaults to `./tokens.json`, relative to the working directory. See [keeping state across upgrades](#keeping-state-across-upgrades). |
 | `MCP_STATIC_BEARER_TOKEN` | no | API key sent as `Authorization: Bearer <value>`. Use a long random string over HTTPS. Works alongside OAuth. Calls are logged as `static-bearer`. |
 | `MCP_STATIC_BEARER_SCOPES` | no | Narrows `MCP_STATIC_BEARER_TOKEN`: a comma-separated list of the scopes it keeps (`vault:write`, `vault:cli`), or `none` for reading only. Unset gives full access. An unknown scope stops the server at startup. |
+
+### Cloudflare Access
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `MCP_AUTH` | no | `access` lets [Cloudflare Access](configuration.md#cloudflare-access) sign connections in instead of the server's own OAuth. The sign-in settings above then don't apply. Default unset. |
+| `ACCESS_TEAM_DOMAIN` | with `MCP_AUTH=access` | Zero Trust team domain, such as `myteam.cloudflareaccess.com`. |
+| `ACCESS_AUD` | with `MCP_AUTH=access` | The Access application's audience (AUD) tag. |
+| `ACCESS_SCOPES` | no | What every connection may do: a comma-separated list (`vault:write`, `vault:cli`), or `none` for reading only. Unset gives both. An unknown scope stops the server at startup. |
 
 ### Access restrictions
 
