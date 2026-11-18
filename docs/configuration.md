@@ -4,7 +4,7 @@
 
 ## Authentication
 
-Clients authenticate with browser OAuth or an API key. Every `POST /mcp` request must include `Authorization: Bearer …`.
+Clients authenticate with browser OAuth or an API key. Every `POST /mcp` request must include `Authorization: Bearer …`. Alternatively, [Cloudflare Access](#cloudflare-access) can run sign-in in front of the server.
 
 ### OAuth (browser sign-in)
 
@@ -105,6 +105,18 @@ Both permissions are selected by default. With `VAULT_READ_ONLY=true`, no connec
 A connection keeps the permissions you approved. To change them, including after enabling editing or CLI tools on the server, approve the connection again. Connections approved before these permission choices existed keep full access.
 
 A connection approved without **Edit notes** does not see write-only tools. Tools that can both read and write remain listed but refuse writes.
+
+### Cloudflare Access
+
+If the server sits behind a Cloudflare Tunnel, Cloudflare Access can run sign-in instead of the server. Access registers each client, shows its own sign-in and consent pages, and issues and refreshes tokens. The server keeps no token store, approval page or password. It checks the signed identity Access forwards on each request, and refuses anything without it.
+
+1. In Cloudflare Zero Trust, protect the server's whole hostname with a self-hosted Access application. Under **Advanced settings**, turn on **Managed OAuth** and allow your clients' redirect URIs. For claude.ai, those are `https://claude.ai/api/mcp/auth_callback` and `https://claude.com/api/mcp/auth_callback`.
+2. Copy the application's audience (AUD) tag.
+3. Set `MCP_AUTH=access`, `ACCESS_TEAM_DOMAIN` (such as `myteam.cloudflareaccess.com`) and `ACCESS_AUD`. The OAuth settings (`MCP_CLIENT_ID`, `APPROVAL_PASSWORD` and the rest) no longer apply.
+
+Every connection gets the same permissions, set with `ACCESS_SCOPES`. It defaults to both (`vault:write,vault:cli`); use `none` for read-only connections. `VAULT_READ_ONLY` still applies on top. Revoke a connection from the Access dashboard.
+
+Clients must connect through the Access hostname. A request that reaches the server another way, such as over a private network address, carries no Access identity and is refused.
 
 ## Environment variables
 

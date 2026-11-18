@@ -36,6 +36,6 @@ startServer({
     console.log(`obsidian-remote-mcp listening on port ${PORT} (bind ${HOST ?? '0.0.0.0'})`);
     void logCliAvailability().catch(err => console.error(`[obsidian-remote-mcp] vault_cli availability check failed: ${err instanceof Error ? err.message : String(err)}`));
   },
-  // Persist tokens on clean shutdown so they survive container restarts.
-  onShutdown: () => auth.saveTokens(),
+  // Persist tokens on clean shutdown so they survive container restarts. Behind Access there are none.
+  onShutdown: () => auth?.saveTokens(),
 });

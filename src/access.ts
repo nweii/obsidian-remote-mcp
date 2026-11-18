@@ -1,6 +1,7 @@
 // ABOUTME: What each connection may do. Server settings set the limit for every connection; the
 // choices made on the approval page when a connection was approved can only narrow it. Defines the
 // two scopes the approval page offers and answers whether the current request's connection holds one.
+// Behind Cloudflare Access there is no approval page, and ACCESS_SCOPES sets what every connection holds.
 import { currentCaller } from 'mcp-server-kit';
 import type { ScopeDefinition } from 'mcp-server-kit';
 
@@ -36,6 +37,32 @@ export function accessScopes(cliEnabled: () => boolean): ScopeDefinition[] {
   ];
 }
 
+// MCP_AUTH=access: Cloudflare Access signs connections in instead of the server's own OAuth.
+export function accessModeEnabled(): boolean {
+  return process.env.MCP_AUTH?.trim().toLowerCase() === 'access';
+}
+
+// ACCESS_SCOPES: unset for every scope, "none" for none, or a comma-separated list. Read once at
+// startup; an unknown scope stops the server, as one in MCP_STATIC_BEARER_SCOPES does.
+export function accessModeScopes(): string[] {
+  const value = process.env.ACCESS_SCOPES?.trim();
+  if (!value) return [WRITE_SCOPE, CLI_SCOPE];
+  if (value.toLowerCase() === 'none') return [];
+  const scopes = value.split(',').map(s => s.trim()).filter(Boolean);
+  const unknown = scopes.filter(s => s !== WRITE_SCOPE && s !== CLI_SCOPE);
+  if (unknown.length) {
+    throw new Error(`ACCESS_SCOPES has unknown scope ${unknown.join(', ')}; use ${WRITE_SCOPE}, ${CLI_SCOPE} or none`);
+  }
+  return scopes;
+}
+
+// How a connection without `scope` gets it: reapproval under the server's own OAuth, a setting
+// behind Access.
+export function grantAdvice(scope: string, label: string, purpose: string): string {
+  if (accessModeEnabled()) return `To ${purpose}, the server owner adds ${scope} to ACCESS_SCOPES.`;
+  return `To ${purpose}, reconnect and tick "${label}".`;
+}
+
 // VAULT_READ_ONLY=true: no connection may write.
 export function serverReadOnly(): boolean {
   return process.env.VAULT_READ_ONLY === 'true';
@@ -52,7 +79,8 @@ export function connectionGranted(scope: string): boolean {
 export function readOnlyReason(): string | null {
   if (serverReadOnly()) return 'Vault is in read-only mode (VAULT_READ_ONLY=true)';
   if (!connectionGranted(WRITE_SCOPE)) {
-    return `This connection is read-only: it was approved without "${WRITE_LABEL}". To allow edits, reconnect and tick "${WRITE_LABEL}".`;
+    const cause = accessModeEnabled() ? 'ACCESS_SCOPES leaves out vault:write' : `it was approved without "${WRITE_LABEL}"`;
+    return `This connection is read-only: ${cause}. ${grantAdvice(WRITE_SCOPE, WRITE_LABEL, 'allow edits')}`;
   }
   return null;
 }

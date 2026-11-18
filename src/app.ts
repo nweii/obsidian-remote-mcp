@@ -1,14 +1,15 @@
 // ABOUTME: Assembles the obsidian-remote-mcp server from the shared mcp-server-kit (CORS, request
 // logging, a bearer-gated /health with a vault-liveness probe, the Claude-facing OAuth surface, and
 // the stateless /mcp mount) and registers the vault tools. createApp() returns the Express app plus
-// the auth instance, whose saveTokens() the entry point persists on shutdown.
+// the auth instance, whose saveTokens() the entry point persists on shutdown. With MCP_AUTH=access,
+// Cloudflare Access signs connections in instead and there is no auth instance.
 import express, { type Express } from 'express';
 import { stat } from 'fs/promises';
-import { createApp as createKitApp, createAuth } from 'mcp-server-kit';
+import { createAccessAuth, createApp as createKitApp, createAuth } from 'mcp-server-kit';
 import type { Auth } from 'mcp-server-kit';
 import { getVaultRoot, getVaultDisplayName } from './vault.js';
 import { registerTools } from './tools.js';
-import { accessScopes, SCOPES_PROMPT, staticBearerScopes } from './access.js';
+import { accessModeEnabled, accessModeScopes, accessScopes, SCOPES_PROMPT, staticBearerScopes } from './access.js';
 import { cliEnabled } from './cli.js';
 import pkg from '../package.json' with { type: 'json' };
 
@@ -42,18 +43,9 @@ function getAllowedOrigins(baseUrl: string): string[] | null {
   return [...new Set(env.split(',').map(origin => parseOrigin(origin.trim(), 'CORS_ALLOWED_ORIGINS')))];
 }
 
-// Builds the server. Returns the app and its auth instance; the entry point persists tokens via
-// auth.saveTokens() on shutdown. createAuth throws at construction when /authorize is unguarded, so a
-// misconfigured deployment fails fast rather than booting exposed.
-export function createApp(): { app: Express; auth: Auth } {
-  const testMode = process.env.VAULT_MCP_TEST === '1';
-  const port = process.env.PORT ?? '3456';
-  const baseUrl = parseOrigin(process.env.MCP_BASE_URL?.trim() ?? `http://localhost:${port}`, 'MCP_BASE_URL', true);
-  // Browser origins are trusted configuration, never inferred from Host or proxy headers.
-  // The kit rejects origins outside this list on /mcp and permits non-browser clients
-  // without an Origin header. OAuth/discovery retain the SDK's interoperability behavior.
-  const allowedOrigins = getAllowedOrigins(baseUrl);
-
+// The server's own OAuth: discovery, the approval page, and its token store. createAuth throws at
+// construction when /authorize is unguarded, so a misconfigured deployment fails fast.
+function createOAuth(baseUrl: string, testMode: boolean): Auth {
   const clientId = process.env.MCP_CLIENT_ID;
   if (!clientId) throw new Error('MCP_CLIENT_ID env var is required');
 
@@ -69,7 +61,7 @@ export function createApp(): { app: Express; auth: Auth } {
   const dcrRedirectUris = dcrRedirectEnv ? dcrRedirectEnv.split(',').map(u => u.trim()).filter(Boolean) : undefined;
   const dcrEnabled = /^(1|true)$/i.test(process.env.MCP_DCR_ENABLED?.trim() ?? '') || !!dcrRedirectUris?.length;
 
-  const auth = createAuth({
+  return createAuth({
     baseUrl,
     clientId,
     displayName: 'obsidian-remote-mcp',
@@ -91,11 +83,34 @@ export function createApp(): { app: Express; auth: Auth } {
     // it on would throttle across cases. Disabled in test only — production keeps it.
     disableRateLimit: testMode,
   });
+}
+
+// Cloudflare Access with Managed OAuth runs sign-in at the edge; the server verifies the identity it
+// forwards. ACCESS_SCOPES sets what every connection may do, since there is no approval page.
+function createAccessMiddleware() {
+  const teamDomain = process.env.ACCESS_TEAM_DOMAIN?.trim();
+  const audience = process.env.ACCESS_AUD?.trim();
+  if (!teamDomain || !audience) throw new Error('MCP_AUTH=access requires ACCESS_TEAM_DOMAIN and ACCESS_AUD');
+  return createAccessAuth({ teamDomain, audience, scopes: accessModeScopes() });
+}
+
+// Builds the server. Returns the app and its auth instance, if any; the entry point persists tokens
+// via auth.saveTokens() on shutdown.
+export function createApp(): { app: Express; auth: Auth | undefined } {
+  const testMode = process.env.VAULT_MCP_TEST === '1';
+  const port = process.env.PORT ?? '3456';
+  const baseUrl = parseOrigin(process.env.MCP_BASE_URL?.trim() ?? `http://localhost:${port}`, 'MCP_BASE_URL', true);
+  // Browser origins are trusted configuration, never inferred from Host or proxy headers.
+  // The kit rejects origins outside this list on /mcp and permits non-browser clients
+  // without an Origin header. OAuth/discovery retain the SDK's interoperability behavior.
+  const allowedOrigins = getAllowedOrigins(baseUrl);
+
+  const auth = accessModeEnabled() ? undefined : createOAuth(baseUrl, testMode);
 
   const kitApp = createKitApp({
     name: 'obsidian-remote-mcp',
     version: pkg.version,
-    auth,
+    ...(auth ? { auth } : { authMiddleware: createAccessMiddleware() }),
     // Read live per /health request (the kit reads this property on each call), so an uptime
     // monitor's HEALTH_TOKEN can be set or rotated without a code change.
     get healthToken() {
@@ -124,7 +139,7 @@ export function createApp(): { app: Express; auth: Auth } {
   // Let the SDK answer OAuth/discovery preflights before the kit's global MCP CORS
   // middleware; otherwise browser clients cannot preflight /register or /token.
   // Ordinary requests still pass through the kit's parsers and request logger.
-  app.options('*', auth.routes);
+  if (auth) app.options('*', auth.routes);
   app.use(kitApp);
 
   // Deployed behind a reverse proxy / tunnel on the loopback interface. Trust that single loopback hop

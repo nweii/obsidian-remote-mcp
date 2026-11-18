@@ -7,9 +7,9 @@
       "dependencies": {
         "@modelcontextprotocol/server": "2.3.1",
         "express": "4.22.3",
-        "hono": "4.13.13",
+        "hono": "4.13.18",
         "js-yaml": "4.3.2",
-        "mcp-server-kit": "git+https://github.com/nweii/mcp-server-kit.git#a8b4b1f43eca67585551dc5a5033b6c577d58bb8",
+        "mcp-server-kit": "git+https://github.com/nweii/mcp-server-kit.git#096675880f002ac0b854fdb6437bb395230078df",
         "zod": "4.6.7",
       },
       "devDependencies": {
@@ -28,7 +28,7 @@
     },
   },
   "overrides": {
-    "@hono/node-server": "2.1.5",
+    "@hono/node-server": "2.1.8",
     "@xmldom/xmldom": "0.9.12",
     "body-parser": "1.20.9",
     "defuddle": "0.19.4",
@@ -38,7 +38,7 @@
     "qs": "6.16.2",
   },
   "packages": {
-    "@hono/node-server": ["@hono/node-server@2.1.5", "", { "peerDependencies": { "hono": "^4 || ^5.0.0-0" } }, "sha512-MgP/I06GdvsilDspMk/qmRzpk8LOUStP6jFAbSRi40W09DhoyUn+Mj7eyKICPqeYKybOjVFLVIAQzvu1bfIa7Q=="],
+    "@hono/node-server": ["@hono/node-server@2.1.8", "", { "peerDependencies": { "hono": "^4 || ^5.0.0-0" } }, "sha512-jdf7FHh6A1lzjpHHQUgxsg2GeER2vMetnAOfeActzcoli6jamlK+NAwL6Dsr5Fl3BS3tYUQzCdtZjU8Qxv7bEA=="],
 
     "@mixmark-io/domino": ["@mixmark-io/domino@2.2.0", "", {}, "sha512-Y28PR25bHXUg88kCV7nivXrP2Nj2RueZ3/l/jdx6J9f8J4nsEGcgX0Qe6lt7Pa+J79+kPiJU3LguR6O/6zrLOw=="],
 
@@ -226,7 +226,7 @@
 
     "highlight.js": ["highlight.js@11.11.1", "", {}, "sha512-Xwwo44whKBVCYoliBQwaPvtd/2tYFkRQtXDWj1nackaV2JPXx3L0+Jvd8/qCJ2p+ML0/XVkJ2q+Mr+UVdpJK5w=="],
 
-    "hono": ["hono@4.13.13", "", {}, "sha512-CQ46U0ZkAGmbT/4UxdzzGJpacP2IeKgY4a5/tOI9AABbpOMfK739wfDXmv1usCk+3RkKj1hQy4/fjhiwa2xlrA=="],
+    "hono": ["hono@4.13.18", "", {}, "sha512-H9q/E1XizaWstJxUW881dmLxEj+t/TrGGnyxINkm4+sK0qUwsMtFdo2BWI9Vs3cIS19MU6b6iCijoUoEf4f3DA=="],
 
     "html-escaper": ["html-escaper@3.0.3", "", {}, "sha512-RuMffC89BOWQoY0WKGpIhn5gX3iI54O6nRA0yC124NYVtzjmFWBIiFd8M0x+ZdX0P9R4lADg1mgP8C7PxGOWuQ=="],
 
@@ -258,7 +258,7 @@
 
     "mathml-to-latex": ["mathml-to-latex@1.8.0", "", { "dependencies": { "@xmldom/xmldom": "^0.9.10" } }, "sha512-gQ0uK3zqB8HwlfaXJkEL5rgaZNbKUiBMmBP/B/W+b+t6KcseLSuYb1b0BjLgS9ZiQa24ePkqTX8/6FaQuDL7wQ=="],
 
-    "mcp-server-kit": ["mcp-server-kit@github:nweii/mcp-server-kit#a8b4b1f", { "dependencies": { "@modelcontextprotocol/node": "^2.1.1", "@modelcontextprotocol/server": "^2.3.1", "@modelcontextprotocol/server-legacy": "^2.3.1", "express": "^4.22.3" } }, "nweii-mcp-server-kit-a8b4b1f", "sha512-xs9Fq59s9b54wTR0c1h+H8XoxZ71Yhy/Dn0mP4W7M2XKoI20AKYY6H1nabWP5cHuDfY3lNLICPvB+CH8ikTwxw=="],
+    "mcp-server-kit": ["mcp-server-kit@github:nweii/mcp-server-kit#0966758", { "dependencies": { "@modelcontextprotocol/node": "^2.1.1", "@modelcontextprotocol/server": "^2.3.1", "@modelcontextprotocol/server-legacy": "^2.3.1", "express": "^4.22.3" } }, "nweii-mcp-server-kit-0966758", "sha512-l+ut43OswUg5lmQ0h0W4EOYL0zVJtVtqukm6fZmitJL+jh9gYX8bFhPMi1zUByZ70OOhE51amqMnr8gzzyzXHw=="],
 
     "media-typer": ["media-typer@0.3.0", "", {}, "sha512-dq+qelQ9akHpcOl/gUVRTxVIOkAJ1wR3QAvb4RsVjS8oVoFjDGTc679wJYmUmknUF5HwMLOgb5O+a3KxfWapPQ=="],
 
