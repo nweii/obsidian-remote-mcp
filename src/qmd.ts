@@ -229,7 +229,7 @@ export function registerQmdTool(server: McpServer, options: { config?: QmdConfig
   registerLogged(server,
     "vault_search_semantic",
     {
-      annotations: { readOnlyHint: true, openWorldHint: false },
+      annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
       title: "Search notes by meaning",
       description:
         "Find notes by meaning through the vault's QMD index, which combines keyword and vector retrieval with reranking. " +

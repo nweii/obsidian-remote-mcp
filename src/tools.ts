@@ -377,7 +377,7 @@ export async function registerTools(server: McpServer) {
   registerVaultTool(server,
     "vault_context",
     {
-      annotations: { readOnlyHint: true, openWorldHint: false },
+      annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
       title: "Vault context",
       description:
         "Returns the vault guidance note configured by VAULT_CONTEXT_PATH (falls back to AGENTS.md / CLAUDE.md), followed by a tree of vault folders for orientation. Call at the start of a session to learn vault structure/conventions.",
@@ -423,7 +423,7 @@ export async function registerTools(server: McpServer) {
   registerVaultTool(server,
     "vault_read",
     {
-      annotations: { readOnlyHint: true, openWorldHint: false },
+      annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
       title: "Read vault note",
       description:
         'Read full note text (mode full, default) or list one folder level (mode list; path "" = vault root). In full mode, path accepts a vault-relative path (e.g. "Notes/Foo.md") or a bare note title (e.g. "Foo"); ambiguous titles return the first match with a warning. An Obsidian Base (.base, YAML) is returned as text when given by its full path (e.g. "Views/Reading.base"). For # headings only use vault_outline; for one section under a heading use vault_read_section after vault_outline.',
@@ -487,7 +487,7 @@ export async function registerTools(server: McpServer) {
   registerVaultTool(server,
     "vault_batch_read",
     {
-      annotations: { readOnlyHint: true, openWorldHint: false },
+      annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
       title: "Read several notes at once",
       description:
         'Read multiple notes in one call. Each entry is a vault-relative path or a bare note title (resolved like vault_read); entries that can\'t be resolved are reported under "Not found" without failing the others. Set include_content false to return only each note\'s frontmatter — cheap triage to pick which notes to open before reading bodies.',
@@ -521,7 +521,7 @@ export async function registerTools(server: McpServer) {
   registerVaultTool(server,
     "vault_outline",
     {
-      annotations: { readOnlyHint: true, openWorldHint: false },
+      annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
       title: "Note heading outline",
       description:
         "List all markdown headings (# through ######) in one note, one per line with # prefix (like Obsidian CLI `obsidian outline`). Use before vault_read_section to get exact heading text.",
@@ -543,7 +543,7 @@ export async function registerTools(server: McpServer) {
   registerVaultTool(server,
     "vault_read_section",
     {
-      annotations: { readOnlyHint: true, openWorldHint: false },
+      annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
       title: "Read note section under heading",
       description:
         "Return the body from one heading through the next same-or-higher-level heading. Pass heading text without # (case-insensitive). Prefer calling vault_outline first and copy the heading text after the #'s. If the heading text matches more than one section in the note, all matching sections are returned, each prefixed with a `<!-- match N of M (line X) -->` label so the caller can tell them apart.",
@@ -574,7 +574,7 @@ export async function registerTools(server: McpServer) {
   registerVaultTool(server,
     "vault_read_attachment",
     {
-      annotations: { readOnlyHint: true, openWorldHint: false },
+      annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
       title: "Read vault attachment",
       description:
         "Read a binary attachment from the vault by vault-relative path (e.g. \"Attachments/diagram.png\"). Image types (png, jpg, gif, webp) come back as an image content block clients can render; other types (pdf and the like) come back as base64 with mime type and size. Files over the size cap are rejected — pass stat_only first to check size and mime without pulling the payload. Read-only: uploading attachments is out of scope.",
@@ -617,7 +617,7 @@ export async function registerTools(server: McpServer) {
   registerVaultTool(server,
     "vault_frontmatter",
     {
-      annotations: { readOnlyHint: true, openWorldHint: false },
+      annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
       title: "Read note frontmatter",
       description:
         "Read YAML frontmatter from a note without loading the full body. Omit property for all keys; set property to read one key.",
@@ -654,7 +654,7 @@ export async function registerTools(server: McpServer) {
   registerVaultTool(server,
     "vault_links",
     {
-      annotations: { readOnlyHint: true, openWorldHint: false },
+      annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
       title: "Get note links",
       description: "Get outgoing [[wikilinks]] from a note with resolved paths, and optionally backlinks (notes that link to it). Use to navigate the graph without reading full content.",
       inputSchema: z.object({
@@ -935,7 +935,7 @@ export async function registerTools(server: McpServer) {
   registerVaultTool(server,
     "vault_search_title",
     {
-      annotations: { readOnlyHint: true, openWorldHint: false },
+      annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
       title: "Search vault by note title",
       description:
         "Find notes by filename (partial or exact match). Returns relative paths — use before vault_read when you know a title fragment but not the path.",
@@ -952,7 +952,7 @@ export async function registerTools(server: McpServer) {
   registerVaultTool(server,
     "vault_search_content",
     {
-      annotations: { readOnlyHint: true, openWorldHint: false },
+      annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
       title: "Search vault note contents",
       description:
         "Regex search across markdown bodies. Prefer folder to scope large vaults. Returns paths with matching line snippets.",
@@ -985,7 +985,7 @@ export async function registerTools(server: McpServer) {
   registerVaultTool(server,
     "vault_search_frontmatter",
     {
-      annotations: { readOnlyHint: true, openWorldHint: false },
+      annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
       title: "Search vault by frontmatter property",
       description:
         "Find notes by a frontmatter (YAML property) value. match_type: exact = equals (for a list property, matches when any element equals the value); contains = case-insensitive substring (per element for lists); exists = the property is present, value ignored. Date properties match by their YYYY-MM-DD calendar date (e.g. exact: 2026-01-15). Use folder to scope large vaults. Returns matching paths with the property's value.",
@@ -1028,7 +1028,7 @@ export async function registerTools(server: McpServer) {
   registerVaultTool(server,
     "vault_tags",
     {
-      annotations: { readOnlyHint: true, openWorldHint: false },
+      annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
       title: "List vault tags or notes by tag",
       description:
         "Without a tag, list every tag in the vault with note counts, sorted by count descending (capped by limit, with a truncation warning when the cap is hit). With a tag, return the paths of notes carrying it. Counts both frontmatter `tags` (YAML array or comma string) and inline `#tag`, including nested tags like `parent/child`. Matching is case-insensitive and displays first-seen casing; nested tags are exact — querying `parent` does not match `parent/child`. Use folder to scope large vaults.",
