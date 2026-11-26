@@ -368,7 +368,7 @@ export function registerSkimTool(server: McpServer, options: { provider?: Decisi
   registerLogged(server,
     "vault_skim",
     {
-      annotations: { readOnlyHint: true, openWorldHint: true },
+      annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
       title: "Skim notes for a goal",
       description:
         `Returns only the parts of notes relevant to a goal, so long notes or many notes can be checked without reading them whole. Notes are split into ~2,000-char chunks and each chunk is judged by an external decision model (${provider.label}, ${provider.model}); kept chunks come back cited as path:start-end. ` +

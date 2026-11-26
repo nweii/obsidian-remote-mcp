@@ -539,7 +539,7 @@ export async function registerCliTools(server: McpServer): Promise<void> {
   registerCliTool<{ command?: string }>(server,
     "vault_cli_help",
     {
-      annotations: { readOnlyHint: true, openWorldHint: false },
+      annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
       title: "List Obsidian CLI commands",
       description:
         "Lists the Obsidian CLI commands vault_cli can run, with their parameters, or shows help for one command. Use before vault_cli to find a command for something the other vault tools don't cover (Bases queries, tasks, file history, sync, bookmarks, unresolved links, word counts).",
